@@ -24,22 +24,23 @@ Estructura reservada sin implementar (solo README): `apps/agent`, `packages/shar
 
 ## 2. Evidencia de pruebas
 
-Todas las ejecuciones son reales; los enlaces llevan a GitHub Actions (repositorio privado: requieren acceso).
+Todas las ejecuciones son reales; los enlaces llevan a GitHub Actions (repositorio privado: requieren acceso). Evidencia vigente: commit `e84f473` (CI [40174189402](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40174189402), Seguridad [40174189383](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40174189383)) y publicación de prueba `v0.1.0-rc.2` ([40174458705](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40174458705)).
 
 | ID | Prueba | Dónde | Resultado |
 |---|---|---|---|
-| — | `pnpm run verify` (SPDX, lint, tipos, 30 pruebas unitarias/integración, build, licencias) | Local (Node 24.22.1) y CI | Aprobada |
-| PT-04 | Alteración y eliminación de entradas de bitácora detectadas | `packages/audit-log/test/chain.test.ts`, `cli.test.ts`, `scripts/smoke-audit-log.sh` en CI | Aprobada |
-| PT-21 | Reescritura completa detectada solo con anclaje externo; la limitación sin anclaje queda probada explícitamente | `anchor.test.ts`, `cli.test.ts`, smoke en CI | Aprobada |
-| — | API: salud, about con commit, cabeceras de seguridad, 404, configuración que falla cerrada | `apps/api/test/app.test.ts` | Aprobada |
+| — | `pnpm run verify` (SPDX, lint, tipos, **50 pruebas**, build, política de licencias) | Local (Node 24.22.1) y CI | Aprobada |
+| PT-04 | Alteración, eliminación, reordenamiento y duplicación de entradas detectadas | `packages/audit-log/test/*.test.ts`, `scripts/smoke-audit-log.sh` | **Aprobada parcialmente**: sobre el formato de exportación JSONL. La prueba sobre la base de datos queda para la fase que persista la bitácora |
+| PT-21 | Reescritura completa detectada solo con anclaje externo; la limitación sin anclaje se prueba explícitamente | `anchor.test.ts`, `cli.test.ts`, smoke en CI | **Aprobada parcialmente** (mismo alcance que PT-04) |
+| — | Regresiones de la QA: `__proto__` oculto, claves duplicadas, números y escapes no canónicos, cadena de otro tenant, timestamps no UTC o decrecientes, firma maleable, bitácora/anclajes vacíos, recorrido de rutas y enlaces simbólicos en la CLI | `packages/audit-log/test/qa-regression.test.ts` (15 casos) | Aprobada |
+| — | API: salud, about con commit, cabeceras, 404, configuración que falla cerrada (URL https, SemVer), escucha local por defecto | `apps/api/test/app.test.ts` | Aprobada |
 | — | Web: rechazo de enlaces no https y formas inesperadas | `apps/web/test/about.test.ts` | Aprobada |
-| — | Compose: salud vía proxy, commit correcto, CSP, sin cabecera Server, solo 127.0.0.1:8080 publicado, API no accesible directo, **red interna sin salida a Internet**, api/web no root, Valkey exige contraseña | `scripts/smoke-compose.sh` en CI, run [40170763182](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40170763182) | Aprobada |
-| PT-17 | La regla D-24 **bloqueó** la integración al detectar vulnerabilidades altas con corrección (multer, undici, brace-expansion, runtime Go de Caddy, brotli); se corrigieron las causas, no se silenciaron | runs 40170452453 / 40170452332 (fallidos) → 40170763219 / 40170763182 (verdes) | Aprobada |
-| — | Gitleaks (historial completo), Semgrep CE, Trivy fs, OSV-Scanner sin hallazgos bloqueantes | run [40170763219](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40170763219) | Aprobada |
-| PT-02 | Firma de `SHA256SUMS` verificada **sin red** (`unshare --net`) y archivo alterado rechazado; firmas de imágenes verificadas | Release [40171398534](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40171398534) | Aprobada **con clave efímera** (mecanismo, no confianza de origen) |
-| PT-01 (parcial) | Paquete offline extraído, imágenes cargadas desde el tar y servicios levantados con `pull_policy: never`; commit verificado | Release 40171398534 | Aprobada. Falta la prueba en una máquina sin red física (Fase 11) |
+| — | Compose: salud vía proxy, commit, CSP, sin cabecera Server, **web publicado solo en 127.0.0.1:8080** (comprobado con `docker compose port`), api/postgres/valkey sin puertos publicados, red interna sin salida a Internet, api/web/valkey no root, proceso principal de PostgreSQL no root, Valkey exige contraseña | `scripts/smoke-compose.sh` en CI 40174189402 | Aprobada |
+| PT-17 | La regla D-24 **bloquea la publicación**: el workflow de release construye, escanea con Trivy y solo publica si no hay hallazgos altos/críticos con corrección. Además, prueba sintética que demuestra que el bloqueo falla ante un hallazgo | Release 40174458705 (paso "PT-17"); `scripts/test-d24.sh` en CI. Bloqueos reales observados en CI: runs [40170599529](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40170599529) y [40170599544](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40170599544) (multer, undici, brace-expansion, runtime Go, x/net, brotli), corregidos en las causas | Aprobada |
+| — | Gitleaks (historial completo), Semgrep CE, Trivy fs, OSV-Scanner sin hallazgos bloqueantes | Seguridad 40174189383 | Aprobada |
+| PT-02 | Firma de `SHA256SUMS` verificada **sin red** (`unshare --net`) y archivo alterado rechazado; firmas de imágenes verificadas | Release 40174458705 | Aprobada **con clave efímera** (mecanismo, no confianza de origen) |
+| PT-01 (parcial) | Paquete offline extraído, IDs de imágenes comparados con `IMAGE_IDS`, servicios levantados con `pull_policy: never` y commit verificado | Release 40174458705 | Aprobada parcialmente: falta la prueba en una máquina sin red física (Fase 11) |
 
-Pre-versión de prueba publicada: `v0.1.0-rc.1` (prerelease, firmada con clave efímera, advertencia en sus notas).
+Pre-versiones de prueba publicadas: `v0.1.0-rc.1` y `v0.1.0-rc.2` (prerelease, clave efímera, advertencia en sus notas).
 
 ## 3. Criterios de aceptación (sección 24)
 
@@ -48,13 +49,13 @@ Pre-versión de prueba publicada: `v0.1.0-rc.1` (prerelease, firmada con clave e
 | 1 | Requisitos aprobados implementados | Cumplido (tabla §1) |
 | 2 | El código compila | Cumplido (local y CI) |
 | 3 | Pruebas ejecutadas | Cumplido (§2) |
-| 4 | Resultados verificables | Cumplido: ejecuciones de CI enlazadas |
-| 5 | Riesgos de seguridad evaluados | Cumplido: escaneos + correcciones; ver §5 |
-| 6 | Permisos correctos | Cumplido: contenedores sin root, `cap_drop: ALL`, workflows con permisos mínimos |
-| 7 | Aislamiento de datos revisado | No aplica aún (sin tenants hasta Fase 2); red interna verificada |
+| 4 | Resultados verificables | Cumplido: ejecuciones de CI enlazadas con su commit |
+| 5 | Riesgos de seguridad evaluados | Cumplido: escaneos, regla D-24 en publicación y correcciones de la QA |
+| 6 | Permisos correctos | Cumplido con matiz: api, web y valkey sin root y con `cap_drop: ALL`; PostgreSQL con `cap_drop: ALL` y 5 capacidades mínimas porque su entrypoint arranca como root antes de cambiar al usuario `postgres`; workflows con permisos mínimos |
+| 7 | Aislamiento de datos revisado | Parcial: sin tenants hasta Fase 2; `chainId` obligatorio en la verificación de bitácoras; red interna verificada |
 | 8 | Comentarios explicativos en español | Cumplido |
 | 9 | Documentación actualizada | Cumplido |
-| 10 | Revisión QA | **Pendiente** (agente QA independiente) |
+| 10 | Revisión QA | Primera revisión **no aprobada** (27 hallazgos); correcciones aplicadas en `29e28b4` y `e84f473`; **re-revisión pendiente** |
 | 11 | Limitaciones documentadas | Cumplido (§5) |
 | 12 | Aprobación humana | **Pendiente** (fusión del pull request) |
 
@@ -65,10 +66,12 @@ D-47 a D-54 en `docs/fase-0/21-decisiones.md` §4 (TypeScript 6.0, clave de firm
 ## 5. Limitaciones y riesgos residuales
 
 1. **Sin clave de firma del proyecto (P-12).** Las versiones se firman con clave efímera hasta que el responsable siga `clave-de-firma.md`. Confianza de origen: **no establecida**.
-2. **Registros de CI no legibles desde el entorno del agente**; por eso los hallazgos se publican como anotaciones (D-53).
-3. **Firma keyless con registro de transparencia público no habilitada** mientras el repositorio sea privado (D-48).
-4. **El repositorio sigue privado** (D-23): CodeQL, OpenSSF Scorecard y el reporte privado de vulnerabilidades requieren repositorio público. Hacerlo público es la decisión de cierre de esta fase.
-5. TLS del perfil institucional (CA interna, D-37) se define en la Fase 2; el perfil local usa HTTP solo en 127.0.0.1.
-6. Las dependencias Go de Caddy no aparecen en `THIRD_PARTY_LICENSES.md` (que cubre npm); quedan inventariadas en el SBOM de la imagen web.
-7. Queda una rama remota `release/v0.1.0-rc.1` usada para la prueba de publicación; el entorno del agente no puede borrarla.
-8. Reglas Semgrep descargadas del registro de Semgrep (con licencia propia de reglas) [SUPUESTO: uso en CI permitido; verificar].
+2. **Registro de transparencia público (D-55):** cada firma registra en Rekor (Sigstore) el hash del artefacto y la clave pública; ya ocurrió con las pre-versiones de prueba. No incluye el nombre del repositorio.
+3. **Registros de CI no legibles desde el entorno del agente**; por eso los hallazgos se publican como anotaciones (D-53).
+4. **El repositorio sigue privado** (D-23): CodeQL, OpenSSF Scorecard y el reporte privado de vulnerabilidades requieren repositorio público.
+5. **Bitácora:** la eliminación de entradas posteriores al último anclaje no es detectable (R-26); la verificación se probó sobre el formato de exportación, no sobre la base de datos (aún no existe).
+6. TLS del perfil institucional (CA interna, D-37) se define en la Fase 2; el perfil local usa HTTP solo en 127.0.0.1.
+7. Las dependencias Go de Caddy no pasan por la política de licencias automática (que cubre npm); quedan inventariadas en el SBOM de la imagen web.
+8. Semgrep se instala con versión fijada pero sin hashes, y sus reglas se descargan del registro de Semgrep (no fijadas, licencia propia de reglas) [SUPUESTO: uso en CI permitido; verificar].
+9. Quedan dos ramas remotas `release/v0.1.0-rc.1` y `release/v0.1.0-rc.2` de las pruebas de publicación; el entorno del agente no puede borrarlas (puede borrarlas el responsable).
+10. El perfil offline referencia PostgreSQL y Valkey por etiqueta; su integridad se garantiza con `IMAGE_IDS` dentro de `SHA256SUMS` firmado.
