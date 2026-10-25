@@ -23,9 +23,25 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Binario oficial en contenedor (versión fijada): escanea todo el historial igual en
+      # push y en pull_request, sin depender de la API ni de permisos adicionales.
+      - name: Gitleaks sobre todo el historial
+        run: |
+          rc=0
+          # Se ejecuta con el UID del runner para que git acepte el repositorio montado.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/repo:ro" -v "$RUNNER_TEMP:/out" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git /repo --redact --no-banner --exit-code 1 \
+            --report-format json --report-path /out/gitleaks.json || rc=$?
+          node -e "
+            const fs = require('fs');
+            const p = process.env.RUNNER_TEMP + '/gitleaks.json';
+            if (!fs.existsSync(p)) { console.log('::error title=gitleaks::No se generó informe'); process.exit(1); }
+            const r = JSON.parse(fs.readFileSync(p, 'utf8') || '[]');
+            for (const f of r) console.log('::error title=gitleaks::' + f.RuleID + ' en ' + f.File + ':' + f.StartLine + ' (commit ' + String(f.Commit).slice(0, 7) + ')');
+            console.log('Gitleaks: ' + r.length + ' hallazgo(s).');"
+          exit "$rc"
 
   semgrep:
     name: Análisis estático (Semgrep CE)
