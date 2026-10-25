@@ -16,7 +16,13 @@ Cada versión publica: el paquete offline (`auditor-21719-<versión>-offline.tar
    ```sh
    sha256sum -c SHA256SUMS
    ```
-4. Cargue las imágenes: `docker load -i auditor-21719-<versión>-offline/images/imagenes.tar`.
+4. Extraiga el paquete, cargue las imágenes y levante el perfil sin Internet (Docker no intentará descargar nada):
+   ```sh
+   tar -xzf auditor-21719-<versión>-offline.tar.gz && cd auditor-21719-<versión>-offline
+   docker load -i images/imagenes.tar
+   sh scripts/generate-secrets.sh
+   docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.offline.yaml up -d --wait
+   ```
 
 Con conexión, puede verificar además la firma de las imágenes publicadas: `cosign verify --key release.pub ghcr.io/<propietario>/auditor-21719-api@<digest>`.
 

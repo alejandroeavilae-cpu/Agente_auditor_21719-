@@ -4,11 +4,12 @@
 # Imágenes de la plataforma (multi-etapa). Objetivos:
 #   - api: API NestJS en Node.js 24, usuario sin privilegios, solo dependencias de producción.
 #   - web: SPA compilada servida por Caddy, que además actúa como proxy inverso hacia la API.
-# Las imágenes base se fijan por versión aquí y por digest en CI (ver docs/fase-1).
+# Las imágenes base se fijan por digest (P-13). Para actualizarlas, use los digests que
+# registra el job de CI "Registrar digests" y verifique que el escaneo D-24 siga en verde.
 
-ARG NODE_IMAGE=node:24-alpine
-ARG GO_IMAGE=golang:1.27-alpine
-ARG ALPINE_IMAGE=alpine:3.23
+ARG NODE_IMAGE=node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
+ARG GO_IMAGE=golang:1.27-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c
+ARG ALPINE_IMAGE=alpine:3.23@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63
 
 # ---------- Etapa de compilación (común) ----------
 FROM ${NODE_IMAGE} AS build

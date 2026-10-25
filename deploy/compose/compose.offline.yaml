@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Perfil sin Internet (Modalidad A). Se usa JUNTO con compose.yaml después de cargar
+# las imágenes del paquete offline verificado:
+#   docker load -i images/imagenes.tar
+#   docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.offline.yaml up -d --wait
+# pull_policy "never": Docker no intenta descargar nada; si falta una imagen, falla.
+# La integridad de las imágenes se garantiza verificando SHA256SUMS firmado antes de cargarlas.
+services:
+  web:
+    pull_policy: never
+  api:
+    pull_policy: never
+  postgres:
+    image: postgres:18-alpine
+    pull_policy: never
+  valkey:
+    image: valkey/valkey:8-alpine
+    pull_policy: never

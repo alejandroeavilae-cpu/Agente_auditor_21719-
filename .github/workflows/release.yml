@@ -142,19 +142,35 @@ jobs:
           mkdir -p "$NAME/images" "$NAME/deploy" "$NAME/scripts" "$NAME/docs"
           docker pull -q "${{ steps.v.outputs.api }}@${{ steps.api.outputs.digest }}"
           docker pull -q "${{ steps.v.outputs.web }}@${{ steps.web.outputs.digest }}"
-          docker pull -q postgres:18-alpine
-          docker pull -q valkey/valkey:8-alpine
+          docker pull -q postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
+          docker pull -q valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
           docker tag "${{ steps.v.outputs.api }}@${{ steps.api.outputs.digest }}" auditor-21719-api:local
           docker tag "${{ steps.v.outputs.web }}@${{ steps.web.outputs.digest }}" auditor-21719-web:local
+          # Se etiquetan por nombre (no solo digest) para que conserven su nombre al cargarse sin red.
+          docker tag "postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5" postgres:18-alpine
+          docker tag "valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507" valkey/valkey:8-alpine
           docker save -o "$NAME/images/imagenes.tar" auditor-21719-api:local auditor-21719-web:local postgres:18-alpine valkey/valkey:8-alpine
           cp -r deploy/compose deploy/docker "$NAME/deploy/"
           rm -f "$NAME"/deploy/compose/secrets/postgres_password "$NAME"/deploy/compose/secrets/valkey.conf
-          cp scripts/generate-secrets.sh "$NAME/scripts/"
+          cp scripts/generate-secrets.sh scripts/smoke-compose.sh "$NAME/scripts/"
           cp -r docs/fase-1 "$NAME/docs/" 2>/dev/null || true
           cp LICENSE NOTICE THIRD_PARTY_LICENSES.md "$NAME/"
           tar -czf "$NAME.tar.gz" "$NAME"
           sha256sum "$NAME.tar.gz" sbom-api.cdx.json sbom-web.cdx.json > SHA256SUMS
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: PT-01 (parcial) — instalar desde el paquete offline sin descargar imágenes
+        run: |
+          NAME="${{ steps.pkg.outputs.name }}"
+          rm -rf prueba-offline && mkdir prueba-offline && tar -xzf "$NAME.tar.gz" -C prueba-offline
+          docker image rm -f auditor-21719-api:local auditor-21719-web:local postgres:18-alpine valkey/valkey:8-alpine >/dev/null 2>&1 || true
+          docker load -i "prueba-offline/$NAME/images/imagenes.tar"
+          cd "prueba-offline/$NAME"
+          sh scripts/generate-secrets.sh
+          docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.offline.yaml up -d --wait --wait-timeout 180
+          curl -fsS http://127.0.0.1:8080/api/v1/about | grep -q "\"commit\":\"${{ github.sha }}\""
+          docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.offline.yaml down -v
+          echo "Instalación desde paquete offline correcta (sin descargas de imágenes)."
 
       - name: Firmar SHA256SUMS
         run: cosign sign-blob --yes --key release.key --bundle SHA256SUMS.sigstore.json SHA256SUMS

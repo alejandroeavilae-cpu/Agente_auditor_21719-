@@ -94,4 +94,4 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | ID | Pendiente | Responsable |
 |---|---|---|
 | P-12 | Generar la clave de firma del proyecto y cargarla como secreto (guía: `docs/fase-1/clave-de-firma.md`) | Responsable del proyecto |
-| P-13 | Fijar imágenes base por digest (los digests se registran en cada ejecución de CI) | Fase 2 |
+| P-13 | ~~Fijar imágenes base por digest~~ **Resuelto en Fase 1** (Dockerfile, Compose y release usan digests registrados por CI el 25-10-2026) | — |

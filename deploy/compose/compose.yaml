@@ -55,7 +55,7 @@ services:
 
   postgres:
     <<: *hardening
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
     environment:
       POSTGRES_USER: auditor
       POSTGRES_DB: auditor_control
@@ -72,7 +72,7 @@ services:
 
   valkey:
     <<: *hardening
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
     # Se ejecuta directamente con el usuario sin privilegios de la imagen: con
     # cap_drop ALL el entrypoint no puede cambiar de usuario por sí mismo.
     user: valkey
