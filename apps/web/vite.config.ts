@@ -10,7 +10,9 @@ export default defineConfig({
     outDir: 'dist',
   },
   server: {
-    proxy: { '/api': 'http://localhost:3000', '/health': 'http://localhost:3000' },
+    // 127.0.0.1 explícito: la API escucha solo en IPv4 local y en algunos sistemas
+    // "localhost" se resuelve primero a ::1 (hallazgo QA N-03).
+    proxy: { '/api': 'http://127.0.0.1:3000', '/health': 'http://127.0.0.1:3000' },
   },
   test: {
     include: ['test/**/*.test.ts'],

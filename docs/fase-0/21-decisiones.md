@@ -87,10 +87,10 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-51 | NestJS 12 sobre **Express** (`@nestjs/platform-express`) y dependencias inyectadas con `@Inject` explícito | Plataforma por defecto de NestJS; la inyección explícita no depende de metadatos de decoradores, lo que simplifica pruebas |
 | D-52 | **Acciones de GitHub fijadas por SHA de commit** con comentario de versión | Cadena de suministro (sección 15.4) |
 | D-53 | Los escaneos publican sus hallazgos como **anotaciones** de GitHub Actions y la regla D-24 la aplica un script propio (`scripts/ci-report-trivy.mjs`) | Hallazgos visibles para cualquier revisor sin descargar registros |
-| D-55 | Las firmas con la clave del proyecto **sí registran una entrada en el registro de transparencia público de Sigstore (Rekor)**: contiene el hash del artefacto firmado y la clave pública, no el nombre del repositorio. Se acepta y se documenta | Corrige la afirmación previa (hallazgo QA H-09); la transparencia pública es coherente con el principio de verificabilidad |
+| D-54 | Política de licencias de dependencias aplicada en CI (`scripts/check-licenses.mjs`) e inventario `THIRD_PARTY_LICENSES.md` generado y versionado | Sección 4; cualquier licencia nueva requiere decisión registrada |
+| D-55 | Las firmas con la clave del proyecto **sí registran una entrada en el registro de transparencia público de Sigstore (Rekor)**: para la firma de `SHA256SUMS` contiene solo el hash del artefacto y la clave pública [VERIFICADO por la QA en el bundle]; para firmas y atestaciones de imágenes, cuyos contenidos incluyen la referencia `ghcr.io/<propietario>/…` y el SBOM, no se ha verificado qué se publica [SUPUESTO: podría incluir esa referencia]. Se acepta y se documenta | Corrige la afirmación previa (hallazgo QA H-09); la transparencia pública es coherente con el principio de verificabilidad |
 | D-56 | La verificación de bitácoras exige **forma canónica byte a byte**, `--chain-id` obligatorio, timestamps UTC no decrecientes y rechaza bitácoras o anclajes vacíos | Hallazgos QA H-01, H-03, H-04, H-05, H-13 |
 | D-57 | La publicación **construye, escanea y solo después publica** las imágenes: la regla D-24 bloquea el workflow de release | Hallazgo QA H-02 |
-| D-54 | Política de licencias de dependencias aplicada en CI (`scripts/check-licenses.mjs`) e inventario `THIRD_PARTY_LICENSES.md` generado y versionado | Sección 4; cualquier licencia nueva requiere decisión registrada |
 
 ### Pendientes nuevos
 

@@ -23,13 +23,15 @@ export const anchorSchema = z
     chainId: z.string().min(1).max(200),
     seq: z.number().int().nonnegative(),
     hash: z.string().regex(/^[0-9a-f]{64}$/),
-    anchoredAt: z.iso.datetime(),
+    anchoredAt: z.iso.datetime({ precision: 3 }),
     keyId: z.string().min(1).max(200),
     algorithm: z.literal('Ed25519'),
     // Firma Ed25519 = 64 bytes = exactamente 88 caracteres base64 con relleno. Se valida
     // estrictamente porque el decodificador de Node ignora caracteres inválidos y la firma
     // sería maleable (hallazgo QA H-14).
-    signature: z.string().regex(/^[A-Za-z0-9+/]{86}==$/, 'Firma Ed25519 en base64 inválida'),
+    // El último carácter antes de "==" solo puede ser A, Q, g o w: los demás alteran bits
+    // de relleno que el decodificador ignora (hallazgo QA N-05).
+    signature: z.string().regex(/^[A-Za-z0-9+/]{85}[AQgw]==$/, 'Firma Ed25519 en base64 inválida'),
   })
   .strict();
 

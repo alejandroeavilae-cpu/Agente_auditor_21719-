@@ -133,6 +133,35 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-or-later
           provenance: mode=max
 
+      - name: Escanear la imagen API publicada (mismo digest que se firmará)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.v.outputs.api }}@${{ steps.api.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: trivy-pub-api.json
+          exit-code: "0"
+          skip-setup-trivy: true
+      - name: Escanear la imagen web publicada (mismo digest que se firmará)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.v.outputs.web }}@${{ steps.web.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: trivy-pub-web.json
+          exit-code: "0"
+          skip-setup-trivy: true
+      - name: D-24 sobre los digests publicados (sin firma ni versión si hay hallazgos)
+        run: |
+          rc=0
+          node scripts/ci-report-trivy.mjs trivy-pub-api.json publicada-api || rc=1
+          node scripts/ci-report-trivy.mjs trivy-pub-web.json publicada-web || rc=1
+          exit $rc
+
       - name: SBOM CycloneDX de la imagen API
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:

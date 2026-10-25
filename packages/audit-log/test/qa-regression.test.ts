@@ -91,6 +91,33 @@ describe('estructura de la cadena', () => {
   });
 });
 
+describe('re-revisión QA (N-01, N-04, N-05)', () => {
+  it('N-01: rechaza timestamps sin exactamente 3 decimales', () => {
+    const text = toJsonl(chain(2));
+    expect(verifyText(editLine(text, 1, (l) => l.replace(/\.(\d{3})Z"/, 'Z"'))).ok).toBe(false);
+    expect(verifyText(editLine(text, 1, (l) => l.replace(/\.(\d{3})Z"/, '.$10Z"'))).ok).toBe(false);
+  });
+  it('N-04: verifyChain (API) rechaza __proto__ propio aunque zod lo descarte', () => {
+    const entries = chain(2);
+    const raw = JSON.parse(JSON.stringify(entries[1]).replace('"data":{', '"data":{"__proto__":{"x":1},')) as unknown;
+    expect(verifyChainItems([{ line: 1, value: entries[0] }, { line: 2, value: raw }], CHAIN).ok).toBe(false);
+  });
+  it('N-04: createEntry rechaza __proto__ propio en data', () => {
+    const data = JSON.parse('{"__proto__":{"x":1}}') as Record<string, number>;
+    expect(() => createEntry(null, CHAIN, { actor: 'u', action: 'a', object: 'o', data })).toThrow(/prohibida/);
+  });
+  it('N-05: rechaza firmas con bits de relleno alterados', () => {
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const entries = chain(1);
+    const anchor = createAnchor(entries[0]!, privateKey, 'k1');
+    const last = anchor.signature[85]!;
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const flipped = alphabet[alphabet.indexOf(last) + 1]!;
+    const forged = { ...anchor, signature: anchor.signature.slice(0, 85) + flipped + '==' };
+    expect(verifyAnchorItems(entries, [{ line: 1, value: forged }], new Map([['k1', publicKey]]))).toHaveLength(1);
+  });
+});
+
 describe('H-14: firma de anclaje maleable', () => {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   it.each(['!!!', 'AAAA', ' '])('rechaza la firma con agregado %j', (suffix) => {

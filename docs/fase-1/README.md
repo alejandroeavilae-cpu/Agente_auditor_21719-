@@ -28,10 +28,10 @@ Todas las ejecuciones son reales; los enlaces llevan a GitHub Actions (repositor
 
 | ID | Prueba | Dónde | Resultado |
 |---|---|---|---|
-| — | `pnpm run verify` (SPDX, lint, tipos, **50 pruebas**, build, política de licencias) | Local (Node 24.22.1) y CI | Aprobada |
+| — | `pnpm run verify` (SPDX, lint, tipos, **54 pruebas**, build, política de licencias) | Local (Node 24.22.1) y CI | Aprobada |
 | PT-04 | Alteración, eliminación, reordenamiento y duplicación de entradas detectadas | `packages/audit-log/test/*.test.ts`, `scripts/smoke-audit-log.sh` | **Aprobada parcialmente**: sobre el formato de exportación JSONL. La prueba sobre la base de datos queda para la fase que persista la bitácora |
 | PT-21 | Reescritura completa detectada solo con anclaje externo; la limitación sin anclaje se prueba explícitamente | `anchor.test.ts`, `cli.test.ts`, smoke en CI | **Aprobada parcialmente** (mismo alcance que PT-04) |
-| — | Regresiones de la QA: `__proto__` oculto, claves duplicadas, números y escapes no canónicos, cadena de otro tenant, timestamps no UTC o decrecientes, firma maleable, bitácora/anclajes vacíos, recorrido de rutas y enlaces simbólicos en la CLI | `packages/audit-log/test/qa-regression.test.ts` (15 casos) | Aprobada |
+| — | Regresiones de la QA: `__proto__` oculto, claves duplicadas, números y escapes no canónicos, cadena de otro tenant, timestamps no UTC o decrecientes, firma maleable, bitácora/anclajes vacíos, recorrido de rutas y enlaces simbólicos en la CLI | `packages/audit-log/test/qa-regression.test.ts` (19 casos en la re-revisión, 23 tras las correcciones finales) | Aprobada |
 | — | API: salud, about con commit, cabeceras, 404, configuración que falla cerrada (URL https, SemVer), escucha local por defecto | `apps/api/test/app.test.ts` | Aprobada |
 | — | Web: rechazo de enlaces no https y formas inesperadas | `apps/web/test/about.test.ts` | Aprobada |
 | — | Compose: salud vía proxy, commit, CSP, sin cabecera Server, **web publicado solo en 127.0.0.1:8080** (comprobado con `docker compose port`), api/postgres/valkey sin puertos publicados, red interna sin salida a Internet, api/web/valkey no root, proceso principal de PostgreSQL no root, Valkey exige contraseña | `scripts/smoke-compose.sh` en CI 40174189402 | Aprobada |
@@ -55,18 +55,18 @@ Pre-versiones de prueba publicadas: `v0.1.0-rc.1` y `v0.1.0-rc.2` (prerelease, c
 | 7 | Aislamiento de datos revisado | Parcial: sin tenants hasta Fase 2; `chainId` obligatorio en la verificación de bitácoras; red interna verificada |
 | 8 | Comentarios explicativos en español | Cumplido |
 | 9 | Documentación actualizada | Cumplido |
-| 10 | Revisión QA | Primera revisión **no aprobada** (27 hallazgos); correcciones aplicadas en `29e28b4` y `e84f473`; **re-revisión pendiente** |
+| 10 | Revisión QA | Primera revisión **no aprobada** (27 hallazgos); correcciones en `29e28b4` y `e84f473`. **Re-revisión sobre `c925ef0`: sin bloqueos**, cumple 1–11; sus 7 observaciones (N-01 a N-07) se corrigieron después |
 | 11 | Limitaciones documentadas | Cumplido (§5) |
 | 12 | Aprobación humana | **Pendiente** (fusión del pull request) |
 
 ## 4. Decisiones de la fase
 
-D-47 a D-54 en `docs/fase-0/21-decisiones.md` §4 (TypeScript 6.0, clave de firma custodiada por el responsable, versiones de Node/pnpm/PostgreSQL/Valkey, Express, acciones por SHA, anotaciones de escaneo, política de licencias). P-13 resuelto en esta fase (imágenes por digest).
+D-47 a D-57 en `docs/fase-0/21-decisiones.md` §4 (TypeScript 6.0, clave de firma custodiada por el responsable, versiones de Node/pnpm/PostgreSQL/Valkey, Express, acciones por SHA, anotaciones de escaneo, política de licencias). P-13 resuelto en esta fase (imágenes por digest).
 
 ## 5. Limitaciones y riesgos residuales
 
 1. **Sin clave de firma del proyecto (P-12).** Las versiones se firman con clave efímera hasta que el responsable siga `clave-de-firma.md`. Confianza de origen: **no establecida**.
-2. **Registro de transparencia público (D-55):** cada firma registra en Rekor (Sigstore) el hash del artefacto y la clave pública; ya ocurrió con las pre-versiones de prueba. No incluye el nombre del repositorio.
+2. **Registro de transparencia público (D-55):** cada firma registra una entrada en Rekor (Sigstore); ya ocurrió con las pre-versiones de prueba. Para `SHA256SUMS` contiene solo hash y clave pública [VERIFICADO]; para imágenes y atestaciones podría incluir la referencia `ghcr.io/<propietario>/…` [SUPUESTO, no verificado].
 3. **Registros de CI no legibles desde el entorno del agente**; por eso los hallazgos se publican como anotaciones (D-53).
 4. **El repositorio sigue privado** (D-23): CodeQL, OpenSSF Scorecard y el reporte privado de vulnerabilidades requieren repositorio público.
 5. **Bitácora:** la eliminación de entradas posteriores al último anclaje no es detectable (R-26); la verificación se probó sobre el formato de exportación, no sobre la base de datos (aún no existe).

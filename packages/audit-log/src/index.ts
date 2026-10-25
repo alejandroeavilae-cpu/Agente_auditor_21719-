@@ -6,6 +6,7 @@ export {
   auditEntrySchema,
   computeEntryHash,
   createEntry,
+  hasForbiddenKey,
   serializeEntry,
   verifyChain,
   verifyChainItems,

@@ -16,6 +16,20 @@ const hexHash = z.string().regex(/^[0-9a-f]{64}$/, 'Debe ser un hash SHA-256 en 
  * (hallazgo QA H-01).
  */
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+/**
+ * Detecta claves prohibidas como propiedades PROPIAS en cualquier nivel. Es necesario
+ * porque zod descarta `__proto__` en silencio antes de que un refinamiento lo vea
+ * (hallazgo QA N-04).
+ */
+export function hasForbiddenKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((item) => hasForbiddenKey(item));
+  if (typeof value === 'object' && value !== null) {
+    for (const key of FORBIDDEN_KEYS) if (Object.hasOwn(value, key)) return true;
+    return Object.values(value).some((item) => hasForbiddenKey(item));
+  }
+  return false;
+}
+
 const safeKey = z.string().refine((key) => !FORBIDDEN_KEYS.has(key), {
   message: 'Clave prohibida en la bitácora (__proto__, constructor o prototype)',
 });
@@ -46,7 +60,9 @@ export const auditEntrySchema = z
     seq: z.number().int().nonnegative(),
     // Solo UTC con sufijo "Z" (formato de Date.toISOString): una única representación
     // por instante, comparable entre entradas (hallazgo QA H-13).
-    timestamp: z.iso.datetime(),
+    // Exactamente 3 decimales, como Date.toISOString: así la comparación de texto
+    // equivale a la cronológica (hallazgo QA N-01).
+    timestamp: z.iso.datetime({ precision: 3 }),
     actor: z.string().min(1).max(500),
     action: z.string().min(1).max(200),
     object: z.string().max(1000),
@@ -101,6 +117,9 @@ export function createEntry(
 ): AuditEntry {
   if (previous !== null && previous.chainId !== chainId) {
     throw new Error('La entrada anterior pertenece a otra cadena; no se puede encadenar.');
+  }
+  if (hasForbiddenKey(input.data)) {
+    throw new Error('Los datos contienen una clave prohibida (__proto__, constructor o prototype).');
   }
   const base: Omit<AuditEntry, 'hash'> = {
     chainId,
@@ -173,6 +192,10 @@ export function verifyChainItems(items: readonly ChainItem[], expectedChainId?: 
   let chainId = expectedChainId;
 
   for (const { line, value, raw } of items) {
+    if (hasForbiddenKey(value)) {
+      issues.push({ seq: null, line, reason: 'Clave prohibida (__proto__, constructor o prototype)' });
+      continue;
+    }
     const parsed = auditEntrySchema.safeParse(value);
     if (!parsed.success) {
       issues.push({ seq: null, line, reason: `Formato inválido: ${parsed.error.issues.map((i) => i.message).join('; ')}` });
@@ -221,7 +244,7 @@ export function verifyChainItems(items: readonly ChainItem[], expectedChainId?: 
 /**
  * Verifica una lista de entradas ya interpretadas (uso programático).
  * No comprueba la forma canónica porque no dispone del texto original;
- * para archivos exportados use `verifyJsonlText`.
+ * para archivos exportados use `verifyChainItems` con `parseJsonlLines` (como la CLI).
  */
 export function verifyChain(entries: readonly unknown[], expectedChainId?: string): ChainVerification {
   return verifyChainItems(
