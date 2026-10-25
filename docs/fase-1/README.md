@@ -40,7 +40,7 @@ Todas las ejecuciones son reales; los enlaces llevan a GitHub Actions (repositor
 | PT-02 | Firma de `SHA256SUMS` verificada **sin red** (`unshare --net`) y archivo alterado rechazado; firmas de imágenes verificadas | Release 40174458705 | Aprobada **con clave efímera** (mecanismo, no confianza de origen) |
 | PT-01 (parcial) | Paquete offline extraído, IDs de imágenes comparados con `IMAGE_IDS`, servicios levantados con `pull_policy: never` y commit verificado | Release 40174458705 | Aprobada parcialmente: falta la prueba en una máquina sin red física (Fase 11) |
 
-Pre-versiones de prueba publicadas: `v0.1.0-rc.1`, `v0.1.0-rc.2` y `v0.1.0-rc.3` (prerelease, clave efímera, advertencia en sus notas).
+Pre-versiones de prueba `v0.1.0-rc.1` a `v0.1.0-rc.3`: publicadas con clave efímera durante las pruebas y **eliminadas por el responsable el 25-10-2026** (junto con sus etiquetas y ramas `release/*`). La evidencia de su ejecución queda en los runs de GitHub Actions citados arriba; los paquetes descargables ya no existen.
 
 ## 3. Criterios de aceptación (sección 24)
 
@@ -68,10 +68,10 @@ D-47 a D-57 en `docs/fase-0/21-decisiones.md` §4 (TypeScript 6.0, clave de firm
 1. **Sin clave de firma del proyecto (P-12).** Las versiones se firman con clave efímera hasta que el responsable siga `clave-de-firma.md`. Confianza de origen: **no establecida**.
 2. **Registro de transparencia público (D-55):** cada firma registra una entrada en Rekor (Sigstore); ya ocurrió con las pre-versiones de prueba. Para `SHA256SUMS` contiene solo hash y clave pública [VERIFICADO]; para imágenes y atestaciones podría incluir la referencia `ghcr.io/<propietario>/…` [SUPUESTO, no verificado].
 3. **Registros de CI no legibles desde el entorno del agente**; por eso los hallazgos se publican como anotaciones (D-53).
-4. **El repositorio sigue privado** hasta que el responsable ejecute la decisión D-23 (confirmada el 25-10-2026; P-14). Los workflows de CodeQL y OpenSSF Scorecard ya están incluidos y se activan solos cuando el repositorio sea público; el reporte privado de vulnerabilidades se activa en la configuración.
+4. **Repositorio público** desde el 25-10-2026 (D-23, P-14) y **reporte privado de vulnerabilidades activado** [VERIFICADO vía API]. CodeQL y OpenSSF Scorecard se ejecutan sobre `main` y en pull requests.
 5. **Bitácora:** la eliminación de entradas posteriores al último anclaje no es detectable (R-26); la verificación se probó sobre el formato de exportación, no sobre la base de datos (aún no existe).
 6. TLS del perfil institucional (CA interna, D-37) se define en la Fase 2; el perfil local usa HTTP solo en 127.0.0.1.
 7. Las dependencias Go de Caddy no pasan por la política de licencias automática (que cubre npm); quedan inventariadas en el SBOM de la imagen web.
 8. Semgrep se instala con versión fijada pero sin hashes, y sus reglas se descargan del registro de Semgrep (no fijadas, licencia propia de reglas) [SUPUESTO: uso en CI permitido; verificar].
-9. Quedan tres ramas remotas `release/v0.1.0-rc.1` a `rc.3` de las pruebas de publicación; el entorno del agente no puede borrarlas (puede borrarlas el responsable).
+9. ~~Ramas `release/v0.1.0-rc.*` de prueba~~: eliminadas por el responsable el 25-10-2026 (verificado: solo existen `main` y `fase-1`).
 10. El perfil offline referencia PostgreSQL y Valkey por etiqueta; su integridad se garantiza con `IMAGE_IDS` dentro de `SHA256SUMS` firmado.

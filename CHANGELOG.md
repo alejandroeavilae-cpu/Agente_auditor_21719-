@@ -10,7 +10,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 - API NestJS mínima (`/health`, `/api/v1/about`) y web React mínima.
 - Docker Compose (perfiles local y offline), imágenes por digest, contenedores sin root, red interna sin salida.
 - CI y seguridad: verificación, prueba de humo, Gitleaks, Semgrep CE, Trivy (regla D-24), OSV-Scanner.
-- Publicación con SBOM CycloneDX, firmas Cosign y paquete offline verificable sin red; pre-versión de prueba `v0.1.0-rc.1`.
+- Publicación con SBOM CycloneDX, firmas Cosign y paquete offline verificable sin red; probado con pre-versiones `v0.1.0-rc.1` a `rc.3` (eliminadas después de las pruebas).
+- Repositorio público; CodeQL y OpenSSF Scorecard; reporte privado de vulnerabilidades activado.
 - Política de licencias de dependencias e inventario de terceros; guías de revisión, versiones, soporte, ejecución local y verificación.
 
 ### Seguridad

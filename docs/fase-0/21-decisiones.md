@@ -68,7 +68,7 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | P-02 | Titularidad del copyright a largo plazo (persona vs. fundación/organización) | Compromiso legal e institucional | Continuidad (no bloquea fases) |
 | P-03 | Incorporar **al menos un segundo mantenedor** | Requiere personas | Publicación (Fase 13) |
 | P-04 | Elegir **institución piloto** | Requiere acuerdo institucional | Fase 14 |
-| P-05 | Activar el **reporte privado de vulnerabilidades** en GitHub (requiere configuración del dueño del repositorio) | Acción de configuración de cuenta | Publicación del repo |
+| P-05 | ~~Activar el reporte privado de vulnerabilidades~~ **Resuelto 25-10-2026** [VERIFICADO vía API] | — | — |
 | P-06 | Seguimiento del **boletín 18.623-07** hasta su resultado | Hecho externo futuro | Versión del catálogo |
 | P-07 | Nombre definitivo del proyecto | Preferencia del responsable | No bloquea |
 | P-08 | Hardware real del piloto | Depende de la institución | Fase 14 |
@@ -97,5 +97,5 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | ID | Pendiente | Responsable |
 |---|---|---|
 | P-12 | Generar la clave de firma del proyecto y cargarla como secreto (guía: `docs/fase-1/clave-de-firma.md`) | Responsable del proyecto |
-| P-14 | Hacer público el repositorio (decisión D-23 confirmada). **Correo de autor: el responsable decidió el 25-10-2026 mantener su correo personal en los commits y firmas DCO**, que quedará público. Después de publicar: activar el reporte privado de vulnerabilidades (P-05) y revisar la visibilidad de los paquetes en GHCR | Responsable del proyecto |
+| P-14 | ~~Hacer público el repositorio~~ **Resuelto 25-10-2026:** repositorio público, reporte privado de vulnerabilidades activado y artefactos de prueba (ramas, etiquetas y pre-versiones rc.1–rc.3) eliminados por el responsable [VERIFICADO vía API]. El responsable decidió mantener su correo personal en commits y firmas DCO. | — |
 | P-13 | ~~Fijar imágenes base por digest~~ **Resuelto en Fase 1** (Dockerfile, Compose y release usan digests registrados por CI el 25-10-2026) | — |
