@@ -58,7 +58,11 @@ jobs:
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
+          format: json
+          output: trivy-fs.json
+          exit-code: "0"
+      - name: Aplicar regla de bloqueo D-24 y anotar hallazgos
+        run: node scripts/ci-report-trivy.mjs trivy-fs.json trivy-fs
 
   osv:
     name: Dependencias (OSV-Scanner, informe)
@@ -74,4 +78,17 @@ jobs:
         continue-on-error: true
         with:
           scan-args: |-
+            --format=json
+            --output=osv.json
             --lockfile=pnpm-lock.yaml
+      - name: Publicar hallazgos de OSV como avisos (no bloquea)
+        if: always()
+        run: |
+          [ -f osv.json ] || { echo "::warning title=osv::No se generó informe"; exit 0; }
+          node -e "
+            const r = JSON.parse(require('fs').readFileSync('osv.json','utf8'));
+            let n = 0;
+            for (const res of r.results ?? []) for (const p of res.packages ?? []) for (const v of p.vulnerabilities ?? []) {
+              n++; console.log('::warning title=osv::' + v.id + ' en ' + p.package.name + '@' + p.package.version);
+            }
+            console.log('OSV: ' + n + ' vulnerabilidad(es) reportada(s).');"

@@ -6,7 +6,7 @@ set -eu
 EXPECTED_COMMIT="${1:-desarrollo}"
 BASE="http://127.0.0.1:8080"
 COMPOSE="docker compose -f deploy/compose/compose.yaml"
-fail() { echo "FALLA: $*" >&2; exit 1; }
+fail() { echo "::error title=smoke-compose::FALLA: $*"; echo "FALLA: $*" >&2; exit 1; }
 
 echo "1. La sonda de salud responde a través del proxy"
 curl -fsS "$BASE/health" | grep -q '"status":"ok"' || fail "/health"

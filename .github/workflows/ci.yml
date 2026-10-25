@@ -48,29 +48,47 @@ jobs:
           persist-credentials: false
       - name: Generar secretos locales
         run: sh scripts/generate-secrets.sh
-      - name: Construir y levantar servicios
+      - name: Construir imágenes
         env:
           BUILD_COMMIT: ${{ github.sha }}
-        run: docker compose -f deploy/compose/compose.yaml up -d --build --wait --wait-timeout 300
+        run: |
+          set -o pipefail
+          docker compose -f deploy/compose/compose.yaml build --progress plain 2>&1 | tee build.log || {
+            tail -25 build.log | while IFS= read -r l; do echo "::error title=build::$l"; done; exit 1; }
+      - name: Levantar servicios
+        run: docker compose -f deploy/compose/compose.yaml up -d --wait --wait-timeout 300
       - name: Comprobaciones de comportamiento y aislamiento
         run: sh scripts/smoke-compose.sh "${{ github.sha }}"
-      - name: Escanear imágenes construidas (bloquea vulnerabilidades altas/críticas con corrección, D-24)
+      - name: Escanear imagen API
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: auditor-21719-api:local
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
+          format: json
+          output: trivy-api.json
+          exit-code: "0"
       - name: Escanear imagen web
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: auditor-21719-web:local
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
+          format: json
+          output: trivy-web.json
+          exit-code: "0"
           skip-setup-trivy: true
+      - name: Regla de bloqueo D-24 sobre imágenes (vulnerabilidades altas/críticas con corrección)
+        if: always()
+        run: |
+          rc=0
+          node scripts/ci-report-trivy.mjs trivy-api.json imagen-api || rc=1
+          node scripts/ci-report-trivy.mjs trivy-web.json imagen-web || rc=1
+          exit $rc
       - name: Registrar digests de imágenes base (para fijarlas por digest)
         if: always()
         run: |
@@ -78,9 +96,12 @@ jobs:
             docker pull -q "$img" >/dev/null 2>&1 || true
             echo "$img -> $(docker image inspect --format '{{index .RepoDigests 0}}' "$img" 2>/dev/null || echo 'no disponible')"
           done | tee image-digests.txt
-      - name: Registros de los servicios
+          while read -r line; do echo "::notice title=digest::$line"; done < image-digests.txt
+      - name: Registros de los servicios (como anotaciones si algo falló)
         if: failure()
-        run: docker compose -f deploy/compose/compose.yaml logs --no-color
+        run: |
+          docker compose -f deploy/compose/compose.yaml ps -a
+          docker compose -f deploy/compose/compose.yaml logs --no-color --tail 15 | while IFS= read -r l; do echo "::warning title=logs::$l"; done
       - name: Bajar servicios y borrar volúmenes
         if: always()
         run: docker compose -f deploy/compose/compose.yaml down -v
