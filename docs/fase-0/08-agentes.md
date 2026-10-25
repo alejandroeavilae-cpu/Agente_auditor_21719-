@@ -40,6 +40,8 @@ flowchart TD
   F -- límite alcanzado o sin enlaces --> E[Fin + reporte de cobertura]
 ```
 
+**Credenciales** (D-46): cuenta dedicada de mínimo privilegio creada por la organización para la auditoría; si la aplicación exige MFA, la organización decide cómo habilitarlo para esa cuenta; nunca cuentas personales ni administrativas.
+
 **Restricciones técnicas** (D-08):
 - Intercepción de red de Playwright: se abortan métodos distintos de GET/HEAD, salvo el formulario de login declarado.
 - Lista de dominios permitidos; cualquier otro destino se aborta y se registra.

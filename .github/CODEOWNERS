@@ -5,3 +5,5 @@
 /packages/audit-log/      @alejandroeavilae-cpu
 /.github/workflows/       @alejandroeavilae-cpu
 /LICENSE                  @alejandroeavilae-cpu
+/apps/api/src/auth/       @alejandroeavilae-cpu
+/packages/crypto/         @alejandroeavilae-cpu

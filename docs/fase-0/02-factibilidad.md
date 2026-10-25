@@ -18,7 +18,7 @@ Escala: **Alta** (sin bloqueos conocidos), **Media** (factible con condiciones),
 
 ## 2.2 Factibilidad económica (gratuidad)
 
-- Todo el stack recomendado es software libre o gratuito sin licencia de pago. [DECISIÓN D-03, D-17, D-12]
+- Todo el stack recomendado es, según conocimiento previo, software libre o gratuito sin licencia de pago. [SUPUESTO — se verificará con el inventario de licencias de la Fase 1; ver 20-recursos-y-costos]
 - **SQL Server no es software libre**. La edición Express 2025 es gratuita pero limitada: 50 GB por base de datos, 1.410 MB de buffer pool, el menor entre 1 socket o 4 núcleos, y no incluye SQL Server Agent, backups comprimidos ni cifrados, ni TDE. Las ediciones Developer no pueden usarse en producción. [VERIFICADO, fuente 2] Por eso PostgreSQL es el motor por defecto (D-03).
 - La instalación **nunca tiene costo total cero**: requiere servidor, electricidad, respaldo y personal. Ver `20-recursos-y-costos.md`.
 

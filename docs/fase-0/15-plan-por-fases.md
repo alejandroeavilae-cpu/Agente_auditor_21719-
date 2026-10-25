@@ -22,6 +22,27 @@ Tamaño relativo: S < M < L < XL. **No se dan duraciones en semanas**: dependen 
 | 13 | Publicación: 24 manuales, licencias de terceros, versión 1.0 firmada | L | Release firmada | ≥ 2 mantenedores (P-03) |
 | 14 | Piloto institucional controlado | L | Informe del piloto | Institución piloto (P-04) |
 
+## Asignación de los 28 módulos (sección 7) a fases
+
+| Módulo | Fase | Módulo | Fase |
+|---|---|---|---|
+| 1. Administración general | 2 | 15. Hallazgos | 7 |
+| 2. Organizaciones y tenants | 2 | 16. Recomendaciones | 6 |
+| 3. Usuarios, roles y permisos | 2 | 17. Planes correctivos | 8 |
+| 4. Registro de sistemas auditables | 3 | 18. Seguimiento de compromisos | 8 |
+| 5. Conectores | 3–4, 10 | 19. Dashboards | 9 |
+| 6. Gestión de credenciales | 3 | 20. Reportes | 9 |
+| 7. Descubrimiento de datos | 4 | 21. Orquestación de agentes | 3, 10 |
+| 8. Clasificación | 4, 10 | 22. Seguridad y trazabilidad | 1–3 |
+| 9. Inventario de activos | 4 | 23. Centro de confianza | 1–3, 11 |
+| 10. Registro de actividades de tratamiento | 7 | 24. Administración de normativa | 5 |
+| 11. Evaluación normativa | 5 | 25. Actualizaciones verificables | 1, 11 |
+| 12. Evaluación de riesgos | 6 | 26. Gestión de incidentes | 8 |
+| 13. Gestión de evidencias | 4 | 27. Configuración institucional | 2 |
+| 14. Auditorías | 7 | 28. Exportación e importación segura | 11 |
+
+Documentos de gobernanza aún no escritos y asignados a la Fase 1: guía de revisión de código, política de soporte detallada, política de versiones detallada, inventario de licencias de terceros.
+
 ## Criterios de aceptación transversales (sección 24 + ajustes)
 
 Los 12 criterios de la sección 24, más: WCAG 2.2 AA en pantallas nuevas (desde Fase 2), CI con ambos motores de BD (desde Fase 2), y prueba de valores centinela (desde Fase 3).

@@ -20,7 +20,7 @@ Titulares: usuarios de la plataforma (funcionarios, auditores, abogados). Datos:
 Entregables previstos (Fase 2 y Fase 13):
 - Registro de actividades de tratamiento propio (plantilla precargada en el tenant).
 - Aviso de privacidad modelo para la organización que instala.
-- Procedimiento de ejercicio de derechos de los usuarios (acceso, rectificación, supresión, oposición, portabilidad, bloqueo — art. 4 [VERIFICADO]) con funciones de exportación y supresión de cuenta.
+- Procedimiento de ejercicio de derechos de los usuarios (acceso, rectificación, supresión, oposición, portabilidad, bloqueo — [VERIFICADO por los epígrafes de los arts. 5 a 9 y 8° ter; contenido de cada derecho pendiente de revisión jurídica]) con funciones de exportación y supresión de cuenta.
 - Plantilla de evaluación de impacto de la propia plataforma.
 
 La bitácora de auditoría conserva identidad de actores incluso tras la supresión de una cuenta, por su finalidad de trazabilidad; esta tensión con el derecho de supresión requiere **[PENDIENTE] revisión jurídica** (P-01). Propuesta técnica: seudonimizar el actor (identificador estable) y guardar el vínculo identidad↔seudónimo en una tabla que sí puede suprimirse.

@@ -10,7 +10,9 @@ Estado: **Diseñado. Ningún control está revisado jurídicamente.** Este docum
 4. **Tipos de control** (sección 11): obligación legal · recomendación técnica · buena práctica · requisito condicionado · no aplicable.
 5. **Referencia exacta obligatoria**: cada control de tipo "obligación legal" cita artículo e inciso/literal. Un control sin referencia verificada no puede ser de tipo obligación legal.
 6. **Prohibido inventar**: artículos, plazos, montos de sanciones o interpretaciones. Los montos de multas **no se incluyen** en esta fase porque no se verificaron en fuente oficial. [PENDIENTE]
-7. **Revisión jurídica** (D-06): atributo `legalReviewStatus` = `pending | reviewed | rejected`, con nombre del revisor y fecha. Mientras esté `pending`, el motor no puede emitir "No conforme" ni "Conforme" para obligaciones legales; emite "Requiere validación".
+7. **Revisión jurídica en dos niveles** (D-06):
+   - *Nivel catálogo (proyecto):* atributo `legalReviewStatus` = `pending | reviewed | rejected` de cada control, con revisor y fecha. Indica si la **redacción y la referencia del control** fueron revisadas por un profesional del derecho del proyecto. Un control `pending` se muestra con advertencia visible en la interfaz y en todo reporte.
+   - *Nivel evaluación (organización):* el motor automático nunca emite "Conforme" ni "No conforme" en controles de tipo obligación legal; emite "Requiere validación". Solo un usuario de la organización con rol **Revisor jurídico** puede fijar esos resultados, con justificación y evidencia registradas.
 8. **Aplicabilidad**: condiciones por tipo de organización (órgano público, privado), tamaño (art. 14 septies) y actividades (p. ej. trata datos de NNA, biométricos, transferencias).
 
 ## 14.2 Motor de evaluación (sección 12)
@@ -75,8 +77,10 @@ Numeración y epígrafes de la Ley 19.628 según queda modificada por la Ley 21.
 | Art. 26 | Reglamento | A | Seguimiento normativo | — |
 | Art. 27 | Regla general de autorización (transferencia internacional) | A | Transferencias internacionales | Humano |
 | Art. 28 | Países adecuados y transferencia internacional | A | Transferencias internacionales | Humano |
+| Arts. 31–32 | No relevados en esta fase | — | [PENDIENTE] | — |
 | Arts. 29–30 quáter | Fiscalización y Agencia | A | Contexto institucional | — |
 | Arts. 33–40 | Responsabilidad, infracciones, sanciones, registro, prescripción | B | Contexto (sin montos en esta fase) | — |
+| Arts. 41–46 | Procedimientos de tutela, por infracción y reclamación judicial; responsabilidad en órganos públicos; deber de reserva de funcionarios | B | Contexto institucional | — |
 | Arts. 47–49 | Prevención de infracciones y modelo de prevención | B | Modelo de prevención (O-02) | Humano |
 | Art. 50 | Atribuciones del delegado | B | Delegado (O-02) | Humano |
 | Arts. 51–53 | Certificación del modelo de prevención | B | Modelo de prevención | Humano |

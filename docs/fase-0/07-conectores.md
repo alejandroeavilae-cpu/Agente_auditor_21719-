@@ -46,7 +46,9 @@ interface Connector {
 4. **Límites duros**: número de consultas, duración, filas por muestra y tiempo por consulta; al excederlos se cancela y se documenta la cobertura parcial.
 5. **Anti-SSRF**: resolución DNS controlada, rechazo de direcciones fuera de la lista de destinos autorizada, sin seguir redirecciones a otros hosts, y todo tráfico a través del egress-gateway.
 6. **Sin evasión**: prohibido implementar técnicas para eludir autenticación, captchas, controles de acceso o límites de tasa (sección 8).
-7. **Errores**: cada error se clasifica (autenticación, permiso, red, límite, datos) y se registra sin incluir credenciales ni valores.
+7. **Archivos hostiles** (D-45): todo archivo se parsea dentro del agente aislado con límites de tamaño, razón de descompresión, profundidad y tiempo; sin resolución de entidades XML externas; macros y fórmulas nunca se ejecutan.
+8. **Credenciales** (D-43): en Modalidades B y C se descifran solo en el agente local de la organización.
+9. **Errores**: cada error se clasifica (autenticación, permiso, red, límite, datos) y se registra sin incluir credenciales ni valores.
 
 ## 8.3 Conectores iniciales
 
@@ -55,7 +57,7 @@ interface Connector {
 | PostgreSQL | 3 | `information_schema`, `pg_catalog`, comentarios de columna | Opcional (`TABLESAMPLE` o `LIMIT`) | No ve datos en columnas JSON salvo muestreo; no ve vistas sin permiso. |
 | SQL Server | 3 | `INFORMATION_SCHEMA`, `sys.*`, propiedades extendidas | Opcional (`TOP n`) | Requiere permiso `VIEW DEFINITION`; no ve bases sin acceso. |
 | MySQL / MariaDB | 3 | `information_schema` | Opcional (`LIMIT`) | Similar a PostgreSQL. |
-| CSV | 3 | Encabezados, tipos inferidos sobre muestra | Inherente (se lee el archivo) | El archivo se procesa en memoria y no se almacena; se guarda hash. |
+| CSV | 3 | Encabezados, tipos inferidos sobre muestra | Inherente (se lee el archivo) | El archivo se procesa en memoria y no se almacena; se guarda el hash del **archivo completo** (no de valores). |
 | Excel (.xlsx) | 3 | Hojas, encabezados | Inherente | Macros nunca se ejecutan; fórmulas no se evalúan. |
 | PDF | 4 | Texto extraíble, campos de formulario | Inherente | Sin OCR en v1 (D-34): PDFs escaneados se reportan como "no analizables". |
 | Documentos (.docx) | 4 | Texto, tablas | Inherente | Sin macros. |

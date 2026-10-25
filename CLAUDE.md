@@ -4,7 +4,7 @@ Este archivo rige a cualquier agente de IA (orquestador o especializado) que con
 
 ## Fase actual
 
-**Fase 0 completada en estado "Diseñado". Fase 1 NO aprobada.** No escribir código de producción hasta que el responsable del proyecto apruebe explícitamente el inicio de la Fase 1 (decisión pendiente P-10).
+**Fase 0 entregada en estado "Diseñado", con revisión QA aplicada y pendiente de aprobación humana (P-10). Fase 1 NO aprobada.** No escribir código de producción hasta que el responsable del proyecto apruebe explícitamente el inicio de la Fase 1 (decisión pendiente P-10).
 
 ## Reglas no negociables
 

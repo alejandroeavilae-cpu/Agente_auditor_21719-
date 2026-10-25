@@ -13,13 +13,17 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-03 | Gratuidad / técnica | **PostgreSQL por defecto**; SQL Server como adaptador oficial probado en CI | SQL Server como único motor | Media (esquema común vía Prisma) |
 | D-04 | Seguridad | **Base de datos por tenant** + BD de control | Filas con tenantId; esquema por tenant | Baja una vez en producción |
 | D-05 | Cumplimiento | Fecha de vigencia normativa como **parámetro del catálogo versionado** (hoy 01-12-2026) | Fecha en código | Alta |
-| D-06 | Cumplimiento | Controles nacen **"pendiente de revisión jurídica"**; sin revisión, obligaciones legales solo pueden quedar "Requiere validación"; solo el rol Revisor jurídico confirma "Conforme/No conforme" | Evaluación legal automática | Alta |
+| D-06 | Cumplimiento | Revisión jurídica en dos niveles: (a) cada control del catálogo nace **"pendiente de revisión jurídica"** del proyecto y se muestra con advertencia; (b) en obligaciones legales el motor solo emite "Requiere validación" y **solo el rol Revisor jurídico de la organización** fija "Conforme/No conforme" | Evaluación legal automática | Alta |
 | D-07 | Seguridad / privacidad | IA generativa **local y desactivada por defecto**; solo sugiere; sin herramientas ni red | IA activa por defecto | Alta |
-| D-08 | Seguridad | "Solo lectura" web = bloqueo de métodos no seguros salvo login declarado, sin envío de formularios, heurística anti-destructiva, contenedor aislado | Confiar en la buena fe de la aplicación | Alta |
-| D-09 | Privacidad | **Muestreo de valores desactivado por defecto**; si se activa, se persisten solo estadísticas/hashes, nunca valores | Muestreo por defecto | Alta |
+| D-08 | Seguridad | "Solo lectura" web = solo GET/HEAD permitidos (lista permitida) salvo login declarado, sin envío de formularios, heurística anti-destructiva, contenedor aislado | Confiar en la buena fe de la aplicación | Alta |
+| D-09 | Privacidad | **Muestreo de valores desactivado por defecto**; si se activa, se persisten **solo estadísticas agregadas**; nunca valores ni hashes por valor (R-25) | Muestreo por defecto | Alta |
 | D-10 | Seguridad | Modalidad C: agente **solo saliente**, mTLS, política de compartición bloqueada por defecto, registro de lo transmitido | Panel que se conecta al agente | Media |
 | D-11 | Confianza | Firmas **Cosign (Sigstore)** + SBOM **CycloneDX (Syft)** + atestaciones de procedencia; material para verificación offline | Solo hashes publicados | Alta |
 | D-12 | Seguridad | Cifrado de sobre **AES-256-GCM** con clave maestra en archivo montado y DEK por tenant; OpenBao opcional; ningún gestor no libre obligatorio | HashiCorp Vault obligatorio | Media |
+| D-43 | Seguridad | En Modalidades B y C las **credenciales de los sistemas auditados se guardan solo en el agente local** de la organización (cifradas con clave local); la plataforma central guarda una referencia opaca y nunca puede descifrarlas | Credenciales centralizadas | Media |
+| D-44 | Seguridad / continuidad | **Respaldos lógicos por tenant cifrados por la aplicación** (independientes del motor, porque SQL Server Express no cifra respaldos), con claves respaldadas por separado; diseño detallado en Fase 2 | Depender del cifrado del motor | Alta |
+| D-45 | Seguridad | **Archivos y contenido de terceros son hostiles**: parseo de PDF/DOCX/XLSX/CSV en el agente aislado con límites de tamaño, descompresión y tiempo, sin entidades XML externas; reportes renderizados con el navegador **sin red**, con escape de todo texto de origen externo y neutralización de fórmulas (`= + - @`) en exportes CSV/Excel | Confiar en los parsers | Alta |
+| D-46 | Seguridad | El agente web usa **cuentas dedicadas de mínimo privilegio** en la aplicación auditada, creadas por la organización para la auditoría; nunca cuentas personales ni administrativas | Usar cuentas existentes | Alta |
 | D-23 | Gratuidad / confianza | Repositorio **privado hasta cerrar la Fase 1** (higiene de secretos y políticas listas); luego público, con aprobación del responsable | Publicar de inmediato | Hacer público es irreversible en la práctica |
 | D-24 | Seguridad | Vulnerabilidad crítica/alta con corrección disponible **bloquea publicación**; sin corrección, excepción documentada aprobada por otro mantenedor | Solo advertir | Alta |
 | D-32 | Confianza | **Adelantar** bitácora encadenada, registro de consultas, firmas y SBOM a Fases 1–3 | Todo en Fase 11 | Alta |
@@ -34,7 +38,7 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-16 | Frontend **React + Vite + React Aria Components + TanStack Query + Recharts**; objetivo **WCAG 2.2 AA**; sin CDN |
 | D-17 | Colas con **Valkey + BullMQ** |
 | D-18 | Autenticación propia: **argon2id + MFA TOTP** (obligatorio en roles con privilegios); WebAuthn posterior; **OIDC opcional**; sin proveedor de identidad empaquetado |
-| D-19 | Reportes: **PDF vía Playwright** desde HTML, **exceljs** para Excel, CSV nativo |
+| D-19 | Reportes: **PDF vía Playwright** desde HTML (sin red, ver D-45), **exceljs** para Excel, CSV nativo con neutralización de fórmulas |
 | D-20 | **RAG solo sobre el catálogo normativo**; embeddings en la BD; sin base vectorial adicional; citas verificadas contra IDs del catálogo |
 | D-21 | Modelo de IA por defecto elegido **por medición en Fase 10**; licencia libre obligatoria; ejecutable en CPU |
 | D-22 | CI/CD en **GitHub Actions**, diseñado para ser portable a Forgejo/Woodpecker |
@@ -44,7 +48,7 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-28 | **SemVer**; `CHANGELOG.md` en formato Keep a Changelog; soporte de seguridad a la última versión menor |
 | D-29 | Despliegue oficial con **Docker Compose** (perfiles por modalidad); Kubernetes fuera de alcance en v1 |
 | D-30 | **Sin telemetría** y **sin actualizaciones automáticas**; actualizaciones manuales verificadas |
-| D-31 | Bitácora **solo-anexar con encadenamiento de hash** por tenant, verificable con CLI independiente |
+| D-31 | Bitácora **solo-anexar con encadenamiento de hash** por tenant, verificable con CLI independiente, con **anclaje externo**: el último hash se firma periódicamente y se exporta a un destino controlado por la organización (archivo descargado, medio de solo escritura u otro sistema), porque quien controla la BD podría reescribir la cadena completa (R-26) |
 | D-33 | Conectores v1: PostgreSQL, SQL Server, MySQL, CSV, Excel, REST (Fase 3); PDF y DOCX (Fase 4); web con Playwright (Fase 10). Oracle, SAP, SharePoint, Salesforce y legacy: solo interfaces |
 | D-34 | **OCR fuera de alcance** en v1 |
 | D-35 | Interfaz solo en **español (es-CL)**, con arquitectura i18n preparada |
@@ -69,4 +73,5 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | P-07 | Nombre definitivo del proyecto | Preferencia del responsable | No bloquea |
 | P-08 | Hardware real del piloto | Depende de la institución | Fase 14 |
 | P-09 | Espejo del repositorio en una forja libre (Codeberg u otra) | Cuenta y compromiso del responsable | No bloquea |
+| P-11 | Usuario de GitHub de mantenedores en `CODEOWNERS` y protección de rama (2 aprobaciones en áreas sensibles) — depende de P-03 y de que el repositorio sea público o el plan lo permita | Configuración de cuenta y personas | Gobernanza efectiva |
 | P-10 | **Aprobación de la Fase 0 e inicio de la Fase 1** | Puerta de fase humana (sección 23) | Todo el desarrollo |

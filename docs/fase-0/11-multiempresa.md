@@ -24,7 +24,7 @@ Fundamento: la especificación exige "aislamiento de bases de datos" de forma li
 | Registros (logs) | Campo `tenantId` obligatorio; la bitácora de auditoría vive en la BD del tenant |
 | Reportes | Generados por worker con contexto de tenant; archivo cifrado con la clave del tenant |
 | Agentes (Modalidad B/C) | Certificado de cliente mTLS por tenant; un agente solo puede publicar en su tenant |
-| Operador de plataforma | Sin acceso a contenido; break-glass con aprobación del tenant y registro en su bitácora (C-09) |
+| Operador de plataforma | Sin acceso a contenido; break-glass con aprobación del tenant y registro en su bitácora (C-09). **Riesgo residual:** es un control lógico; quien administra el host y la clave maestra puede técnicamente leer los datos de los tenants (R-18). Las credenciales de sistemas auditados no están en el centro (D-43). |
 
 ## 12.3 Ciclo de vida del tenant
 

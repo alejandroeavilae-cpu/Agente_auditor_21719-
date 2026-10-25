@@ -16,7 +16,7 @@ Estado: **Diseñado**. Ninguna afirmación de este documento implica que el soft
 | Amenaza | Ejemplo | Control principal |
 |---|---|---|
 | Suplantación | Robo de sesión de un responsable de auditoría | MFA TOTP obligatorio para roles con privilegios; sesiones con cookie `HttpOnly`, `Secure`, `SameSite=Strict`; rotación de sesión al autenticarse |
-| Manipulación | Alterar hallazgos o la bitácora | Bitácora encadenada por hash (D-31), exportable y verificable con herramienta independiente |
+| Manipulación | Alterar hallazgos o la bitácora | Bitácora encadenada por hash (D-31) con anclaje externo periódico del último hash firmado; la cadena por sí sola **no** protege contra quien reescribe toda la BD (R-26) |
 | Repudio | Negar haber autorizado una auditoría | Autorización sellada en bitácora con identidad, fecha y hash del documento |
 | Divulgación | Exfiltración de credenciales o inventario | Cifrado de sobre por tenant (D-12), aislamiento por BD (D-04), minimización (D-09), sin telemetría |
 | Denegación de servicio | Agente sobrecarga un sistema productivo | Límites duros por conector, un trabajo por sistema, ventanas horarias configurables |
@@ -78,7 +78,7 @@ Estado: **Diseñado**. Ninguna afirmación de este documento implica que el soft
 | Cosign | Firma | No (paso obligatorio de publicación) |
 | OWASP ZAP (baseline) | DAST sobre entorno efímero | Sí, en alertas altas (desde Fase 2) |
 | OpenSSF Scorecard | Prácticas del repositorio | No; informe público |
-| CodeQL | Análisis semántico | Solo si el repositorio es público o el plan lo permite (S-05) |
+| CodeQL | Análisis semántico | Solo si el repositorio es público o el plan lo permite (S-07) |
 
 **D-24 — Regla de bloqueo**: una vulnerabilidad crítica o alta **con corrección disponible** bloquea la publicación. Sin corrección disponible, se requiere una excepción documentada (análisis de explotabilidad, mitigación, fecha de revisión) aprobada por un mantenedor distinto del autor.
 

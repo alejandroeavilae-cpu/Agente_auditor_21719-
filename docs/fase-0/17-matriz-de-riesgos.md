@@ -21,12 +21,18 @@ Escala cualitativa 1–5 para probabilidad (P) e impacto (I); severidad = P × I
 | R-15 | Org | Único mantenedor: abandono o sobrecarga | 4 | 5 | 20 | P-03; documentación; alojamiento institucional (P-02) | Responsable |
 | R-16 | Org | Alcance excesivo retrasa una versión útil | 4 | 3 | 12 | MVP en Fase 9 | Orquestador |
 | R-17 | Tec | Verificación de firmas no funciona offline | 3 | 3 | 9 | Prueba temprana en Fase 1 | DevOps |
-| R-18 | Seg | Operador de Modalidad B accede a datos de un tenant | 2 | 4 | 8 | C-09: rol sin acceso + break-glass registrado | Backend |
+| R-18 | Seg | Operador de Modalidad B accede a datos de un tenant (quien controla el host y la clave maestra puede leer todo: el control es lógico, no técnico) | 3 | 4 | 12 | C-09: rol sin acceso + break-glass registrado; **riesgo residual explícito** comunicado a los tenants; D-43 deja fuera las credenciales | Backend |
 | R-19 | Org | Baja adopción empresarial por AGPL | 3 | 2 | 6 | Aceptado (D-01) | Responsable |
 | R-20 | Tec | Cambios de licencia o costo en herramientas de CI (p. ej. GitHub Actions) | 2 | 3 | 6 | S-05; CI portable | DevOps |
 | R-21 | Priv | Capturas de pantalla del agente web contienen datos personales | 3 | 4 | 12 | Enmascaramiento antes de guardar; capturas opcionales | Backend |
 | R-22 | Seg | Sobrecarga de sistemas productivos por consultas del agente | 2 | 4 | 8 | Límites, ventanas horarias, un trabajo por sistema | Backend |
 | R-23 | Leg | Afirmaciones del proyecto sobre la ley resultan inexactas | 3 | 4 | 12 | Etiquetas epistémicas; fuentes citadas; revisión jurídica | Responsable |
 | R-24 | Tec | Pérdida de la clave maestra impide recuperar datos | 2 | 5 | 10 | Procedimiento de respaldo de claves (O-07) | DevOps |
+| R-25 | Priv | Hashes de valores de baja entropía (p. ej. RUT) revertidos por fuerza bruta | 3 | 4 | 12 | D-09: solo estadísticas agregadas; HMAC con clave fuera de la BD si se deduplica | Backend |
+| R-26 | Seg | Quien controla la BD reescribe la bitácora completa y la cadena sigue siendo válida | 2 | 5 | 10 | D-31: anclaje externo periódico firmado; PT-21 | Backend/DevOps |
+| R-27 | Seg | Compromiso de la API o del worker central en Modalidad B expone a todos los tenants | 2 | 5 | 10 | D-43 (credenciales fuera del centro), DEK por tenant, opción de worker por tenant a evaluar en Fase 2, endurecimiento del host | DevOps |
+| R-28 | Seg | Archivos maliciosos (bomba zip, XXE, exploits de parsers) | 3 | 4 | 12 | D-45: parseo aislado con límites; PT-22 | Backend |
+| R-29 | Seg | Contenido hostil de sistemas auditados en reportes (XSS/SSRF en el renderizador, inyección de fórmulas CSV) | 3 | 3 | 9 | D-45: renderizado sin red, escape, neutralización; PT-23 | Backend/Frontend |
+| R-30 | Seg | Credenciales del agente web con privilegios excesivos o con MFA personal en la aplicación auditada | 3 | 4 | 12 | D-46: cuentas dedicadas de mínimo privilegio | Responsable institucional |
 
 **Riesgos más altos (≥ 15):** R-01, R-15, R-09. Los dos primeros no son técnicos y dependen de decisiones humanas pendientes.

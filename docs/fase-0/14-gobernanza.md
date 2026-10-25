@@ -19,13 +19,13 @@ Modelo de decisión: consenso razonable entre mantenedores; en desacuerdo, decid
 
 - Toda contribución firmada con **DCO** (`git commit -s`) (D-02).
 - **Ninguna contribución se fusiona sin revisión humana** (sección 20). La rama principal está protegida: revisión aprobada, CI verde y commits firmados con DCO.
-- Cambios en áreas sensibles (`packages/connector-sdk`, autenticación, cifrado, `catalog/`, workflows de CI) requieren **dos aprobaciones**, una de ellas de un mantenedor distinto del autor (vía `CODEOWNERS`).
+- Cambios en áreas sensibles (`packages/connector-sdk`, autenticación, cifrado, `catalog/`, workflows de CI) requieren **dos aprobaciones**, una de ellas de un mantenedor distinto del autor (vía `CODEOWNERS`). **[PENDIENTE P-03]:** con un único mantenedor esta regla no puede cumplirse hoy; hasta que exista un segundo mantenedor, los cambios en áreas sensibles quedan registrados como "sin segunda revisión" y no pueden publicarse en una versión estable.
 - Nuevas dependencias requieren justificación en el PR, licencia compatible y verificación de mantenimiento.
 
 ## 15.3 Versiones y soporte
 
 - **SemVer** (D-28). Catálogo normativo con versión propia independiente del software.
-- Se da soporte de seguridad a la última versión menor publicada. [ESTIMACIÓN: ampliar cuando haya más mantenedores]
+- Se da soporte de seguridad a la última versión menor publicada. [DECISIÓN D-28; ampliar cuando haya más mantenedores]
 - Notas de versión en `CHANGELOG.md` (formato Keep a Changelog).
 
 ## 15.4 Gestión de vulnerabilidades

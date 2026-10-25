@@ -49,7 +49,7 @@ erDiagram
 | `Role`, `Permission` | RBAC + condiciones contextuales | Roles base en §7.5. |
 | `System` | nombre, tipo, responsable, criticidad, entorno | Sistema auditable registrado. |
 | `ConnectorConfig` | tipo, host, puerto, opciones, límites (consultas, tiempo, filas de muestra) | Límites por defecto conservadores. |
-| `CredentialRef` | id, algoritmo, ciphertext, keyVersion, createdBy, revokedAt | Cifrado de sobre AES-256-GCM (D-12). Nunca se devuelve por la API. |
+| `CredentialRef` | id, algoritmo, ciphertext, keyVersion, createdBy, revokedAt | Cifrado de sobre AES-256-GCM (D-12). Nunca se devuelve por la API. En Modalidades B y C la credencial **vive solo en el agente local** de la organización; la plataforma central guarda únicamente una referencia opaca (D-43). |
 | `AuditAuthorization` | alcance (sistemas, operaciones), vigenciaDesde/Hasta, firmante, documentoHash, estado | Sin autorización vigente no hay ejecución (A-01). |
 | `ScanRun` | auditId, estado, inicio, fin, limitesAplicados, motivoCancelación | Cancelable en cualquier momento. |
 | `QueryLogEntry` | scanRunId, conector, operación, texto de consulta normalizado, filas leídas, duración, hash encadenado | Registro de consultas (Centro de Confianza §15.2). Nunca guarda valores devueltos. |
@@ -84,7 +84,7 @@ erDiagram
 | Administrador de organización | Usuarios, roles, configuración institucional. No ejecuta auditorías por sí solo (separación de funciones). |
 | Responsable de auditoría | Crea autorizaciones (requiere segundo aprobador para alcance amplio), inicia y cancela ejecuciones. |
 | Auditor | Revisa clasificaciones, evaluaciones, hallazgos. |
-| Revisor jurídico | Único rol que puede validar controles de tipo "obligación legal" como "No conforme" o "Conforme". |
+| Revisor jurídico | Único rol que puede fijar "Conforme" o "No conforme" en controles de tipo "obligación legal" (D-06, nivel evaluación). Distinto del revisor jurídico del catálogo, que pertenece al proyecto. |
 | Responsable de remediación | Gestiona acciones correctivas asignadas. |
 | Lector | Solo dashboards y reportes. |
 | Operador de plataforma (BD de control) | Gestiona tenants; sin acceso a contenido (C-09). |

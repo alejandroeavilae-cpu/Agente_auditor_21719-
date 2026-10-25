@@ -14,7 +14,7 @@ Una plataforma de software libre, gratuita y autohospedable que ayuda a organiza
 
 - La Ley 21.719 fue publicada en el Diario Oficial el 13-12-2024 y modifica la Ley 19.628. **[VERIFICADO]** (fuente 1)
 - Su entrada en vigencia legal es el **1 de diciembre de 2026**. **[VERIFICADO]** (fuentes 2, 3)
-- El Ejecutivo ingresó el 01-09-2026 un proyecto (boletín 18.623-07) que propone trasladar la vigencia al **1 de diciembre de 2027**. Al 21–22 de octubre de 2026 seguía en primer trámite en el Senado: la Comisión de Constitución aprobó en general la idea de legislar y el Ejecutivo hizo presente urgencia de discusión inmediata. **No es ley.** **[VERIFICADO]** (fuentes 4, 5, 6)
+- El Ejecutivo ingresó el 01-09-2026 un proyecto (boletín 18.623-07) que propone trasladar la vigencia al **1 de diciembre de 2027**. Al 21–22 de octubre de 2026 seguía en primer trámite en el Senado; según las mismas fuentes, la Comisión de Constitución aprobó en general la idea de legislar y el Ejecutivo hizo presente urgencia de discusión inmediata. **No es ley.** **[FUENTE SECUNDARIA]** (fuentes 4, 5, 6; coincidentes entre sí, no contrastadas con la ficha oficial del Senado)
 - Consecuencia de diseño: la fecha de vigencia no se escribe en el código; es un **parámetro del catálogo normativo versionado** (decisión D-05).
 
 ## Decisiones estructurales tomadas (detalle en `21-decisiones.md`)

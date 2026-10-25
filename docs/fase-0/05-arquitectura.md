@@ -90,14 +90,15 @@ flowchart LR
   A --> Q --> K
   K --> TD
   K -. sugerencias .-> O
-  Q --> AG
+  IN[ingesta de agentes<br/>mTLS por tenant] --> A
+  AG -- trabajos y resultados,<br/>conexión saliente --> IN
   AG --> EG --> S1 & S2 & S3 & S4
-  AG -- metadatos y evidencias --> Q
 ```
 
 Reglas del diagrama:
 - El **agente** es el único componente que alcanza sistemas auditados, y solo a través del **egress-gateway** configurado desde la autorización de auditoría vigente.
-- **Ollama** no tiene acceso a red ni a herramientas; recibe texto minimizado y devuelve JSON validado.
+- **Ollama** no tiene salida a Internet ni acceso a otros servicios ni herramientas: solo es alcanzable por el worker en una red interna; recibe texto minimizado y devuelve JSON validado.
+- El **agente nunca se conecta a Valkey ni a las BD de la plataforma**: obtiene trabajos y entrega resultados solo a través del endpoint de ingesta autenticado con certificado de su tenant. Así, comprometer un agente no da acceso a colas ni datos de otros tenants.
 - La **API** nunca se conecta a sistemas auditados.
 
 ## 6.2 Flujo de una auditoría
@@ -118,7 +119,8 @@ sequenceDiagram
   API->>AG: Trabajo con alcance firmado
   AG->>SYS: Consultas de metadatos (solo lectura)
   AG->>BIT: Registra cada consulta
-  AG->>CLS: Metadatos (sin valores por defecto)
+  AG->>API: Metadatos vía ingesta autenticada (sin valores por defecto)
+  API->>CLS: Encola clasificación (worker)
   CLS->>EV: Clasificaciones con confianza y método
   EV->>H: Controles "Requiere validación"
   H->>EV: Valida / corrige con evidencia
@@ -158,10 +160,10 @@ flowchart TB
     fs[(Evidencias: carpeta y clave por tenant)]
   end
   subgraph org1["Organización 1"]
-    ag1[agent] --> s1[sistemas]
+    ag1[agent<br/>credenciales locales] --> eg1[egress-gateway] --> s1[sistemas]
   end
   subgraph org2["Organización 2"]
-    ag2[agent] --> s2[sistemas]
+    ag2[agent<br/>credenciales locales] --> eg2[egress-gateway] --> s2[sistemas]
   end
   ag1 -- mTLS, saliente --> caddy
   ag2 -- mTLS, saliente --> caddy

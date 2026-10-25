@@ -45,6 +45,18 @@ Objetivo · caso · datos utilizados · resultado esperado · resultado obtenido
 | PT-18 | §5 C | Agente con política por defecto | Ningún dato sale; registro de transmisiones vacío |
 | PT-19 | §14 | IA solicita ejecutar cambio en sistema auditado | No existe camino de código; prueba de arquitectura (sin cliente de escritura en el agente) |
 | PT-20 | §21 resiliencia | Cancelar ejecución en curso | Se detiene, estado "cancelled", cobertura parcial documentada |
+| PT-21 | D-31 | Reescribir toda la cadena de la bitácora en la BD | La verificación contra el último anclaje externo detecta la alteración |
+| PT-22 | D-45 | Ingerir bomba zip (.xlsx/.docx), XML con entidad externa y PDF malformado | Límites cortan el proceso; sin lectura de archivos locales ni red; error registrado |
+| PT-23 | D-45 | Nombre de campo con `<script>` y valor CSV que empieza con `=` | Reporte PDF sin ejecución ni peticiones de red; celda exportada neutralizada |
+| PT-24 | §1.1-12 | Iniciar ejecución sin autorización vigente o con autorización vencida | Rechazo y registro en bitácora |
+| PT-25 | C-10 | Configurar proveedor de IA remoto sin habilitación explícita | Bloqueado por la lista de destinos; aviso al administrador |
+| PT-26 | §5-C | Revocar certificado del agente y ejecutar desconexión permanente | Envíos rechazados; credenciales y configuración del destino eliminadas |
+| PT-27 | §13 | Cálculo de riesgo inherente/residual con matriz configurada | Valores según tabla de prueba; sin traducción a montos |
+| PT-28 | §14 | Cerrar acción correctiva sin evidencia de cierre | Rechazado |
+| PT-29 | §22 | Regenerar datos sintéticos con la misma semilla | Salida idéntica (hash); sin datos reales |
+| PT-30 | D-43 | Intentar obtener credenciales de un sistema desde la plataforma central (Modalidad B) | No existen en el centro; solo referencia opaca |
+
+Esta lista es una **selección inicial**: el conjunto completo de casos por módulo se escribe al planificar cada fase, antes de implementar, y se incorpora a la matriz de trazabilidad.
 
 ## 19.4 Datos sintéticos (sección 22)
 

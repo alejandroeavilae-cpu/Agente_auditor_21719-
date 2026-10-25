@@ -1,6 +1,6 @@
 # 17. Historias de usuario
 
-Formato: *Como [rol], quiero [acción], para [beneficio].* Cada historia tiene criterios de aceptación (CA) verificables. IDs `HU-xx` referenciados en la matriz de trazabilidad.
+Formato: *Como [rol], quiero [acción], para [beneficio].* Las historias de las Fases 1–3 tienen criterios de aceptación (CA) aquí; el resto recibirá sus CA al planificar su fase (regla: CA escritos antes de implementar). IDs `HU-xx` referenciados en la matriz de trazabilidad.
 
 ## Instalación y confianza
 
