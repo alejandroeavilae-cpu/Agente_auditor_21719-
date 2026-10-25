@@ -1,0 +1,7 @@
+# Áreas sensibles: requieren revisión de mantenedores (ver GOVERNANCE.md).
+*                         @alejandroeavilae-cpu
+/catalog/                 @alejandroeavilae-cpu
+/packages/connector-sdk/  @alejandroeavilae-cpu
+/packages/audit-log/      @alejandroeavilae-cpu
+/.github/workflows/       @alejandroeavilae-cpu
+/LICENSE                  @alejandroeavilae-cpu
