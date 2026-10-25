@@ -24,7 +24,7 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-44 | Seguridad / continuidad | **Respaldos lógicos por tenant cifrados por la aplicación** (independientes del motor, porque SQL Server Express no cifra respaldos), con claves respaldadas por separado; diseño detallado en Fase 2 | Depender del cifrado del motor | Alta |
 | D-45 | Seguridad | **Archivos y contenido de terceros son hostiles**: parseo de PDF/DOCX/XLSX/CSV en el agente aislado con límites de tamaño, descompresión y tiempo, sin entidades XML externas; reportes renderizados con el navegador **sin red**, con escape de todo texto de origen externo y neutralización de fórmulas (`= + - @`) en exportes CSV/Excel | Confiar en los parsers | Alta |
 | D-46 | Seguridad | El agente web usa **cuentas dedicadas de mínimo privilegio** en la aplicación auditada, creadas por la organización para la auditoría; nunca cuentas personales ni administrativas | Usar cuentas existentes | Alta |
-| D-23 | Gratuidad / confianza | Repositorio **privado hasta cerrar la Fase 1** (higiene de secretos y políticas listas); luego público, con aprobación del responsable | Publicar de inmediato | Hacer público es irreversible en la práctica |
+| D-23 | Gratuidad / confianza | Repositorio **privado hasta cerrar la Fase 1**; luego público. **Confirmado por el responsable el 25-10-2026 08:42: el repositorio pasará a ser público.** Pendiente de ejecución por el responsable (P-14) | Publicar de inmediato | Hacer público es irreversible en la práctica |
 | D-24 | Seguridad | Vulnerabilidad crítica/alta con corrección disponible **bloquea publicación**; sin corrección, excepción documentada aprobada por otro mantenedor | Solo advertir | Alta |
 | D-32 | Confianza | **Adelantar** bitácora encadenada, registro de consultas, firmas y SBOM a Fases 1–3 | Todo en Fase 11 | Alta |
 
@@ -97,4 +97,5 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | ID | Pendiente | Responsable |
 |---|---|---|
 | P-12 | Generar la clave de firma del proyecto y cargarla como secreto (guía: `docs/fase-1/clave-de-firma.md`) | Responsable del proyecto |
+| P-14 | Hacer público el repositorio (decisión D-23 confirmada): antes, decidir si los commits mantienen el correo personal del autor; después, activar el reporte privado de vulnerabilidades (P-05) y revisar la visibilidad de los paquetes en GHCR | Responsable del proyecto |
 | P-13 | ~~Fijar imágenes base por digest~~ **Resuelto en Fase 1** (Dockerfile, Compose y release usan digests registrados por CI el 25-10-2026) | — |

@@ -68,7 +68,7 @@ D-47 a D-57 en `docs/fase-0/21-decisiones.md` §4 (TypeScript 6.0, clave de firm
 1. **Sin clave de firma del proyecto (P-12).** Las versiones se firman con clave efímera hasta que el responsable siga `clave-de-firma.md`. Confianza de origen: **no establecida**.
 2. **Registro de transparencia público (D-55):** cada firma registra una entrada en Rekor (Sigstore); ya ocurrió con las pre-versiones de prueba. Para `SHA256SUMS` contiene solo hash y clave pública [VERIFICADO]; para imágenes y atestaciones podría incluir la referencia `ghcr.io/<propietario>/…` [SUPUESTO, no verificado].
 3. **Registros de CI no legibles desde el entorno del agente**; por eso los hallazgos se publican como anotaciones (D-53).
-4. **El repositorio sigue privado** (D-23): CodeQL, OpenSSF Scorecard y el reporte privado de vulnerabilidades requieren repositorio público.
+4. **El repositorio sigue privado** hasta que el responsable ejecute la decisión D-23 (confirmada el 25-10-2026; P-14). Los workflows de CodeQL y OpenSSF Scorecard ya están incluidos y se activan solos cuando el repositorio sea público; el reporte privado de vulnerabilidades se activa en la configuración.
 5. **Bitácora:** la eliminación de entradas posteriores al último anclaje no es detectable (R-26); la verificación se probó sobre el formato de exportación, no sobre la base de datos (aún no existe).
 6. TLS del perfil institucional (CA interna, D-37) se define en la Fase 2; el perfil local usa HTTP solo en 127.0.0.1.
 7. Las dependencias Go de Caddy no pasan por la política de licencias automática (que cubre npm); quedan inventariadas en el SBOM de la imagen web.
