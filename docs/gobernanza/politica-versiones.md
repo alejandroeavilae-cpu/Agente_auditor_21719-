@@ -13,7 +13,7 @@ Mientras la versión sea **0.x**, cualquier versión menor puede introducir camb
 
 ## Reglas de publicación
 
-1. Solo se publica desde una etiqueta `vX.Y.Z` creada sobre `main` con CI en verde.
+1. Se publica desde una etiqueta `vX.Y.Z` sobre `main`, o empujando una rama `release/vX.Y.Z` (el workflow crea la etiqueta). En ambos casos con CI en verde; las versiones estables solo desde commits de `main`.
 2. Toda versión incluye: imágenes en GHCR con digest, SBOM CycloneDX, `SHA256SUMS` firmado, paquete offline y notas en `CHANGELOG.md`.
 3. Una versión firmada con clave efímera de prueba (sin clave del proyecto) se marca como pre-versión y no debe instalarse en producción.
 4. Vulnerabilidad alta o crítica con corrección disponible bloquea la publicación (D-24).
