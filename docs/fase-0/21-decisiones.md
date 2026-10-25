@@ -75,3 +75,23 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | P-09 | Espejo del repositorio en una forja libre (Codeberg u otra) | Cuenta y compromiso del responsable | No bloquea |
 | P-11 | Usuario de GitHub de mantenedores en `CODEOWNERS` y protección de rama (2 aprobaciones en áreas sensibles) — depende de P-03 y de que el repositorio sea público o el plan lo permita | Configuración de cuenta y personas | Gobernanza efectiva |
 | P-10 | ~~Aprobación de la Fase 0 e inicio de la Fase 1~~ | **Resuelta: aprobada por Alejandro Ávila el 25-10-2026 a las 03:33 (hora de Chile)** | — |
+
+## 4. Decisiones tomadas durante la Fase 1 (25-10-2026)
+
+| ID | Decisión | Fundamento |
+|---|---|---|
+| D-47 | **TypeScript 6.0.3**, no 7.0 | typescript-eslint 8.72 exige TypeScript < 6.1 [VERIFICADO: peerDependencies en npm]. Reevaluar cuando typescript-eslint soporte 7.x |
+| D-48 | Firma de versiones con **clave Cosign del proyecto**, generada y custodiada por el responsable (secreto `COSIGN_SIGNING_KEY_PEM`); sin ella, el workflow firma con una **clave efímera de prueba** y lo declara en las notas. La verificación offline usa la clave pública con `--insecure-ignore-tlog` | La clave privada no debe pasar por un sistema de IA ni por el chat; la verificación por clave funciona sin Internet (R-17). La firma keyless con registro público se evaluará al hacer público el repositorio |
+| D-49 | **pnpm 10.28.0** fijado en `packageManager`; Node.js **24** (`.nvmrc`) | Node.js 26 aún no era LTS al iniciar la Fase 1 [FUENTE SECUNDARIA]; mantiene D-14 |
+| D-50 | **PostgreSQL 18** y **Valkey 8** (imágenes alpine oficiales) | Versiones mayores estables y conservadoras [SUPUESTO: disponibilidad verificada en CI]; fijación por digest pendiente (P-13) |
+| D-51 | NestJS 12 sobre **Express** (`@nestjs/platform-express`) y dependencias inyectadas con `@Inject` explícito | Plataforma por defecto de NestJS; la inyección explícita no depende de metadatos de decoradores, lo que simplifica pruebas |
+| D-52 | **Acciones de GitHub fijadas por SHA de commit** con comentario de versión | Cadena de suministro (sección 15.4) |
+| D-53 | Los escaneos publican sus hallazgos como **anotaciones** de GitHub Actions y la regla D-24 la aplica un script propio (`scripts/ci-report-trivy.mjs`) | Hallazgos visibles para cualquier revisor sin descargar registros |
+| D-54 | Política de licencias de dependencias aplicada en CI (`scripts/check-licenses.mjs`) e inventario `THIRD_PARTY_LICENSES.md` generado y versionado | Sección 4; cualquier licencia nueva requiere decisión registrada |
+
+### Pendientes nuevos
+
+| ID | Pendiente | Responsable |
+|---|---|---|
+| P-12 | Generar la clave de firma del proyecto y cargarla como secreto (guía: `docs/fase-1/clave-de-firma.md`) | Responsable del proyecto |
+| P-13 | Fijar imágenes base por digest (los digests se registran en cada ejecución de CI) | Fase 2 |

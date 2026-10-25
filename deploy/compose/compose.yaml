@@ -73,6 +73,9 @@ services:
   valkey:
     <<: *hardening
     image: valkey/valkey:8-alpine
+    # Se ejecuta directamente con el usuario sin privilegios de la imagen: con
+    # cap_drop ALL el entrypoint no puede cambiar de usuario por sí mismo.
+    user: valkey
     command: ["valkey-server", "/run/secrets/valkey.conf"]
     secrets: [valkey.conf]
     read_only: true

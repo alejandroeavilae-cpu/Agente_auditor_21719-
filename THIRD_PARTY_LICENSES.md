@@ -167,7 +167,7 @@ Total de paquetes: 235
 | mime-types | 2.1.35, 3.0.2 | MIT |
 | minimatch | 10.2.6 | BlueOak-1.0.0 |
 | ms | 2.1.3 | MIT |
-| multer | 2.4.0 | MIT |
+| multer | 2.5.0 | MIT |
 | nanoid | 3.3.20 | MIT |
 | natural-compare | 1.4.0 | MIT |
 | negotiator | 1.1.0 | MIT |

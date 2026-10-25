@@ -92,7 +92,7 @@ jobs:
       - name: Registrar digests de imágenes base (para fijarlas por digest)
         if: always()
         run: |
-          for img in postgres:18-alpine valkey/valkey:8-alpine node:24-alpine caddy:2-alpine; do
+          for img in postgres:18-alpine valkey/valkey:8-alpine node:24-alpine golang:1.27-alpine alpine:3.23; do
             docker pull -q "$img" >/dev/null 2>&1 || true
             echo "$img -> $(docker image inspect --format '{{index .RepoDigests 0}}' "$img" 2>/dev/null || echo 'no disponible')"
           done | tee image-digests.txt
