@@ -30,9 +30,13 @@ echo "web 8080 -> $WEB_BIND"
 [ "$WEB_BIND" = "127.0.0.1:$PORT" ] || fail "web debe publicarse solo en 127.0.0.1:$PORT (obtenido: $WEB_BIND)"
 for pair in api:3000 postgres:5432 valkey:6379; do
   svc="${pair%%:*}"; p="${pair#*:}"
-  if out="$($COMPOSE port "$svc" "$p" 2>/dev/null)" && [ -n "$out" ] && [ "$out" != ":0" ]; then
+  # "docker compose port" devuelve "IP:puerto" si está publicado; si no, falla o devuelve
+  # algo como ":0" o "invalid IP:0". Solo una dirección válida con puerto > 0 cuenta.
+  out="$($COMPOSE port "$svc" "$p" 2>/dev/null || true)"
+  if echo "$out" | grep -Eq '^([0-9]{1,3}(\.[0-9]{1,3}){3}|\[[0-9a-fA-F:]+\]):[1-9][0-9]*$'; then
     fail "$svc publica el puerto $p ($out)"
   fi
+  echo "$svc:$p no publicado ($out)"
 done
 curl -s --max-time 3 "http://127.0.0.1:3000/health" >/dev/null 2>&1 && fail "la API es accesible directamente"
 
