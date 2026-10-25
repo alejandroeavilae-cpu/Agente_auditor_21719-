@@ -97,5 +97,5 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | ID | Pendiente | Responsable |
 |---|---|---|
 | P-12 | Generar la clave de firma del proyecto y cargarla como secreto (guía: `docs/fase-1/clave-de-firma.md`) | Responsable del proyecto |
-| P-14 | Hacer público el repositorio (decisión D-23 confirmada): antes, decidir si los commits mantienen el correo personal del autor; después, activar el reporte privado de vulnerabilidades (P-05) y revisar la visibilidad de los paquetes en GHCR | Responsable del proyecto |
+| P-14 | Hacer público el repositorio (decisión D-23 confirmada). **Correo de autor: el responsable decidió el 25-10-2026 mantener su correo personal en los commits y firmas DCO**, que quedará público. Después de publicar: activar el reporte privado de vulnerabilidades (P-05) y revisar la visibilidad de los paquetes en GHCR | Responsable del proyecto |
 | P-13 | ~~Fijar imágenes base por digest~~ **Resuelto en Fase 1** (Dockerfile, Compose y release usan digests registrados por CI el 25-10-2026) | — |
