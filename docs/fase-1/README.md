@@ -24,7 +24,7 @@ Estructura reservada sin implementar (solo README): `apps/agent`, `packages/shar
 
 ## 2. Evidencia de pruebas
 
-Todas las ejecuciones son reales; los enlaces llevan a GitHub Actions (repositorio privado: requieren acceso). Evidencia vigente: commit `e84f473` (CI [40174189402](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40174189402), Seguridad [40174189383](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40174189383)) y publicación de prueba `v0.1.0-rc.2` ([40174458705](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40174458705)).
+Todas las ejecuciones son reales; los enlaces llevan a GitHub Actions (repositorio privado: requieren acceso). Evidencia vigente: commit `d6347dc` (CI [40175555078](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40175555078), Seguridad [40175555160](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40175555160)) y publicación de prueba `v0.1.0-rc.3` ([40175871566](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40175871566)), que además escanea el digest publicado antes de firmar. Ejecuciones anteriores: CI 40174189402, release 40174458705 (`v0.1.0-rc.2`).
 
 | ID | Prueba | Dónde | Resultado |
 |---|---|---|---|
@@ -40,7 +40,7 @@ Todas las ejecuciones son reales; los enlaces llevan a GitHub Actions (repositor
 | PT-02 | Firma de `SHA256SUMS` verificada **sin red** (`unshare --net`) y archivo alterado rechazado; firmas de imágenes verificadas | Release 40174458705 | Aprobada **con clave efímera** (mecanismo, no confianza de origen) |
 | PT-01 (parcial) | Paquete offline extraído, IDs de imágenes comparados con `IMAGE_IDS`, servicios levantados con `pull_policy: never` y commit verificado | Release 40174458705 | Aprobada parcialmente: falta la prueba en una máquina sin red física (Fase 11) |
 
-Pre-versiones de prueba publicadas: `v0.1.0-rc.1` y `v0.1.0-rc.2` (prerelease, clave efímera, advertencia en sus notas).
+Pre-versiones de prueba publicadas: `v0.1.0-rc.1`, `v0.1.0-rc.2` y `v0.1.0-rc.3` (prerelease, clave efímera, advertencia en sus notas).
 
 ## 3. Criterios de aceptación (sección 24)
 
@@ -73,5 +73,5 @@ D-47 a D-57 en `docs/fase-0/21-decisiones.md` §4 (TypeScript 6.0, clave de firm
 6. TLS del perfil institucional (CA interna, D-37) se define en la Fase 2; el perfil local usa HTTP solo en 127.0.0.1.
 7. Las dependencias Go de Caddy no pasan por la política de licencias automática (que cubre npm); quedan inventariadas en el SBOM de la imagen web.
 8. Semgrep se instala con versión fijada pero sin hashes, y sus reglas se descargan del registro de Semgrep (no fijadas, licencia propia de reglas) [SUPUESTO: uso en CI permitido; verificar].
-9. Quedan dos ramas remotas `release/v0.1.0-rc.1` y `release/v0.1.0-rc.2` de las pruebas de publicación; el entorno del agente no puede borrarlas (puede borrarlas el responsable).
+9. Quedan tres ramas remotas `release/v0.1.0-rc.1` a `rc.3` de las pruebas de publicación; el entorno del agente no puede borrarlas (puede borrarlas el responsable).
 10. El perfil offline referencia PostgreSQL y Valkey por etiqueta; su integridad se garantiza con `IMAGE_IDS` dentro de `SHA256SUMS` firmado.
