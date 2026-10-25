@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Escaneos de seguridad gratuitos (sección 16). Ejecutarlos NO certifica el software.
+name: Seguridad
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # Semanal: detecta vulnerabilidades nuevas en dependencias ya fijadas.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secretos (Gitleaks, historial completo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  semgrep:
+    name: Análisis estático (Semgrep CE)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar Semgrep CE (versión fijada)
+        run: python3 -m pip install --user semgrep==1.182.1
+      - name: Ejecutar Semgrep (falla ante hallazgos)
+        run: |
+          ~/.local/bin/semgrep scan --metrics=off --error \
+            --config p/typescript --config p/javascript --config p/dockerfile --config p/secrets \
+            --exclude node_modules --exclude dist
+
+  trivy-fs:
+    name: Dependencias y configuración (Trivy, D-24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  osv:
+    name: Dependencias (OSV-Scanner, informe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Informe complementario a Trivy: OSV no filtra por severidad, por eso la
+      # regla de bloqueo D-24 se aplica con Trivy y aquí solo se publica el resultado.
+      - uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --lockfile=pnpm-lock.yaml

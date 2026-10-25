@@ -1,0 +1,30 @@
+{
+  "name": "@auditor-21719/api",
+  "version": "0.1.0",
+  "description": "API NestJS de la plataforma (Fase 1: solo salud e información de versión)",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@nestjs/common": "12.2.0",
+    "@nestjs/core": "12.2.0",
+    "@nestjs/platform-express": "12.2.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "12.2.0",
+    "@types/express": "5.0.6"
+  },
+  "files": [
+    "dist"
+  ]
+}

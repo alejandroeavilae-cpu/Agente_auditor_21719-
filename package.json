@@ -1,0 +1,29 @@
+{
+  "name": "auditor-21719",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plataforma open source de auditoría de protección de datos personales (Ley 19.628 modificada por Ley 21.719, Chile)",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "build": "pnpm -r --workspace-concurrency=1 run build",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "eslint . --max-warnings=0",
+    "test": "pnpm -r run test",
+    "check:spdx": "node scripts/check-spdx.mjs",
+    "check:licenses": "node scripts/check-licenses.mjs",
+    "verify": "pnpm run check:spdx && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run check:licenses"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
+    "eslint": "10.13.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.0",
+    "vitest": "5.0.5"
+  }
+}

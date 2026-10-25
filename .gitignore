@@ -10,3 +10,6 @@ secrets/
 *.pem
 *.key
 .DS_Store
+deploy/compose/secrets/*
+!deploy/compose/secrets/.gitkeep
+THIRD_PARTY_LICENSES.md.tmp

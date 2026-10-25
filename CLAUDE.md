@@ -4,7 +4,7 @@ Este archivo rige a cualquier agente de IA (orquestador o especializado) que con
 
 ## Fase actual
 
-**Fase 0 entregada en estado "Diseñado", con revisión QA aplicada y pendiente de aprobación humana (P-10). Fase 1 NO aprobada.** No escribir código de producción hasta que el responsable del proyecto apruebe explícitamente el inicio de la Fase 1 (decisión pendiente P-10).
+**Fase 0 aprobada** por el responsable del proyecto el 25-10-2026 (P-10). **Fase 1 (infraestructura base) en curso** en la rama `fase-1`. Alcance autorizado: monorepo, CI/CD, escaneos de seguridad, bitácora verificable, Docker Compose base, firma y SBOM. **No implementar funcionalidades de Fase 2 o posteriores** (identidad, tenants, conectores, etc.) hasta su aprobación.
 
 ## Reglas no negociables
 

@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/coverage
+.git
+deploy/compose/secrets
+*.pem
+*.key
+.env
+.env.*

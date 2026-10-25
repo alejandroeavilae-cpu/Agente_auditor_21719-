@@ -74,4 +74,4 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | P-08 | Hardware real del piloto | Depende de la institución | Fase 14 |
 | P-09 | Espejo del repositorio en una forja libre (Codeberg u otra) | Cuenta y compromiso del responsable | No bloquea |
 | P-11 | Usuario de GitHub de mantenedores en `CODEOWNERS` y protección de rama (2 aprobaciones en áreas sensibles) — depende de P-03 y de que el repositorio sea público o el plan lo permita | Configuración de cuenta y personas | Gobernanza efectiva |
-| P-10 | **Aprobación de la Fase 0 e inicio de la Fase 1** | Puerta de fase humana (sección 23) | Todo el desarrollo |
+| P-10 | ~~Aprobación de la Fase 0 e inicio de la Fase 1~~ | **Resuelta: aprobada por Alejandro Ávila el 25-10-2026 a las 03:33 (hora de Chile)** | — |
