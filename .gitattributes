@@ -1,0 +1,5 @@
+# Finales de línea LF en scripts y configuración: en Windows (Git Bash) un script con
+# CRLF falla con "set: Illegal option -" (hallazgo QA H-12).
+* text=auto eol=lf
+*.sh text eol=lf
+*.pem binary

@@ -33,8 +33,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verificación completa
         run: pnpm run verify
-      - name: El inventario de licencias versionado está al día
-        run: git diff --exit-code -- THIRD_PARTY_LICENSES.md
+      - name: El inventario de licencias versionado está al día (generado en Linux)
+        run: |
+          pnpm run licenses:inventory
+          git diff --exit-code -- THIRD_PARTY_LICENSES.md
+      - name: PT-17 — la regla D-24 bloquea con un informe sintético con hallazgo
+        run: sh scripts/test-d24.sh
       - name: Probar la CLI de la bitácora compilada (PT-04 y PT-21 de extremo a extremo)
         run: sh scripts/smoke-audit-log.sh
 

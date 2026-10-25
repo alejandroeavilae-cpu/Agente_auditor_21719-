@@ -50,5 +50,12 @@ describe('configuración', () => {
   it('falla cerrada ante valores inválidos', () => {
     expect(() => loadConfig({ PORT: 'no-numero' })).toThrow(/Configuración inválida/);
     expect(() => loadConfig({ BUILD_COMMIT: 'rama; rm -rf' })).toThrow(/Configuración inválida/);
+    expect(() => loadConfig({ SOURCE_URL: 'javascript:alert(1)' })).toThrow(/Configuración inválida/);
+    expect(() => loadConfig({ SOURCE_URL: 'http://ejemplo.invalid/repo' })).toThrow(/Configuración inválida/);
+    expect(() => loadConfig({ BUILD_VERSION: 'última' })).toThrow(/Configuración inválida/);
+  });
+
+  it('escucha solo en 127.0.0.1 por defecto', () => {
+    expect(loadConfig({}).HOST).toBe('127.0.0.1');
   });
 });

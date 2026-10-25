@@ -7,8 +7,10 @@
 // la Fase 0, son compatibles con AGPL-3.0-or-later. [SUPUESTO pendiente de revisión
 // jurídica P-01]. Una licencia nueva requiere decisión registrada, no un cambio silencioso.
 //
-// Además genera THIRD_PARTY_LICENSES.md con el inventario (sección 4: "Documentar
-// licencias de terceros").
+// Con `--write` regenera THIRD_PARTY_LICENSES.md (sección 4: "Documentar licencias de
+// terceros"). El inventario versionado se genera en CI (Linux): en otros sistemas
+// operativos pueden aparecer binarios opcionales distintos, por eso la verificación
+// local no lo reescribe (hallazgo QA H-25).
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
@@ -19,11 +21,19 @@ const ALLOWED = new Set([
 ]);
 
 /**
- * Evalúa expresiones SPDX simples: "A OR B" basta con que una esté permitida;
- * "A AND B" exige ambas. Paréntesis se eliminan (expresiones planas en la práctica).
+ * Evalúa expresiones SPDX: "A OR B" basta con que una esté permitida; "A AND B" exige
+ * ambas. Con paréntesis la precedencia podría alterarse, así que se aplica el criterio
+ * conservador: TODAS las licencias mencionadas deben estar permitidas (hallazgo QA H-25).
  */
 function isAllowed(expression) {
-  const expr = expression.replace(/[()]/g, '').trim();
+  const expr = expression.trim();
+  if (expr.includes('(')) {
+    return expr
+      .replace(/[()]/g, ' ')
+      .split(/\s+(?:OR|AND|WITH)\s+|\s+/)
+      .filter(Boolean)
+      .every((id) => ALLOWED.has(id));
+  }
   if (expr.includes(' OR ')) return expr.split(' OR ').some((p) => isAllowed(p));
   if (expr.includes(' AND ')) return expr.split(' AND ').every((p) => isAllowed(p));
   return ALLOWED.has(expr);
@@ -44,7 +54,7 @@ for (const [license, packages] of Object.entries(byLicense)) {
 rows.sort((a, b) => a.name.localeCompare(b.name));
 
 const table = rows.map((r) => `| ${r.name} | ${r.versions} | ${r.license} |`).join('\n');
-writeFileSync(
+if (process.argv.includes('--write')) writeFileSync(
   'THIRD_PARTY_LICENSES.md',
   `# Licencias de terceros\n\nGenerado automáticamente por \`scripts/check-licenses.mjs\` a partir de las dependencias instaladas (incluye dependencias de desarrollo y transitivas). No editar a mano.\n\nTotal de paquetes: ${rows.length}\n\n| Paquete | Versión(es) | Licencia (SPDX) |\n|---|---|---|\n${table}\n`,
 );
@@ -54,4 +64,4 @@ if (violations.length > 0) {
   for (const v of violations) console.error(`  - ${v}`);
   process.exit(1);
 }
-console.log(`Política de licencias: ${rows.length} paquete(s) revisado(s), todos permitidos. Inventario en THIRD_PARTY_LICENSES.md`);
+console.log(`Política de licencias: ${rows.length} paquete(s) revisado(s), todos permitidos.`);

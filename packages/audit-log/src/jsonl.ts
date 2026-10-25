@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { canonicalJson, type JsonValue } from './canonical-json.js';
+
 /** Error de lectura de una línea JSONL, con su número de línea (base 1). */
 export class JsonlParseError extends Error {
   constructor(
@@ -35,7 +37,41 @@ export function parseJsonl(text: string): unknown[] {
   return result;
 }
 
-/** Serializa objetos como JSON Lines terminando en salto de línea. */
+/** Línea JSONL interpretada, con su número real de línea (base 1) y su texto exacto. */
+export interface JsonlLine {
+  line: number;
+  raw: string;
+  value: unknown;
+}
+
+/**
+ * Igual que `parseJsonl`, pero conserva número de línea real y texto exacto, necesarios
+ * para reportar ubicaciones correctas y exigir forma canónica (hallazgos QA H-03, H-15).
+ * Solo se tolera un retorno de carro final (archivos editados en Windows).
+ *
+ * @throws {JsonlParseError} si una línea no es JSON válido.
+ */
+export function parseJsonlLines(text: string): JsonlLine[] {
+  const result: JsonlLine[] = [];
+  text.split('\n').forEach((rawLine, index) => {
+    const raw = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (raw.trim() === '') return;
+    try {
+      result.push({ line: index + 1, raw, value: JSON.parse(raw) });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new JsonlParseError(index + 1, `JSON inválido (${detail})`);
+    }
+  });
+  return result;
+}
+
+/**
+ * Serializa objetos como JSON Lines en forma canónica (claves ordenadas, sin espacios),
+ * terminando en salto de línea. La verificación exige esta forma exacta.
+ *
+ * @throws {TypeError} si algún valor no es JSON representable.
+ */
 export function toJsonl(items: readonly unknown[]): string {
-  return items.map((item) => JSON.stringify(item)).join('\n') + (items.length > 0 ? '\n' : '');
+  return items.map((item) => canonicalJson(item as JsonValue)).join('\n') + (items.length > 0 ? '\n' : '');
 }

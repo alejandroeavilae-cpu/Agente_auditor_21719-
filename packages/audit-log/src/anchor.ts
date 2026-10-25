@@ -3,7 +3,7 @@
 import { createPublicKey, sign, verify, type KeyObject } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson } from './canonical-json.js';
-import type { AuditEntry, ChainIssue } from './chain.js';
+import type { AuditEntry, ChainIssue, ChainItem } from './chain.js';
 
 /**
  * Anclaje externo de la bitácora (decisión D-31, riesgo R-26).
@@ -23,10 +23,13 @@ export const anchorSchema = z
     chainId: z.string().min(1).max(200),
     seq: z.number().int().nonnegative(),
     hash: z.string().regex(/^[0-9a-f]{64}$/),
-    anchoredAt: z.iso.datetime({ offset: true }),
+    anchoredAt: z.iso.datetime(),
     keyId: z.string().min(1).max(200),
     algorithm: z.literal('Ed25519'),
-    signature: z.string().min(1),
+    // Firma Ed25519 = 64 bytes = exactamente 88 caracteres base64 con relleno. Se valida
+    // estrictamente porque el decodificador de Node ignora caracteres inválidos y la firma
+    // sería maleable (hallazgo QA H-14).
+    signature: z.string().regex(/^[A-Za-z0-9+/]{86}==$/, 'Firma Ed25519 en base64 inválida'),
   })
   .strict();
 
@@ -83,17 +86,20 @@ export function verifyAnchorSignature(anchor: Anchor, publicKey: KeyObject): boo
 /**
  * Contrasta una cadena exportada con los anclajes que la organización conservó.
  *
- * Detecta: firmas inválidas, anclajes de otra cadena, entradas ancladas cuyo
- * hash cambió (reescritura) y anclajes posteriores al final de la exportación
- * (truncamiento de la bitácora).
+ * Detecta: anclajes no canónicos o mal formados, firmas inválidas, claves desconocidas,
+ * anclajes de otra cadena, entradas ancladas cuyo hash cambió (reescritura) y anclajes
+ * posteriores al final de la exportación (truncamiento).
  *
- * @param entries cadena ya verificada internamente con `verifyChain`.
- * @param anchors anclajes en cualquier orden.
+ * Limitación (riesgo R-26): no detecta la eliminación de entradas posteriores al último
+ * anclaje; por eso conviene anclar con frecuencia y conservar el último anclaje fuera.
+ *
+ * @param entries cadena ya verificada internamente.
+ * @param anchors anclajes en cualquier orden, con línea y texto original si se leyeron de archivo.
  * @param publicKeys claves públicas aceptadas, indexadas por `keyId`.
  */
-export function verifyAgainstAnchors(
+export function verifyAnchorItems(
   entries: readonly AuditEntry[],
-  anchors: readonly unknown[],
+  anchors: readonly ChainItem[],
   publicKeys: ReadonlyMap<string, KeyObject>,
 ): ChainIssue[] {
   const issues: ChainIssue[] = [];
@@ -101,37 +107,49 @@ export function verifyAgainstAnchors(
   const chainId = entries[0]?.chainId;
   const lastSeq = entries.at(-1)?.seq ?? -1;
 
-  anchors.forEach((raw, index) => {
-    const line = index + 1;
-    const parsed = anchorSchema.safeParse(raw);
+  for (const { line, value, raw } of anchors) {
+    const parsed = anchorSchema.safeParse(value);
     if (!parsed.success) {
       issues.push({ seq: null, line, reason: 'Anclaje con formato inválido' });
-      return;
+      continue;
     }
     const anchor = parsed.data;
+    if (raw !== undefined && canonicalJson(anchor) !== raw) {
+      issues.push({ seq: anchor.seq, line, reason: 'Anclaje no está en forma canónica' });
+      continue;
+    }
     const key = publicKeys.get(anchor.keyId);
     if (key === undefined) {
       issues.push({ seq: anchor.seq, line, reason: `Clave desconocida para el anclaje: "${anchor.keyId}"` });
-      return;
+      continue;
     }
     if (!verifyAnchorSignature(anchor, key)) {
       issues.push({ seq: anchor.seq, line, reason: 'Firma del anclaje inválida' });
-      return;
+      continue;
     }
     if (chainId !== undefined && anchor.chainId !== chainId) {
       issues.push({ seq: anchor.seq, line, reason: 'El anclaje pertenece a otra cadena' });
-      return;
+      continue;
     }
     if (anchor.seq > lastSeq) {
       issues.push({ seq: anchor.seq, line, reason: 'Existe un anclaje posterior al final de la bitácora: posible truncamiento' });
-      return;
+      continue;
     }
     const entry = bySeq.get(anchor.seq);
     if (entry === undefined || entry.hash !== anchor.hash) {
       issues.push({ seq: anchor.seq, line, reason: 'El hash anclado no coincide: la bitácora fue reescrita' });
     }
-  });
+  }
   return issues;
+}
+
+/** Variante programática: los anclajes se numeran por posición y no se exige forma canónica. */
+export function verifyAgainstAnchors(
+  entries: readonly AuditEntry[],
+  anchors: readonly unknown[],
+  publicKeys: ReadonlyMap<string, KeyObject>,
+): ChainIssue[] {
+  return verifyAnchorItems(entries, anchors.map((value, index) => ({ line: index + 1, value })), publicKeys);
 }
 
 /** Carga una clave pública PEM (SPKI) para verificación. */

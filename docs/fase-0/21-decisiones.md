@@ -83,10 +83,13 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-47 | **TypeScript 6.0.3**, no 7.0 | typescript-eslint 8.72 exige TypeScript < 6.1 [VERIFICADO: peerDependencies en npm]. Reevaluar cuando typescript-eslint soporte 7.x |
 | D-48 | Firma de versiones con **clave Cosign del proyecto**, generada y custodiada por el responsable (secreto `COSIGN_SIGNING_KEY_PEM`); sin ella, el workflow firma con una **clave efímera de prueba** y lo declara en las notas. La verificación offline usa la clave pública con `--insecure-ignore-tlog` | La clave privada no debe pasar por un sistema de IA ni por el chat; la verificación por clave funciona sin Internet (R-17). La firma keyless con registro público se evaluará al hacer público el repositorio |
 | D-49 | **pnpm 10.28.0** fijado en `packageManager`; Node.js **24** (`.nvmrc`) | Node.js 26 aún no era LTS al iniciar la Fase 1 [FUENTE SECUNDARIA]; mantiene D-14 |
-| D-50 | **PostgreSQL 18** y **Valkey 8** (imágenes alpine oficiales) | Versiones mayores estables y conservadoras [SUPUESTO: disponibilidad verificada en CI]; fijación por digest pendiente (P-13) |
+| D-50 | **PostgreSQL 18** y **Valkey 8** (imágenes alpine oficiales) | Versiones mayores estables y conservadoras; disponibilidad verificada en CI y fijadas por digest (P-13 resuelto) |
 | D-51 | NestJS 12 sobre **Express** (`@nestjs/platform-express`) y dependencias inyectadas con `@Inject` explícito | Plataforma por defecto de NestJS; la inyección explícita no depende de metadatos de decoradores, lo que simplifica pruebas |
 | D-52 | **Acciones de GitHub fijadas por SHA de commit** con comentario de versión | Cadena de suministro (sección 15.4) |
 | D-53 | Los escaneos publican sus hallazgos como **anotaciones** de GitHub Actions y la regla D-24 la aplica un script propio (`scripts/ci-report-trivy.mjs`) | Hallazgos visibles para cualquier revisor sin descargar registros |
+| D-55 | Las firmas con la clave del proyecto **sí registran una entrada en el registro de transparencia público de Sigstore (Rekor)**: contiene el hash del artefacto firmado y la clave pública, no el nombre del repositorio. Se acepta y se documenta | Corrige la afirmación previa (hallazgo QA H-09); la transparencia pública es coherente con el principio de verificabilidad |
+| D-56 | La verificación de bitácoras exige **forma canónica byte a byte**, `--chain-id` obligatorio, timestamps UTC no decrecientes y rechaza bitácoras o anclajes vacíos | Hallazgos QA H-01, H-03, H-04, H-05, H-13 |
+| D-57 | La publicación **construye, escanea y solo después publica** las imágenes: la regla D-24 bloquea el workflow de release | Hallazgo QA H-02 |
 | D-54 | Política de licencias de dependencias aplicada en CI (`scripts/check-licenses.mjs`) e inventario `THIRD_PARTY_LICENSES.md` generado y versionado | Sección 4; cualquier licencia nueva requiere decisión registrada |
 
 ### Pendientes nuevos

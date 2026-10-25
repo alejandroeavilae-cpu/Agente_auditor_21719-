@@ -20,6 +20,8 @@ Cada versión publica: el paquete offline (`auditor-21719-<versión>-offline.tar
    ```sh
    tar -xzf auditor-21719-<versión>-offline.tar.gz && cd auditor-21719-<versión>-offline
    docker load -i images/imagenes.tar
+   # Compruebe que cada imagen cargada tiene el ID registrado (IMAGE_IDS está cubierto por SHA256SUMS firmado)
+   while read -r id img; do [ "$(docker image inspect --format '{{.Id}}' "$img")" = "$id" ] && echo "OK $img" || echo "DISTINTA $img"; done < IMAGE_IDS
    sh scripts/generate-secrets.sh
    docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.offline.yaml up -d --wait
    ```
@@ -39,13 +41,15 @@ Con conexión, puede verificar además la firma de las imágenes publicadas: `co
 node packages/audit-log/dist/cli.js keygen --out-dir <carpeta-segura> --key-id <id>
 
 # Anclar periódicamente el último hash
-node packages/audit-log/dist/cli.js anchor --entries bitacora.jsonl --private-key <privada.pem> --key-id <id> --out anclajes.jsonl
+node packages/audit-log/dist/cli.js anchor --entries bitacora.jsonl --chain-id <tenant> --private-key <privada.pem> --key-id <id> --out anclajes.jsonl
 
 # Verificar (código de salida 0 = íntegra, 1 = problemas, 2 = error de uso)
-node packages/audit-log/dist/cli.js verify --entries bitacora.jsonl --anchors anclajes.jsonl --public-key <id>=<publica.pem>
+node packages/audit-log/dist/cli.js verify --entries bitacora.jsonl --chain-id <tenant> --anchors anclajes.jsonl --public-key <id>=<publica.pem>
 ```
 
-Sin anclajes, la verificación solo detecta alteraciones parciales: una reescritura completa y coherente pasa la verificación interna (riesgo R-26, documentado y probado).
+Qué detecta y qué no:
+- Detecta: entradas alteradas, eliminadas, reordenadas o duplicadas; cadenas de otro tenant; líneas no canónicas (contenido oculto o ambiguo); marcas de tiempo fuera de orden; reescrituras completas y truncamientos **anteriores** al último anclaje; anclajes falsificados.
+- No detecta: la eliminación de entradas **posteriores al último anclaje** (ancle con frecuencia). Sin anclajes, tampoco detecta una reescritura completa y coherente (riesgo R-26, documentado y probado).
 
 ## 4. Verificación independiente del comportamiento (adelanto de Fase 11)
 

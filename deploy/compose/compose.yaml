@@ -61,6 +61,11 @@ services:
       POSTGRES_DB: auditor_control
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     secrets: [postgres_password]
+    # El entrypoint oficial arranca como root para preparar el directorio de datos y luego
+    # cambia al usuario "postgres": se eliminan todas las capacidades salvo las mínimas
+    # para ese cambio de usuario y de propietario de archivos (hallazgo QA H-10).
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     volumes:
       - postgres-data:/var/lib/postgresql
     networks: [backend]
@@ -84,7 +89,9 @@ services:
     cap_drop: [ALL]
     networks: [backend]
     healthcheck:
-      test: ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$(sed -n 's/^requirepass //p' /run/secrets/valkey.conf)\" ping | grep -q PONG"]
+      # La contraseña va por variable de entorno del proceso de chequeo, no por argumentos
+      # visibles con "ps" (hallazgo QA H-19).
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(sed -n 's/^requirepass //p' /run/secrets/valkey.conf)\" valkey-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 10

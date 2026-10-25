@@ -31,8 +31,8 @@ describe('CLI auditor-log', () => {
     const anchors = join(dir, 'anclajes.jsonl');
     writeChain(entries);
     expect(main(['keygen', '--out-dir', dir, '--key-id', 'k1'])).toBe(0);
-    expect(main(['anchor', '--entries', entries, '--private-key', join(dir, 'k1.private.pem'), '--key-id', 'k1', '--out', anchors])).toBe(0);
-    expect(main(['verify', '--entries', entries, '--anchors', anchors, '--public-key', `k1=${join(dir, 'k1.public.pem')}`])).toBe(0);
+    expect(main(['anchor', '--entries', entries, '--chain-id', 'tenant-sintetico-a', '--private-key', join(dir, 'k1.private.pem'), '--key-id', 'k1', '--out', anchors])).toBe(0);
+    expect(main(['verify', '--entries', entries, '--chain-id', 'tenant-sintetico-a', '--anchors', anchors, '--public-key', `k1=${join(dir, 'k1.public.pem')}`])).toBe(0);
   });
 
   it('PT-21 vía CLI: bitácora reescrita contra anclajes conservados → código 1', () => {
@@ -40,9 +40,9 @@ describe('CLI auditor-log', () => {
     const anchors = join(dir, 'anclajes.jsonl');
     writeChain(entries);
     main(['keygen', '--out-dir', dir, '--key-id', 'k1']);
-    main(['anchor', '--entries', entries, '--private-key', join(dir, 'k1.private.pem'), '--key-id', 'k1', '--out', anchors]);
+    main(['anchor', '--entries', entries, '--chain-id', 'tenant-sintetico-a', '--private-key', join(dir, 'k1.private.pem'), '--key-id', 'k1', '--out', anchors]);
     writeChain(entries, 'atacante');
-    expect(main(['verify', '--entries', entries, '--anchors', anchors, '--public-key', `k1=${join(dir, 'k1.public.pem')}`])).toBe(1);
+    expect(main(['verify', '--entries', entries, '--chain-id', 'tenant-sintetico-a', '--anchors', anchors, '--public-key', `k1=${join(dir, 'k1.public.pem')}`])).toBe(1);
   });
 
   it('PT-04 vía CLI: línea alterada → código 1', () => {
@@ -51,7 +51,7 @@ describe('CLI auditor-log', () => {
     const lines = readFileSync(entries, 'utf8').trim().split('\n');
     lines[1] = lines[1]!.replace('"action":"test"', '"action":"otra"');
     writeFileSync(entries, lines.join('\n') + '\n');
-    expect(main(['verify', '--entries', entries])).toBe(1);
+    expect(main(['verify', '--entries', entries, '--chain-id', 'tenant-sintetico-a'])).toBe(1);
   });
 
   it('no sobrescribe claves existentes (código 2)', () => {
@@ -65,12 +65,13 @@ describe('CLI auditor-log', () => {
     const lines = readFileSync(entries, 'utf8').trim().split('\n');
     writeFileSync(entries, [lines[0], lines[2]].join('\n') + '\n');
     main(['keygen', '--out-dir', dir, '--key-id', 'k1']);
-    expect(main(['anchor', '--entries', entries, '--private-key', join(dir, 'k1.private.pem'), '--key-id', 'k1', '--out', join(dir, 'a.jsonl')])).toBe(1);
+    expect(main(['anchor', '--entries', entries, '--chain-id', 'tenant-sintetico-a', '--private-key', join(dir, 'k1.private.pem'), '--key-id', 'k1', '--out', join(dir, 'a.jsonl')])).toBe(1);
   });
 
   it('errores de uso devuelven código 2', () => {
     expect(main(['verify'])).toBe(2);
-    expect(main(['verify', '--entries', join(dir, 'no-existe.jsonl')])).toBe(2);
+    expect(main(['verify', '--entries', join(dir, 'no-existe.jsonl'), '--chain-id', 'x'])).toBe(2);
+    expect(main(['verify', '--entries', join(dir, 'x.jsonl')])).toBe(2);
     expect(main(['comando-inexistente'])).toBe(2);
   });
 });

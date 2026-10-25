@@ -11,7 +11,8 @@ if (!file) {
   process.exit(2);
 }
 const report = JSON.parse(readFileSync(file, 'utf8'));
-// Las anotaciones no admiten saltos de línea ni "::" sin escapar.
+// Las anotaciones terminan en salto de línea: se neutralizan saltos y "%" para que el
+// contenido del informe no pueda cortar la anotación ni inyectar comandos de Actions.
 const esc = (s) => String(s ?? '').replace(/%/g, '%25').replace(/\r/g, '').replace(/\n/g, ' ');
 
 const findings = [];

@@ -45,6 +45,7 @@ ARG BUILD_VERSION=0.1.0
 ENV NODE_ENV=production \
     BUILD_COMMIT=${BUILD_COMMIT} \
     BUILD_VERSION=${BUILD_VERSION} \
+    HOST=0.0.0.0 \
     PORT=3000
 WORKDIR /app
 # El runtime no necesita gestores de paquetes: se eliminan npm, corepack y yarn

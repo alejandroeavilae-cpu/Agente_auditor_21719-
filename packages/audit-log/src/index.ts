@@ -6,10 +6,13 @@ export {
   auditEntrySchema,
   computeEntryHash,
   createEntry,
+  serializeEntry,
   verifyChain,
+  verifyChainItems,
   type AuditEntry,
   type AuditEntryInput,
   type ChainIssue,
+  type ChainItem,
   type ChainVerification,
 } from './chain.js';
 export {
@@ -17,7 +20,8 @@ export {
   createAnchor,
   loadPublicKey,
   verifyAgainstAnchors,
+  verifyAnchorItems,
   verifyAnchorSignature,
   type Anchor,
 } from './anchor.js';
-export { JsonlParseError, parseJsonl, toJsonl } from './jsonl.js';
+export { JsonlParseError, parseJsonl, parseJsonlLines, toJsonl, type JsonlLine } from './jsonl.js';

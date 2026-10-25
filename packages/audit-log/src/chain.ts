@@ -9,6 +9,17 @@ export const GENESIS_HASH = '0'.repeat(64);
 
 const hexHash = z.string().regex(/^[0-9a-f]{64}$/, 'Debe ser un hash SHA-256 en hexadecimal minúsculo');
 
+/**
+ * Claves prohibidas en objetos de la bitácora. `JSON.parse` las crea como propiedades
+ * propias, pero al copiarlas a un objeto nuevo se interpretan como el prototipo y
+ * desaparecen: el contenido visible del archivo dejaría de coincidir con lo encadenado
+ * (hallazgo QA H-01).
+ */
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const safeKey = z.string().refine((key) => !FORBIDDEN_KEYS.has(key), {
+  message: 'Clave prohibida en la bitácora (__proto__, constructor o prototype)',
+});
+
 const jsonValue: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
     z.null(),
@@ -17,7 +28,7 @@ const jsonValue: z.ZodType<JsonValue> = z.lazy(() =>
     z.number(),
     z.string(),
     z.array(jsonValue),
-    z.record(z.string(), jsonValue),
+    z.record(safeKey, jsonValue),
   ]),
 );
 
@@ -33,11 +44,13 @@ export const auditEntrySchema = z
   .object({
     chainId: z.string().min(1).max(200),
     seq: z.number().int().nonnegative(),
-    timestamp: z.iso.datetime({ offset: true }),
+    // Solo UTC con sufijo "Z" (formato de Date.toISOString): una única representación
+    // por instante, comparable entre entradas (hallazgo QA H-13).
+    timestamp: z.iso.datetime(),
     actor: z.string().min(1).max(500),
     action: z.string().min(1).max(200),
     object: z.string().max(1000),
-    data: z.record(z.string(), jsonValue),
+    data: z.record(safeKey, jsonValue),
     prevHash: hexHash,
     hash: hexHash,
   })
@@ -115,36 +128,60 @@ export interface ChainIssue {
 export interface ChainVerification {
   ok: boolean;
   count: number;
+  chainId: string | null;
   lastSeq: number | null;
   lastHash: string;
+  /** Entradas que superaron la validación de formato, en orden. */
+  entries: AuditEntry[];
   issues: ChainIssue[];
 }
 
+/** Elemento a verificar: valor ya interpretado, su línea de origen y, si existe, el texto original. */
+export interface ChainItem {
+  line: number;
+  value: unknown;
+  /** Texto exacto de la línea; si se entrega, debe ser idéntico a la forma canónica. */
+  raw?: string;
+}
+
+/** Serializa una entrada en su forma canónica (formato de exportación JSONL). */
+export function serializeEntry(entry: AuditEntry): string {
+  return canonicalJson(entry);
+}
+
 /**
- * Verifica la integridad interna de una cadena: secuencia continua desde 0,
- * enlace `prevHash` correcto, hash recalculado y un único `chainId`.
+ * Verifica la integridad interna de una cadena: forma canónica exacta de cada línea,
+ * secuencia continua desde 0, enlace `prevHash`, hash recalculado, un único `chainId`
+ * y marcas de tiempo no decrecientes.
  *
- * Limitación importante (riesgo R-26): esta verificación detecta alteraciones
- * parciales, pero NO detecta que alguien con control de la base de datos
- * reescriba la cadena completa de forma coherente. Para eso existe el anclaje
- * externo (ver `anchor.ts`).
+ * Exigir la forma canónica byte a byte impide que dos programas lean contenidos
+ * distintos del mismo archivo (claves duplicadas, escapes o números escritos de otra
+ * forma, `__proto__`): lo que una persona ve con un editor es exactamente lo encadenado
+ * (hallazgos QA H-01 y H-03).
  *
- * @param entries entradas en el orden en que fueron exportadas.
+ * Limitaciones (riesgo R-26): no detecta una reescritura completa y coherente de la
+ * cadena ni el truncamiento posterior al último anclaje; para eso se contrasta con los
+ * anclajes externos (ver `anchor.ts`).
+ *
+ * @param items entradas en el orden del archivo exportado.
  * @param expectedChainId si se indica, toda entrada debe pertenecer a esa cadena.
  */
-export function verifyChain(entries: readonly unknown[], expectedChainId?: string): ChainVerification {
+export function verifyChainItems(items: readonly ChainItem[], expectedChainId?: string): ChainVerification {
   const issues: ChainIssue[] = [];
+  const entries: AuditEntry[] = [];
   let previous: AuditEntry | null = null;
   let chainId = expectedChainId;
 
-  for (const [index, raw] of entries.entries()) {
-    const line = index + 1;
-    const parsed = auditEntrySchema.safeParse(raw);
+  for (const { line, value, raw } of items) {
+    const parsed = auditEntrySchema.safeParse(value);
     if (!parsed.success) {
       issues.push({ seq: null, line, reason: `Formato inválido: ${parsed.error.issues.map((i) => i.message).join('; ')}` });
       continue;
     }
     const entry = parsed.data;
+    if (raw !== undefined && serializeEntry(entry) !== raw) {
+      issues.push({ seq: entry.seq, line, reason: 'La línea no está en forma canónica (posible contenido oculto o ambiguo)' });
+    }
     chainId ??= entry.chainId;
 
     if (entry.chainId !== chainId) {
@@ -158,18 +195,37 @@ export function verifyChain(entries: readonly unknown[], expectedChainId?: strin
     if (entry.prevHash !== expectedPrev) {
       issues.push({ seq: entry.seq, line, reason: 'prevHash no coincide con el hash de la entrada anterior' });
     }
+    if (previous !== null && entry.timestamp < previous.timestamp) {
+      // Comparación de texto válida porque todos los timestamps son ISO 8601 en UTC con "Z".
+      issues.push({ seq: entry.seq, line, reason: 'Marca de tiempo anterior a la de la entrada previa' });
+    }
     const { hash, ...rest } = entry;
     if (computeEntryHash(rest) !== hash) {
       issues.push({ seq: entry.seq, line, reason: 'El hash no coincide con el contenido (entrada alterada)' });
     }
+    entries.push(entry);
     previous = entry;
   }
 
   return {
     ok: issues.length === 0,
-    count: entries.length,
+    count: items.length,
+    chainId: chainId ?? null,
     lastSeq: previous === null ? null : previous.seq,
     lastHash: previous === null ? GENESIS_HASH : previous.hash,
+    entries,
     issues,
   };
+}
+
+/**
+ * Verifica una lista de entradas ya interpretadas (uso programático).
+ * No comprueba la forma canónica porque no dispone del texto original;
+ * para archivos exportados use `verifyJsonlText`.
+ */
+export function verifyChain(entries: readonly unknown[], expectedChainId?: string): ChainVerification {
+  return verifyChainItems(
+    entries.map((value, index) => ({ line: index + 1, value })),
+    expectedChainId,
+  );
 }

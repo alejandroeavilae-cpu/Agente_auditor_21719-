@@ -13,8 +13,10 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * Serializa un valor JSON de forma canónica: claves de objetos ordenadas
- * lexicográficamente (por punto de código), sin espacios y sin valores ambiguos.
+ * Serializa un valor JSON de forma canónica: claves de objetos ordenadas por
+ * unidades de código UTF-16 (el orden de `Array.prototype.sort`, igual que el
+ * esquema de canonicalización JSON de RFC 8785), sin espacios, y números y cadenas
+ * con la serialización estándar de ECMAScript.
  *
  * Por qué existe: el hash encadenado solo es verificable de forma independiente
  * si dos implementaciones distintas producen exactamente los mismos bytes para

@@ -14,8 +14,8 @@ for (let i = 0; i < 5; i++) e.push(createEntry(e.at(-1) ?? null, 'tenant-sinteti
 process.stdout.write(toJsonl(e));" > "$D/bitacora.jsonl"
 
 node "$CLI" keygen --out-dir "$D" --key-id smoke
-node "$CLI" anchor --entries "$D/bitacora.jsonl" --private-key "$D/smoke.private.pem" --key-id smoke --out "$D/anclajes.jsonl"
-node "$CLI" verify --entries "$D/bitacora.jsonl" --anchors "$D/anclajes.jsonl" --public-key "smoke=$D/smoke.public.pem"
+node "$CLI" anchor --entries "$D/bitacora.jsonl" --chain-id tenant-sintetico --private-key "$D/smoke.private.pem" --key-id smoke --out "$D/anclajes.jsonl"
+node "$CLI" verify --entries "$D/bitacora.jsonl" --chain-id tenant-sintetico --anchors "$D/anclajes.jsonl" --public-key "smoke=$D/smoke.public.pem"
 
 # Reescritura completa y coherente: debe detectarse solo gracias al anclaje.
 node --input-type=module -e "
@@ -24,7 +24,7 @@ const e = [];
 for (let i = 0; i < 5; i++) e.push(createEntry(e.at(-1) ?? null, 'tenant-sintetico', { actor: 'atacante', action: 'smoke', object: 'o/' + i }));
 process.stdout.write(toJsonl(e));" > "$D/bitacora.jsonl"
 
-if node "$CLI" verify --entries "$D/bitacora.jsonl" --anchors "$D/anclajes.jsonl" --public-key "smoke=$D/smoke.public.pem"; then
+if node "$CLI" verify --entries "$D/bitacora.jsonl" --chain-id tenant-sintetico --anchors "$D/anclajes.jsonl" --public-key "smoke=$D/smoke.public.pem"; then
   echo "ERROR: la reescritura no fue detectada" >&2
   exit 1
 fi

@@ -15,16 +15,25 @@ export const APP_CONFIG = Symbol('APP_CONFIG');
  */
 const configSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  HOST: z.string().default('0.0.0.0'),
+  /**
+   * Por defecto solo escucha en el propio equipo (desarrollo seguro). La imagen de
+   * contenedor fija HOST=0.0.0.0 porque ahí la red la controla Docker (hallazgo QA H-18).
+   */
+  HOST: z.string().default('127.0.0.1'),
   /** Commit exacto de la compilación; lo inyecta el pipeline de construcción. */
   BUILD_COMMIT: z.string().regex(/^[0-9a-f]{7,40}$|^desarrollo$/).default('desarrollo'),
   /** Versión publicada (SemVer) de la compilación. */
-  BUILD_VERSION: z.string().default('0.1.0'),
+  BUILD_VERSION: z
+    .string()
+    .regex(/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/, 'Debe ser una versión SemVer')
+    .default('0.1.0'),
   /**
    * URL del código fuente correspondiente a la versión en ejecución.
    * Requisito de la sección 13 de la AGPL-3.0 y del Centro de Confianza.
    */
-  SOURCE_URL: z.url().default('https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-'),
+  SOURCE_URL: z
+    .url({ protocol: /^https$/ })
+    .default('https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-'),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

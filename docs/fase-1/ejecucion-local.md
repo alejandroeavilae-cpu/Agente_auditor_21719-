@@ -80,12 +80,13 @@ Hay dos formas de ejecutar el proyecto. Elija **una**:
    ```sh
    pnpm install --frozen-lockfile
    ```
-3. Ejecute la verificación completa (cabeceras de licencia, lint, tipos, pruebas, compilación y política de licencias):
+3. (Solo Windows) Si clonó antes de que existiera `.gitattributes`, renormalice los finales de línea: `git rm --cached -r -q . && git reset --hard`.
+4. Ejecute la verificación completa (cabeceras de licencia, lint, tipos, pruebas, compilación y política de licencias):
    ```sh
    pnpm run verify
    ```
    Debe terminar sin errores.
-4. Para ver la aplicación en modo desarrollo use **dos terminales**:
+5. Para ver la aplicación en modo desarrollo use **dos terminales**:
    - Terminal 1 — API (backend):
      ```sh
      pnpm --filter @auditor-21719/api build
@@ -97,13 +98,13 @@ Hay dos formas de ejecutar el proyecto. Elija **una**:
      pnpm --filter @auditor-21719/web dev
      ```
      Abra la URL que muestra Vite (normalmente **http://localhost:5173**).
-5. Detenga cada terminal con `Ctrl + C`.
+6. Detenga cada terminal con `Ctrl + C`.
 
 ---
 
 ## Probar la verificación independiente de la bitácora
 
-Requiere haber hecho los pasos 1–3 de la Opción B.
+Requiere haber hecho los pasos 1–4 de la Opción B.
 
 ```sh
 pnpm --filter @auditor-21719/audit-log build
@@ -117,6 +118,6 @@ Debe terminar con `OK: reescritura detectada por el anclaje externo.` La guía c
 | Síntoma | Causa probable | Solución |
 |---|---|---|
 | `Cannot connect to the Docker daemon` | Docker Desktop cerrado | Ábralo y espere a que termine de iniciar |
-| `port is already allocated` (8080) | Otro programa usa el puerto | Cierre ese programa o cambie `127.0.0.1:8080:8080` a `127.0.0.1:8081:8080` en `deploy/compose/compose.yaml` |
+| `port is already allocated` (8080) | Otro programa usa el puerto | Cierre ese programa o cambie `127.0.0.1:8080:8080` a `127.0.0.1:8081:8080` en `deploy/compose/compose.yaml`; luego use `sh scripts/smoke-compose.sh desarrollo 8081` |
 | `ERR_PNPM_OUTDATED_LOCKFILE` | Cambió `package.json` sin actualizar el lockfile | Ejecute `pnpm install` (sin `--frozen-lockfile`) y versione `pnpm-lock.yaml` |
-| `Unsupported engine` | Node.js distinto de 24 | Instale Node.js 24 LTS |
+| `Unsupported engine` / `ERR_PNPM_UNSUPPORTED_ENGINE` | Node.js distinto de 24 (el proyecto lo exige) | Instale Node.js 24 LTS |
