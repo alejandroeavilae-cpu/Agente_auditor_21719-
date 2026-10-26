@@ -24,7 +24,7 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-44 | Seguridad / continuidad | **Respaldos lógicos por tenant cifrados por la aplicación** (independientes del motor, porque SQL Server Express no cifra respaldos), con claves respaldadas por separado; diseño detallado en Fase 2 | Depender del cifrado del motor | Alta |
 | D-45 | Seguridad | **Archivos y contenido de terceros son hostiles**: parseo de PDF/DOCX/XLSX/CSV en el agente aislado con límites de tamaño, descompresión y tiempo, sin entidades XML externas; reportes renderizados con el navegador **sin red**, con escape de todo texto de origen externo y neutralización de fórmulas (`= + - @`) en exportes CSV/Excel | Confiar en los parsers | Alta |
 | D-46 | Seguridad | El agente web usa **cuentas dedicadas de mínimo privilegio** en la aplicación auditada, creadas por la organización para la auditoría; nunca cuentas personales ni administrativas | Usar cuentas existentes | Alta |
-| D-23 | Gratuidad / confianza | Repositorio **privado hasta cerrar la Fase 1** (higiene de secretos y políticas listas); luego público, con aprobación del responsable | Publicar de inmediato | Hacer público es irreversible en la práctica |
+| D-23 | Gratuidad / confianza | Repositorio **privado hasta cerrar la Fase 1**; luego público. **Confirmado por el responsable el 25-10-2026 08:42: el repositorio pasará a ser público.** Pendiente de ejecución por el responsable (P-14) | Publicar de inmediato | Hacer público es irreversible en la práctica |
 | D-24 | Seguridad | Vulnerabilidad crítica/alta con corrección disponible **bloquea publicación**; sin corrección, excepción documentada aprobada por otro mantenedor | Solo advertir | Alta |
 | D-32 | Confianza | **Adelantar** bitácora encadenada, registro de consultas, firmas y SBOM a Fases 1–3 | Todo en Fase 11 | Alta |
 
@@ -68,10 +68,34 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | P-02 | Titularidad del copyright a largo plazo (persona vs. fundación/organización) | Compromiso legal e institucional | Continuidad (no bloquea fases) |
 | P-03 | Incorporar **al menos un segundo mantenedor** | Requiere personas | Publicación (Fase 13) |
 | P-04 | Elegir **institución piloto** | Requiere acuerdo institucional | Fase 14 |
-| P-05 | Activar el **reporte privado de vulnerabilidades** en GitHub (requiere configuración del dueño del repositorio) | Acción de configuración de cuenta | Publicación del repo |
+| P-05 | ~~Activar el reporte privado de vulnerabilidades~~ **Resuelto 25-10-2026** [VERIFICADO vía API] | — | — |
 | P-06 | Seguimiento del **boletín 18.623-07** hasta su resultado | Hecho externo futuro | Versión del catálogo |
 | P-07 | Nombre definitivo del proyecto | Preferencia del responsable | No bloquea |
 | P-08 | Hardware real del piloto | Depende de la institución | Fase 14 |
 | P-09 | Espejo del repositorio en una forja libre (Codeberg u otra) | Cuenta y compromiso del responsable | No bloquea |
 | P-11 | Usuario de GitHub de mantenedores en `CODEOWNERS` y protección de rama (2 aprobaciones en áreas sensibles) — depende de P-03 y de que el repositorio sea público o el plan lo permita | Configuración de cuenta y personas | Gobernanza efectiva |
-| P-10 | **Aprobación de la Fase 0 e inicio de la Fase 1** | Puerta de fase humana (sección 23) | Todo el desarrollo |
+| P-10 | ~~Aprobación de la Fase 0 e inicio de la Fase 1~~ | **Resuelta: aprobada por Alejandro Ávila el 25-10-2026 a las 03:33 (hora de Chile)** | — |
+
+## 4. Decisiones tomadas durante la Fase 1 (25-10-2026)
+
+| ID | Decisión | Fundamento |
+|---|---|---|
+| D-47 | **TypeScript 6.0.3**, no 7.0 | typescript-eslint 8.72 exige TypeScript < 6.1 [VERIFICADO: peerDependencies en npm]. Reevaluar cuando typescript-eslint soporte 7.x |
+| D-48 | Firma de versiones con **clave Cosign del proyecto**, generada y custodiada por el responsable (secreto `COSIGN_SIGNING_KEY_PEM`); sin ella, el workflow firma con una **clave efímera de prueba** y lo declara en las notas. La verificación offline usa la clave pública con `--insecure-ignore-tlog` | La clave privada no debe pasar por un sistema de IA ni por el chat; la verificación por clave funciona sin Internet (R-17). La firma keyless con registro público se evaluará al hacer público el repositorio |
+| D-49 | **pnpm 10.28.0** fijado en `packageManager`; Node.js **24** (`.nvmrc`) | Node.js 26 aún no era LTS al iniciar la Fase 1 [FUENTE SECUNDARIA]; mantiene D-14 |
+| D-50 | **PostgreSQL 18** y **Valkey 8** (imágenes alpine oficiales) | Versiones mayores estables y conservadoras; disponibilidad verificada en CI y fijadas por digest (P-13 resuelto) |
+| D-51 | NestJS 12 sobre **Express** (`@nestjs/platform-express`) y dependencias inyectadas con `@Inject` explícito | Plataforma por defecto de NestJS; la inyección explícita no depende de metadatos de decoradores, lo que simplifica pruebas |
+| D-52 | **Acciones de GitHub fijadas por SHA de commit** con comentario de versión | Cadena de suministro (sección 15.4) |
+| D-53 | Los escaneos publican sus hallazgos como **anotaciones** de GitHub Actions y la regla D-24 la aplica un script propio (`scripts/ci-report-trivy.mjs`) | Hallazgos visibles para cualquier revisor sin descargar registros |
+| D-54 | Política de licencias de dependencias aplicada en CI (`scripts/check-licenses.mjs`) e inventario `THIRD_PARTY_LICENSES.md` generado y versionado | Sección 4; cualquier licencia nueva requiere decisión registrada |
+| D-55 | Las firmas con la clave del proyecto **sí registran una entrada en el registro de transparencia público de Sigstore (Rekor)**: para la firma de `SHA256SUMS` contiene solo el hash del artefacto y la clave pública [VERIFICADO por la QA en el bundle]; para firmas y atestaciones de imágenes, cuyos contenidos incluyen la referencia `ghcr.io/<propietario>/…` y el SBOM, no se ha verificado qué se publica [SUPUESTO: podría incluir esa referencia]. Se acepta y se documenta | Corrige la afirmación previa (hallazgo QA H-09); la transparencia pública es coherente con el principio de verificabilidad |
+| D-56 | La verificación de bitácoras exige **forma canónica byte a byte**, `--chain-id` obligatorio, timestamps UTC no decrecientes y rechaza bitácoras o anclajes vacíos | Hallazgos QA H-01, H-03, H-04, H-05, H-13 |
+| D-57 | La publicación **construye, escanea y solo después publica** las imágenes: la regla D-24 bloquea el workflow de release | Hallazgo QA H-02 |
+
+### Pendientes nuevos
+
+| ID | Pendiente | Responsable |
+|---|---|---|
+| P-12 | Generar la clave de firma del proyecto y cargarla como secreto (guía: `docs/fase-1/clave-de-firma.md`) | Responsable del proyecto |
+| P-14 | ~~Hacer público el repositorio~~ **Resuelto 25-10-2026:** repositorio público, reporte privado de vulnerabilidades activado y artefactos de prueba (ramas, etiquetas y pre-versiones rc.1–rc.3) eliminados por el responsable [VERIFICADO vía API]. El responsable decidió mantener su correo personal en commits y firmas DCO. | — |
+| P-13 | ~~Fijar imágenes base por digest~~ **Resuelto en Fase 1** (Dockerfile, Compose y release usan digests registrados por CI el 25-10-2026) | — |

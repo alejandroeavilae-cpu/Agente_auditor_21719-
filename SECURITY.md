@@ -2,7 +2,7 @@
 
 ## Reportar una vulnerabilidad
 
-**No abra un issue público.** Use la función de reporte privado de vulnerabilidades del repositorio (pestaña *Security → Report a vulnerability*) cuando esté habilitada [pendiente: P-05], o contacte de forma privada a los mantenedores listados en `GOVERNANCE.md`.
+**No abra un issue público.** Use la función de reporte privado de vulnerabilidades del repositorio (pestaña *Security → Report a vulnerability*), habilitada desde el 25-10-2026, o contacte de forma privada a los mantenedores listados en `GOVERNANCE.md`.
 
 Incluya: versión afectada, descripción, pasos de reproducción con **datos sintéticos**, impacto estimado y, si la tiene, una propuesta de corrección.
 

@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Escaneos de seguridad gratuitos (sección 16). Ejecutarlos NO certifica el software.
+name: Seguridad
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # Semanal: detecta vulnerabilidades nuevas en dependencias ya fijadas.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secretos (Gitleaks, historial completo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Binario oficial en contenedor (versión fijada): escanea todo el historial igual en
+      # push y en pull_request, sin depender de la API ni de permisos adicionales.
+      - name: Gitleaks sobre todo el historial
+        run: |
+          rc=0
+          # Se ejecuta con el UID del runner para que git acepte el repositorio montado.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/repo:ro" -v "$RUNNER_TEMP:/out" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git /repo --redact --no-banner --exit-code 1 \
+            --report-format json --report-path /out/gitleaks.json || rc=$?
+          node -e "
+            const fs = require('fs');
+            const p = process.env.RUNNER_TEMP + '/gitleaks.json';
+            if (!fs.existsSync(p)) { console.log('::error title=gitleaks::No se generó informe'); process.exit(1); }
+            const r = JSON.parse(fs.readFileSync(p, 'utf8') || '[]');
+            for (const f of r) console.log('::error title=gitleaks::' + f.RuleID + ' en ' + f.File + ':' + f.StartLine + ' (commit ' + String(f.Commit).slice(0, 7) + ')');
+            console.log('Gitleaks: ' + r.length + ' hallazgo(s).');"
+          exit "$rc"
+
+  semgrep:
+    name: Análisis estático (Semgrep CE)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar Semgrep CE (versión fijada)
+        run: python3 -m pip install --user semgrep==1.182.1
+      - name: Ejecutar Semgrep (falla ante hallazgos)
+        run: |
+          ~/.local/bin/semgrep scan --metrics=off --error \
+            --config p/typescript --config p/javascript --config p/dockerfile --config p/secrets \
+            --exclude node_modules --exclude dist
+
+  trivy-fs:
+    name: Dependencias y configuración (Trivy, D-24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: trivy-fs.json
+          exit-code: "0"
+      - name: Aplicar regla de bloqueo D-24 y anotar hallazgos
+        run: node scripts/ci-report-trivy.mjs trivy-fs.json trivy-fs
+
+  osv:
+    name: Dependencias (OSV-Scanner, informe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Informe complementario a Trivy: OSV no filtra por severidad, por eso la
+      # regla de bloqueo D-24 se aplica con Trivy y aquí solo se publica el resultado.
+      - uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=json
+            --output=osv.json
+            --lockfile=pnpm-lock.yaml
+      - name: Publicar hallazgos de OSV como avisos (no bloquea)
+        if: always()
+        run: |
+          [ -f osv.json ] || { echo "::warning title=osv::No se generó informe"; exit 0; }
+          node -e "
+            const r = JSON.parse(require('fs').readFileSync('osv.json','utf8'));
+            let n = 0;
+            for (const res of r.results ?? []) for (const p of res.packages ?? []) for (const v of p.vulnerabilities ?? []) {
+              n++; console.log('::warning title=osv::' + v.id + ' en ' + p.package.name + '@' + p.package.version);
+            }
+            console.log('OSV: ' + n + ' vulnerabilidad(es) reportada(s).');"

@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Integración continua: verificación de código y prueba de humo del despliegue local.
+# Todas las acciones de terceros se fijan por SHA de commit (cadena de suministro, sección 15.4).
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verificación (SPDX, lint, tipos, pruebas, build, licencias)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Instalar dependencias (lockfile congelado)
+        run: pnpm install --frozen-lockfile
+      - name: Verificación completa
+        run: pnpm run verify
+      - name: El inventario de licencias versionado está al día (generado en Linux)
+        run: |
+          pnpm run licenses:inventory
+          git diff --exit-code -- THIRD_PARTY_LICENSES.md
+      - name: PT-17 — la regla D-24 bloquea con un informe sintético con hallazgo
+        run: sh scripts/test-d24.sh
+      - name: Probar la CLI de la bitácora compilada (PT-04 y PT-21 de extremo a extremo)
+        run: sh scripts/smoke-audit-log.sh
+
+  compose-smoke:
+    name: Prueba de humo de Docker Compose (perfil local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generar secretos locales
+        run: sh scripts/generate-secrets.sh
+      - name: Construir imágenes
+        env:
+          BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          set -o pipefail
+          docker compose -f deploy/compose/compose.yaml build --progress plain 2>&1 | tee build.log || {
+            tail -25 build.log | while IFS= read -r l; do echo "::error title=build::$l"; done; exit 1; }
+      - name: Levantar servicios
+        run: docker compose -f deploy/compose/compose.yaml up -d --wait --wait-timeout 300
+      - name: Comprobaciones de comportamiento y aislamiento
+        run: sh scripts/smoke-compose.sh "${{ github.sha }}"
+      - name: Escanear imagen API
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: auditor-21719-api:local
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: trivy-api.json
+          exit-code: "0"
+      - name: Escanear imagen web
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: auditor-21719-web:local
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: trivy-web.json
+          exit-code: "0"
+          skip-setup-trivy: true
+      - name: Regla de bloqueo D-24 sobre imágenes (vulnerabilidades altas/críticas con corrección)
+        if: always()
+        run: |
+          rc=0
+          node scripts/ci-report-trivy.mjs trivy-api.json imagen-api || rc=1
+          node scripts/ci-report-trivy.mjs trivy-web.json imagen-web || rc=1
+          exit $rc
+      - name: Registrar digests de imágenes base (para fijarlas por digest)
+        if: always()
+        run: |
+          for img in postgres:18-alpine valkey/valkey:8-alpine node:24-alpine golang:1.27-alpine alpine:3.23; do
+            docker pull -q "$img" >/dev/null 2>&1 || true
+            echo "$img -> $(docker image inspect --format '{{index .RepoDigests 0}}' "$img" 2>/dev/null || echo 'no disponible')"
+          done | tee image-digests.txt
+          while read -r line; do echo "::notice title=digest::$line"; done < image-digests.txt
+      - name: Registros de los servicios (como anotaciones si algo falló)
+        if: failure()
+        run: |
+          docker compose -f deploy/compose/compose.yaml ps -a
+          docker compose -f deploy/compose/compose.yaml logs --no-color --tail 15 | while IFS= read -r l; do echo "::warning title=logs::$l"; done
+      - name: Bajar servicios y borrar volúmenes
+        if: always()
+        run: docker compose -f deploy/compose/compose.yaml down -v

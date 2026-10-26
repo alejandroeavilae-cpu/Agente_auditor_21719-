@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Perfil local (Modalidad A, Fase 1). Uso: ver docs/fase-1/ejecucion-local.md
+#
+# Principios aplicados:
+#  - Solo el servicio "web" publica un puerto, y únicamente en 127.0.0.1.
+#  - Base de datos y caché viven en una red interna sin salida a Internet.
+#  - Secretos por archivo montado (/run/secrets), nunca en variables visibles.
+#  - Contenedores sin privilegios adicionales y con sistema de archivos de solo lectura cuando es posible.
+name: auditor-21719
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: web
+    image: auditor-21719-web:local
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    networks: [edge, backend]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: api
+      args:
+        BUILD_COMMIT: ${BUILD_COMMIT:-desarrollo}
+        BUILD_VERSION: ${BUILD_VERSION:-0.1.0}
+    image: auditor-21719-api:local
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  postgres:
+    <<: *hardening
+    image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
+    environment:
+      POSTGRES_USER: auditor
+      POSTGRES_DB: auditor_control
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    # El entrypoint oficial arranca como root para preparar el directorio de datos y luego
+    # cambia al usuario "postgres": se eliminan todas las capacidades salvo las mínimas
+    # para ese cambio de usuario y de propietario de archivos (hallazgo QA H-10).
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auditor -d auditor_control"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    <<: *hardening
+    image: valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
+    # Se ejecuta directamente con el usuario sin privilegios de la imagen: con
+    # cap_drop ALL el entrypoint no puede cambiar de usuario por sí mismo.
+    user: valkey
+    command: ["valkey-server", "/run/secrets/valkey.conf"]
+    secrets: [valkey.conf]
+    read_only: true
+    volumes:
+      - valkey-data:/data
+    cap_drop: [ALL]
+    networks: [backend]
+    healthcheck:
+      # La contraseña va por variable de entorno del proceso de chequeo, no por argumentos
+      # visibles con "ps" (hallazgo QA H-19).
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(sed -n 's/^requirepass //p' /run/secrets/valkey.conf)\" valkey-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+networks:
+  edge: {}
+  backend:
+    # Red interna: los contenedores no tienen salida a Internet (D-30, sin telemetría).
+    internal: true
+
+volumes:
+  postgres-data: {}
+  valkey-data: {}
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  valkey.conf:
+    file: ./secrets/valkey.conf

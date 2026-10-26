@@ -3,7 +3,7 @@
 **Proyecto:** Plataforma open source de auditoría de protección de datos personales (Ley 19.628 modificada por Ley 21.719, Chile)
 **Fuente de requisitos:** `docs/especificacion/prompt-maestro-v2.0.md`
 **Fecha de elaboración:** 25-10-2026
-**Estado de la fase:** Diseñado. Revisión QA independiente realizada (38 observaciones; correcciones aplicadas el 25-10-2026). No implementado. Pendiente de aprobación humana para iniciar Fase 1 (P-10).
+**Estado de la fase:** Diseñado. Revisión QA independiente realizada (38 observaciones; correcciones aplicadas el 25-10-2026). No implementado. **Aprobada** por el responsable del proyecto el 25-10-2026 (P-10).
 
 ## Convenciones de estado epistémico
 
