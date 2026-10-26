@@ -47,7 +47,15 @@ Documentos de gobernanza aún no escritos y asignados a la Fase 1: guía de revi
 
 Los 12 criterios de la sección 24, más: WCAG 2.2 AA en pantallas nuevas (desde Fase 2), CI con ambos motores de BD (desde Fase 2), y prueba de valores centinela (desde Fase 3).
 
-## Primer paso propuesto de la Fase 1 (requiere aprobación)
+## Estado de las fases
+
+| Fase | Estado |
+|---|---|
+| 0 | Aprobada (25-10-2026) |
+| 1 | Aprobada y cerrada (26-10-2026, PR #1) |
+| 2 | Pendiente de aprobación de inicio |
+
+## Primer paso de la Fase 1 (ejecutado)
 
 1. Estructura de monorepo y configuración TypeScript estricta.
 2. Workflows de CI con escaneos y política de licencias.

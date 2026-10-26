@@ -4,7 +4,7 @@ Este archivo rige a cualquier agente de IA (orquestador o especializado) que con
 
 ## Fase actual
 
-**Fase 0 aprobada** por el responsable del proyecto el 25-10-2026 (P-10). **Fase 1 (infraestructura base) en curso** en la rama `fase-1`. Alcance autorizado: monorepo, CI/CD, escaneos de seguridad, bitácora verificable, Docker Compose base, firma y SBOM. **No implementar funcionalidades de Fase 2 o posteriores** (identidad, tenants, conectores, etc.) hasta su aprobación.
+**Fase 0 aprobada** (25-10-2026, P-10). **Fase 1 (infraestructura base) aprobada y cerrada** por el responsable del proyecto el 26-10-2026 al fusionar el PR #1 (commit `e186415`). **Fase 2 (identidad y organizaciones) NO aprobada:** no implementar funcionalidades de Fase 2 o posteriores (identidad, tenants, conectores, etc.) hasta su aprobación explícita.
 
 ## Reglas no negociables
 
