@@ -99,3 +99,16 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | P-12 | Generar la clave de firma del proyecto y cargarla como secreto (guía: `docs/fase-1/clave-de-firma.md`) | Responsable del proyecto |
 | P-14 | ~~Hacer público el repositorio~~ **Resuelto 25-10-2026:** repositorio público, reporte privado de vulnerabilidades activado y artefactos de prueba (ramas, etiquetas y pre-versiones rc.1–rc.3) eliminados por el responsable [VERIFICADO vía API]. El responsable decidió mantener su correo personal en commits y firmas DCO. | — |
 | P-13 | ~~Fijar imágenes base por digest~~ **Resuelto en Fase 1** (Dockerfile, Compose y release usan digests registrados por CI el 25-10-2026) | — |
+
+## 5. Decisiones tomadas durante la Fase 2A (26/27-10-2026)
+
+| ID | Decisión | Fundamento |
+|---|---|---|
+| D-58 | **Kysely** (MIT) en lugar de Prisma para la persistencia; revisa D-15 | La especificación pide Prisma "cuando sea compatible" y "adaptadores de persistencia". En Prisma el motor (`provider`) se fija en el esquema [VERIFICADO: documentación de Prisma, consultada en Fase 0], lo que obliga a mantener esquemas y clientes generados duplicados para PostgreSQL y SQL Server. Kysely usa el mismo código para ambos motores, elegidos en tiempo de ejecución, y conexiones dinámicas por organización. Reversible antes de la Fase 3 con costo moderado |
+| D-59 | Override de `@azure/msal-node` a **7.1.1** | Dependencia indirecta del controlador de SQL Server (`tedious` → `@azure/identity`) con vulnerabilidad alta corregida solo en 7.x (CVE-2026-109461) [VERIFICADO: hallazgo de Trivy en CI]. `@azure/identity` 4.14.0 aún declara `^6`. La plataforma no usa autenticación de Azure (solo usuario/contraseña), por lo que la ruta afectada no se ejecuta; las pruebas de integración contra SQL Server validan que el controlador sigue funcionando. Retirar el override cuando `@azure/identity` admita 7.x |
+| D-60 | Fechas como texto ISO 8601 UTC con milisegundos e identificadores como texto en ambas bases | El hash de la bitácora se calcula sobre ese texto exacto; no puede depender de cómo cada motor almacena o redondea fechas |
+| D-61 | Privilegios mínimos del usuario de cada organización: solo SELECT e INSERT en la bitácora y SELECT en `organization`; migraciones con la cuenta administrativa | Bitácora solo-anexar reforzada por el motor, además de la cadena de hashes |
+| D-62 | Escritura de bitácora serializada con bloqueo de aplicación del motor (`pg_advisory_xact_lock` / `sp_getapplock`) dentro de una transacción | La prueba de 20 escrituras concurrentes demostró que solo reintentar no basta |
+| D-63 | Administración de organizaciones solo por **CLI en el servidor** (`auditor-admin`) durante 2A | Sin usuarios ni autenticación (2B), exponer estas operaciones por HTTP sería inseguro |
+| D-64 | Pruebas de integración con motores reales en CI (PostgreSQL 18 y SQL Server 2025 CU10 Developer); una prueba omitida hace fallar el job | Evitar que "omitida" se confunda con "aprobada" |
+

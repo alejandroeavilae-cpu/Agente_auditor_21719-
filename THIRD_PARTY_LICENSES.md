@@ -21,8 +21,8 @@ Total de paquetes: 312
 | @azure/keyvault-keys | 4.10.2 | MIT |
 | @azure/logger | 1.4.0 | MIT |
 | @azure/msal-browser | 5.26.0 | MIT |
-| @azure/msal-common | 16.14.1, 16.14.3 | MIT |
-| @azure/msal-node | 6.0.1 | MIT |
+| @azure/msal-common | 16.14.3 | MIT |
+| @azure/msal-node | 7.1.1 | MIT |
 | @borewit/text-codec | 0.2.2 | MIT |
 | @cacheable/memory | 2.2.0 | MIT |
 | @cacheable/utils | 2.5.0 | MIT |
