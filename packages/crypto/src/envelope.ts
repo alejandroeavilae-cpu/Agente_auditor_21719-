@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+
+/**
+ * Cifrado de sobre (decisión D-12).
+ *
+ * - Una **clave maestra** por instalación, leída desde un archivo montado (nunca desde
+ *   variables de entorno ni desde la base de datos).
+ * - Una **clave de datos (DEK)** por organización, guardada solo envuelta (cifrada) con la
+ *   clave maestra.
+ * - Los secretos de cada organización (p. ej. la contraseña de su base de datos) se
+ *   cifran con su DEK.
+ *
+ * Se usa AES-256-GCM: confidencialidad e integridad en una sola operación. Todo cifrado
+ * lleva un **contexto** (datos asociados, AAD) que identifica a qué pertenece: un texto
+ * cifrado copiado a otra organización o a otro campo no se descifra. Esto evita que un
+ * atacante con acceso de escritura a la base de control intercambie secretos entre
+ * organizaciones.
+ */
+
+const ALGORITHM = 'aes-256-gcm';
+const KEY_BYTES = 32;
+const IV_BYTES = 12;
+const TAG_BYTES = 16;
+const FORMAT = 'v1';
+
+/** Clave simétrica con identificador público derivado de su contenido. */
+export interface SymmetricKey {
+  /** Identificador corto (no secreto) para saber con qué clave se cifró. */
+  readonly id: string;
+  readonly material: Buffer;
+}
+
+/** Error de cifrado o descifrado. Nunca incluye material de claves ni texto plano. */
+export class CryptoError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CryptoError';
+  }
+}
+
+/** Identificador de clave: primeros 16 caracteres hexadecimales de SHA-256 del material. */
+function keyIdOf(material: Buffer): string {
+  return createHash('sha256').update(material).digest('hex').slice(0, 16);
+}
+
+/**
+ * Construye una clave a partir de su material.
+ * @throws {CryptoError} si el material no tiene exactamente 32 bytes.
+ */
+export function keyFromMaterial(material: Buffer): SymmetricKey {
+  if (material.length !== KEY_BYTES) {
+    throw new CryptoError(`La clave debe tener ${KEY_BYTES} bytes (tiene ${material.length}).`);
+  }
+  return { id: keyIdOf(material), material: Buffer.from(material) };
+}
+
+/** Genera una clave aleatoria nueva (para DEK de organizaciones y pruebas). */
+export function generateKey(): SymmetricKey {
+  return keyFromMaterial(randomBytes(KEY_BYTES));
+}
+
+/**
+ * Carga la clave maestra desde un archivo que contiene 32 bytes codificados en base64.
+ *
+ * Por defecto rechaza archivos legibles por "otros" en el sistema: la clave maestra
+ * protege los secretos de todas las organizaciones (riesgo R-27).
+ *
+ * `checkPermissions: false` existe solo para contenedores: Docker Compose monta el
+ * archivo con los permisos del anfitrión y el usuario del contenedor es otro, así que el
+ * archivo debe ser legible; la protección real está en el directorio del anfitrión
+ * (`deploy/compose/secrets`, permisos 700, ver `scripts/generate-secrets.sh`).
+ *
+ * @throws {CryptoError} si el archivo no existe, tiene permisos inseguros o formato inválido.
+ */
+export function loadMasterKey(path: string, options: { checkPermissions?: boolean } = {}): SymmetricKey {
+  let mode: number;
+  let content: string;
+  try {
+    mode = statSync(path).mode;
+    content = readFileSync(path, 'utf8').trim();
+  } catch {
+    throw new CryptoError(`No se pudo leer el archivo de clave maestra: ${path}`);
+  }
+  if ((options.checkPermissions ?? true) && (mode & 0o007) !== 0) {
+    throw new CryptoError(`Permisos inseguros en ${path}: la clave maestra no debe ser legible por otros usuarios.`);
+  }
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(content)) {
+    throw new CryptoError('La clave maestra debe ser 32 bytes en base64 (44 caracteres).');
+  }
+  return keyFromMaterial(Buffer.from(content, 'base64'));
+}
+
+/** Codifica una nueva clave maestra para guardarla en archivo. */
+export function encodeKeyForFile(key: SymmetricKey): string {
+  return key.material.toString('base64') + '\n';
+}
+
+/**
+ * Cifra datos con una clave y un contexto obligatorio.
+ *
+ * Formato del resultado (texto): `v1.<idClave>.<iv>.<etiqueta>.<cifrado>` en base64url.
+ *
+ * @param key clave a usar.
+ * @param plaintext datos a cifrar.
+ * @param context identifica dueño y propósito, p. ej. `tenant:<id>:db-password`.
+ */
+export function seal(key: SymmetricKey, plaintext: Buffer, context: string): string {
+  if (context.length === 0) throw new CryptoError('El contexto de cifrado es obligatorio.');
+  const iv = randomBytes(IV_BYTES);
+  const cipher = createCipheriv(ALGORITHM, key.material, iv, { authTagLength: TAG_BYTES });
+  cipher.setAAD(Buffer.from(`${FORMAT}|${key.id}|${context}`, 'utf8'));
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return [FORMAT, key.id, iv.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join('.');
+}
+
+/**
+ * Descifra un sobre producido por `seal`.
+ *
+ * @param keys claves disponibles (permite rotación: se elige por identificador).
+ * @throws {CryptoError} si el formato es inválido, la clave no está disponible, el
+ *   contexto no coincide o el contenido fue alterado. El mensaje no distingue entre
+ *   estas dos últimas causas a propósito.
+ */
+export function open(keys: readonly SymmetricKey[], sealed: string, context: string): Buffer {
+  const parts = sealed.split('.');
+  if (parts.length !== 5 || parts[0] !== FORMAT) throw new CryptoError('Formato de texto cifrado inválido.');
+  const [, keyId, ivText, tagText, ctText] = parts as [string, string, string, string, string];
+  const key = keys.find((k) => k.id === keyId);
+  if (key === undefined) throw new CryptoError(`No está disponible la clave ${keyId} para descifrar.`);
+  const iv = Buffer.from(ivText, 'base64url');
+  const tag = Buffer.from(tagText, 'base64url');
+  if (iv.length !== IV_BYTES || tag.length !== TAG_BYTES) throw new CryptoError('Formato de texto cifrado inválido.');
+  try {
+    const decipher = createDecipheriv(ALGORITHM, key.material, iv, { authTagLength: TAG_BYTES });
+    decipher.setAAD(Buffer.from(`${FORMAT}|${key.id}|${context}`, 'utf8'));
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(Buffer.from(ctText, 'base64url')), decipher.final()]);
+  } catch {
+    throw new CryptoError('No se pudo descifrar: contexto incorrecto o contenido alterado.');
+  }
+}
+
+/** Envuelve (cifra) una DEK con la clave maestra. */
+export function wrapKey(masterKey: SymmetricKey, dek: SymmetricKey, context: string): string {
+  return seal(masterKey, dek.material, `dek|${context}`);
+}
+
+/** Desenvuelve una DEK cifrada con `wrapKey`. */
+export function unwrapKey(masterKeys: readonly SymmetricKey[], wrapped: string, context: string): SymmetricKey {
+  return keyFromMaterial(open(masterKeys, wrapped, `dek|${context}`));
+}

@@ -53,7 +53,7 @@ Los 12 criterios de la sección 24, más: WCAG 2.2 AA en pantallas nuevas (desde
 |---|---|
 | 0 | Aprobada (25-10-2026) |
 | 1 | Aprobada y cerrada (26-10-2026, PR #1) |
-| 2 | Pendiente de aprobación de inicio |
+| 2 | Aprobada 26-10-2026, en 3 entregas: 2A (en curso), 2B, 2C |
 
 ## Primer paso de la Fase 1 (ejecutado)
 

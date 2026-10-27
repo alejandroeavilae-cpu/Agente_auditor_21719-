@@ -42,6 +42,19 @@ services:
         BUILD_COMMIT: ${BUILD_COMMIT:-desarrollo}
         BUILD_VERSION: ${BUILD_VERSION:-0.1.0}
     image: auditor-21719-api:local
+    environment:
+      # Usadas por la CLI de administración (auditor-admin) dentro del contenedor.
+      DB_ENGINE: postgresql
+      DB_HOST: postgres
+      DB_ADMIN_USER: auditor
+      DB_ADMIN_PASSWORD_FILE: /run/secrets/postgres_password
+      DB_CONTROL_DATABASE: auditor_control
+      # Red interna aislada (sin salida a Internet): TLS se habilita en el perfil institucional (Fase 2C/11).
+      DB_TLS: disable
+      MASTER_KEY_FILE: /run/secrets/master.key
+      # Ver loadMasterKey: la protección del archivo está en el directorio del anfitrión.
+      MASTER_KEY_CHECK_PERMISSIONS: "false"
+    secrets: [postgres_password, master.key]
     read_only: true
     tmpfs:
       - /tmp
@@ -111,3 +124,5 @@ secrets:
     file: ./secrets/postgres_password
   valkey.conf:
     file: ./secrets/valkey.conf
+  master.key:
+    file: ./secrets/master.key

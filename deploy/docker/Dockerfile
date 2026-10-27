@@ -20,11 +20,14 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json .
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
 COPY packages/audit-log/package.json packages/audit-log/
+COPY packages/crypto/package.json packages/crypto/
+COPY packages/persistence/package.json packages/persistence/
 # --frozen-lockfile: la compilación falla si el lockfile no coincide (versiones fijadas, sección 15.4).
 RUN pnpm install --frozen-lockfile
 COPY apps ./apps
 COPY packages ./packages
-RUN pnpm --filter @auditor-21719/api --filter @auditor-21719/web run build \
+# "@auditor-21719/api..." compila también los paquetes del monorepo de los que depende la API.
+RUN pnpm --filter "@auditor-21719/api..." --filter @auditor-21719/web run build \
  && pnpm --filter @auditor-21719/api deploy --prod --legacy /out/api
 
 # ---------- Compilación de Caddy (proxy inverso) ----------

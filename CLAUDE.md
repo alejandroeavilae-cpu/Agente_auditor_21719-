@@ -4,7 +4,13 @@ Este archivo rige a cualquier agente de IA (orquestador o especializado) que con
 
 ## Fase actual
 
-**Fase 0 aprobada** (25-10-2026, P-10). **Fase 1 (infraestructura base) aprobada y cerrada** por el responsable del proyecto el 26-10-2026 al fusionar el PR #1 (commit `e186415`). **Fase 2 (identidad y organizaciones) NO aprobada:** no implementar funcionalidades de Fase 2 o posteriores (identidad, tenants, conectores, etc.) hasta su aprobación explícita.
+**Fase 0 aprobada** (25-10-2026). **Fase 1 aprobada y cerrada** (26-10-2026, PR #1). **Fase 2 aprobada por el responsable el 26-10-2026 23:37 (hora de Chile), en tres entregas con aprobación humana separada:**
+
+- **2A — Base de datos y organizaciones: EN CURSO** (rama `fase-2a`). Alcance: BD de control, una BD por organización con usuario propio, cifrado de sobre de credenciales, bitácora persistida en BD, CLI de administración, CI con PostgreSQL y SQL Server.
+- 2B — Identidad y permisos: NO iniciada (requiere aprobación del cierre de 2A).
+- 2C — Pantallas y pruebas de aislamiento: NO iniciada.
+
+No implementar funcionalidades de 2B, 2C ni fases posteriores (usuarios, autenticación, pantallas de gestión, conectores, etc.) hasta su aprobación. En 2A no se exponen endpoints HTTP nuevos: sin autenticación serían inseguros.
 
 ## Reglas no negociables
 

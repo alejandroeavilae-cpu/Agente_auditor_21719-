@@ -1,0 +1,31 @@
+{
+  "name": "@auditor-21719/persistence",
+  "version": "0.1.0",
+  "description": "Persistencia multiempresa: BD de control, una BD por organización (PostgreSQL o SQL Server) y bitácora en BD",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@auditor-21719/audit-log": "workspace:*",
+    "@auditor-21719/crypto": "workspace:*",
+    "kysely": "0.29.7",
+    "pg": "8.23.1",
+    "tarn": "3.1.2",
+    "tedious": "20.3.8",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}

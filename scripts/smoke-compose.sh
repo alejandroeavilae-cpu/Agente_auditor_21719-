@@ -58,4 +58,25 @@ echo "8. El proceso principal de PostgreSQL no se ejecuta como root"
 PG_UID="$($COMPOSE exec -T postgres awk '/^Uid:/{print $2}' /proc/1/status)"
 [ -n "$PG_UID" ] && [ "$PG_UID" != "0" ] || fail "el proceso principal de postgres se ejecuta como root"
 
+echo "9. Organizaciones (entrega 2A): alta de dos organizaciones con base propia"
+ADMIN="$COMPOSE exec -T api node dist/admin/cli.js"
+$ADMIN init
+$ADMIN tenant create --slug muni-ficticia --name "Municipalidad Ficticia"
+$ADMIN tenant create --slug empresa-ficticia --name "Empresa Ficticia"
+LIST="$($ADMIN tenant list)"
+echo "$LIST"
+[ "$(echo "$LIST" | grep -c ' active ')" = "2" ] || fail "se esperaban 2 organizaciones activas"
+DBS="$($COMPOSE exec -T postgres psql -U auditor -d postgres -tAc "select datname from pg_database where datname like 'auditor_t_%' order by 1")"
+echo "$DBS"
+[ "$(echo "$DBS" | tr -d '\r')" = "$(printf 'auditor_t_empresa_ficticia\nauditor_t_muni_ficticia')" ] || fail "bases por organización inesperadas"
+
+echo "10. La bitácora de cada organización se exporta y verifica con la CLI independiente"
+for t in muni-ficticia empresa-ficticia; do
+  $COMPOSE exec -T api sh -c "node dist/admin/cli.js audit export --tenant $t --out /tmp/$t.jsonl && node node_modules/@auditor-21719/audit-log/dist/cli.js verify --entries /tmp/$t.jsonl --chain-id $t" \
+    || fail "la bitácora de $t no verificó"
+done
+
+# El aislamiento entre organizaciones (credenciales de A contra la base de B y la de control)
+# se prueba con las contraseñas reales en packages/persistence/test (job de integración de CI).
+
 echo "Todas las comprobaciones pasaron."

@@ -23,6 +23,17 @@ if [ ! -f "$DIR/valkey.conf" ]; then
 else
   echo "Ya existe: valkey.conf (no se modifica)"
 fi
-# Los contenedores leen los secretos con su propio usuario; se permite lectura sin escritura.
-chmod 644 "$DIR/postgres_password" "$DIR/valkey.conf"
+if [ ! -f "$DIR/master.key" ]; then
+  # Clave maestra de la instalación (D-12): 32 bytes aleatorios en base64. Protege las
+  # credenciales de todas las organizaciones. RESPALDELA fuera del servidor: si se pierde,
+  # no se pueden descifrar las credenciales de las bases de las organizaciones (R-24).
+  head -c 32 /dev/urandom | base64 > "$DIR/master.key"
+  echo "Creado: master.key  ← respáldela en un lugar seguro fuera de este servidor"
+else
+  echo "Ya existe: master.key (no se modifica)"
+fi
+# Los contenedores leen los secretos con un usuario distinto del anfitrión, por eso los
+# archivos son legibles; la protección está en el directorio (700): ningún otro usuario
+# del anfitrión puede entrar a él.
+chmod 644 "$DIR/postgres_password" "$DIR/valkey.conf" "$DIR/master.key"
 echo "Secretos listos en $DIR (excluidos de git por .gitignore)."
