@@ -45,7 +45,8 @@ Hay dos formas de ejecutar el proyecto. Elija **una**:
    ```sh
    sh scripts/generate-secrets.sh
    ```
-   Debe ver `Creado: postgres_password` y `Creado: valkey.conf`.
+   Debe ver `Creado: postgres_password`, `Creado: valkey.conf` y `Creado: master.key`.
+   **Respalde `deploy/compose/secrets/master.key` fuera del equipo**: sin ella no se pueden abrir las bases de las organizaciones.
 3. Construya y levante los servicios (la primera vez tarda varios minutos):
    ```sh
    docker compose -f deploy/compose/compose.yaml up -d --build --wait
@@ -53,7 +54,7 @@ Hay dos formas de ejecutar el proyecto. Elija **una**:
    Termina cuando todos los servicios aparecen como `Healthy` o `Started`.
 4. Abra en el navegador: **http://127.0.0.1:8080**
    Debe ver "Auditor 21719", el estado de la Fase 1 y el enlace "Código fuente de esta versión".
-5. (Opcional) Ejecute las comprobaciones automáticas de seguridad del despliegue:
+5. (Opcional) Ejecute las comprobaciones automáticas de seguridad del despliegue **sobre una instalación recién creada** (crea dos organizaciones ficticias; si ya existen, falla):
    ```sh
    sh scripts/smoke-compose.sh desarrollo
    ```
@@ -63,6 +64,29 @@ Hay dos formas de ejecutar el proyecto. Elija **una**:
    docker compose -f deploy/compose/compose.yaml down
    ```
    Para detener **y borrar los datos** (bases de datos de prueba): agregue `-v` al final.
+
+### Administrar organizaciones (entrega 2A)
+
+Con los servicios levantados (paso 3), en la misma terminal:
+
+1. Prepare la base de control (una vez, y después de cada actualización):
+   ```sh
+   docker compose -f deploy/compose/compose.yaml exec api node dist/admin/cli.js init
+   ```
+2. Cree una organización ficticia (identificador en minúsculas, dígitos y guiones):
+   ```sh
+   docker compose -f deploy/compose/compose.yaml exec api node dist/admin/cli.js tenant create --slug muni-demo --name "Municipalidad Demo"
+   ```
+3. Liste las organizaciones:
+   ```sh
+   docker compose -f deploy/compose/compose.yaml exec api node dist/admin/cli.js tenant list
+   ```
+4. Exporte la bitácora de una organización a un archivo de su equipo:
+   ```sh
+   docker compose -f deploy/compose/compose.yaml exec -T api node dist/admin/cli.js audit export --tenant muni-demo > bitacora-muni-demo.jsonl
+   ```
+   Ábrala con cualquier editor de texto: cada línea es una acción registrada.
+5. Suspenda o reactive: `... cli.js tenant suspend --slug muni-demo` / `... cli.js tenant reactivate --slug muni-demo`.
 
 **Notas**
 - Solo el puerto 8080 queda abierto y únicamente en su propio equipo (127.0.0.1); nadie más en la red puede acceder.

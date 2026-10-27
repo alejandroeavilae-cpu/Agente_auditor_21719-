@@ -63,7 +63,7 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 30
       mssql:
         # Edición Developer: licenciada solo para desarrollo y pruebas (nunca producción).
-        image: mcr.microsoft.com/mssql/server:2025-CU10-ubuntu-24.04
+        image: mcr.microsoft.com/mssql/server:2025-CU10-ubuntu-24.04@sha256:245f6b1c8903edae52cb20fa31419cefcde1a49938bb8c3447099011fc871ca3
         env:
           ACCEPT_EULA: "Y"
           MSSQL_PID: Developer
