@@ -18,6 +18,10 @@ CREATE ROLE auditor_provisioner LOGIN CREATEDB CREATEROLE NOSUPERUSER NOREPLICAT
   PASSWORD '<CONTRASEÑA>';
 
 -- 2. Le permite cerrar las sesiones abiertas de una organización al suspenderla.
+--    OJO: pg_signal_backend permite cerrar CUALQUIER sesión que no sea de superusuario del
+--    servidor, no solo las de organizaciones. Si el servidor es compartido con otros
+--    sistemas, evalúe omitirlo: la suspensión igual bloquea nuevas conexiones y la CLI
+--    avisa (código 1) si quedan sesiones abiertas.
 GRANT pg_signal_backend TO auditor_provisioner;
 
 -- 3. Por defecto PostgreSQL deja que CUALQUIER usuario se conecte a "postgres" y "template1".
@@ -74,8 +78,10 @@ Por eso, en SQL Server la separación respecto de `sa` aporta trazabilidad y men
 ## 3. Riesgos residuales comunes
 
 - **El usuario de una organización puede cambiar su propia contraseña.** PostgreSQL y SQL Server lo permiten y no se puede impedir. En PostgreSQL también puede fijarse parámetros de sesión. Si lo hace, la plataforma pierde acceso a esa base (R-31). Mitigación:
-  - `auditor-admin tenant check` lo detecta;
-  - `auditor-admin tenant rotate-password --slug <id>` fija una contraseña nueva y, en PostgreSQL, borra esos parámetros (`ALTER ROLE … RESET ALL`);
+  - `auditor-admin tenant check` lo detecta: la contraseña, porque no puede abrir la base; los parámetros, porque los lee de `pg_db_role_setting`;
+  - `auditor-admin tenant rotate-password --slug <id>` fija una contraseña nueva y, en PostgreSQL, borra esos parámetros, tanto los globales como los fijados solo para su base (`ALTER ROLE … RESET ALL` y `ALTER ROLE … IN DATABASE … RESET ALL`);
   - la plataforma además fija `search_path=public` en cada conexión.
-- **Catálogo visible en PostgreSQL:** `pg_database` y `pg_roles` son visibles para todos los usuarios (R-32). Por eso los nombres de bases y usuarios son opacos. El nombre de la base de control (`auditor_control`) sí es visible, pero su acceso está revocado.
+- **Catálogo visible en PostgreSQL:** `pg_database` y `pg_roles` son visibles para todos los usuarios (R-32). Por eso los nombres de bases y usuarios son opacos: no revelan identificadores, pero sí **cuántas** organizaciones hay. El nombre de la base de control (`auditor_control`) sí es visible, pero su acceso está revocado.
+- **Objetos grandes en bases ya creadas:** el `REVOKE` en `template1` solo afecta a las bases creadas después. `tenant check` revisa cada organización e indica en qué base ejecutar el `REVOKE` (como superusuario).
+- **Bases huérfanas:** si se corta la conexión justo después de crear una base, puede quedar una base `auditor_t_…` sin registro. `auditor-admin init` las lista para eliminarlas. Si el corte ocurre durante el propio `CREATE`, el alta queda en `provisioning` y se limpia con `tenant cleanup-provisioning`.
 - **La cuenta de aprovisionamiento es dueña de las bases de organizaciones** y puede modificar su contenido, incluida la bitácora. Mitigación: verificación de la exportación contra anclajes externos (R-26).

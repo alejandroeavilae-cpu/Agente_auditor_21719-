@@ -154,17 +154,17 @@ async function run(argv: string[]): Promise<number> {
       case 'tenant reactivate': {
         const slug = required(v.slug, 'slug');
         const { warnings } = await m.setStatus(slug, command === 'suspend' ? 'suspended' : 'active', ACTOR);
-        console.log(`Organización ${slug}: ${command === 'suspend' ? 'suspendida' : 'reactivada'}.`);
-        printWarnings(warnings);
-        return 0;
+        console.log(`Organización ${slug}: ${command === 'suspend' ? 'suspendida' : 'reactivada'}${warnings.length > 0 ? ', CON ADVERTENCIAS' : ''}.`);
+        // Con advertencias el código de salida es 1: un script no debe darlo por completo (QA N-03).
+        return printWarnings(warnings) ? 1 : 0;
       }
       case 'tenant check': {
         let failed = false;
-        for (const [slug, problem] of Object.entries(await m.checkTenants())) {
-          if (problem === null) console.log(`${slug}: ok`);
+        for (const [slug, problems] of Object.entries(await m.checkTenants())) {
+          if (problems.length === 0) console.log(`${slug}: ok`);
           else {
             failed = true;
-            console.error(`${slug}: ERROR: ${problem}`);
+            for (const p of problems) console.error(`${slug}: ERROR: ${p}`);
           }
         }
         return failed ? 1 : 0;

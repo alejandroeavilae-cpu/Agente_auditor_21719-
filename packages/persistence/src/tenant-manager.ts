@@ -97,9 +97,17 @@ export class TenantManager {
     await this.provisioner.protectControlDatabase(this.server(), this.control() as Kysely<unknown>, name);
     const { applied } = await migrateToLatest(this.control() as Kysely<unknown>, controlMigrations(this.admin.engine));
     const warnings = await this.provisioner.hardeningWarnings(this.server());
-    const stuck = await this.control().selectFrom('tenants').select('slug').where('status', '=', 'provisioning').execute();
-    for (const row of stuck) {
+    const rows = await this.control().selectFrom('tenants').select(['slug', 'status', 'db_name']).execute();
+    for (const row of rows.filter((r) => r.status === 'provisioning')) {
       warnings.push(`El alta de "${row.slug}" quedó incompleta. Ejecute: auditor-admin tenant cleanup-provisioning --slug ${row.slug}`);
+    }
+    // Bases con el patrón de la plataforma que no figuran en la base de control (p. ej. un
+    // corte de conexión justo después de crearlas): se informan para eliminarlas (QA N-01).
+    const known = new Set(rows.map((r) => r.db_name));
+    for (const db of await this.provisioner.listPlatformDatabases(this.server())) {
+      if (!known.has(db)) {
+        warnings.push(`La base "${db}" tiene el formato de la plataforma pero no está registrada en esta base de control. Si no pertenece a otra instalación, elimínela: DROP DATABASE "${db}";`);
+      }
     }
     return { applied, warnings };
   }
@@ -107,6 +115,8 @@ export class TenantManager {
   /**
    * Da de alta una organización: base propia, usuario propio, DEK propia y primera
    * entrada de bitácora. Si algo falla, deshace exactamente lo que esta operación creó.
+   * Si no puede saberse si un recurso se creó (error después de enviar el CREATE), el
+   * registro queda en `provisioning` para limpiarlo con `cleanupProvisioning` (QA N-01).
    *
    * @param actor quién ejecuta la operación (queda en la bitácora de la organización).
    */
@@ -149,12 +159,27 @@ export class TenantManager {
     // algo que esta operación no creó (hallazgo QA M-01).
     let dbCreated = false;
     let loginCreated = false;
+    const ambiguous: string[] = [];
     const warnings: string[] = [];
     try {
-      await this.provisioner.createDatabase(this.server(), dbName);
+      // Cada CREATE es una sola sentencia y su bandera se marca apenas termina; las
+      // restricciones posteriores son pasos aparte (QA N-01).
+      try {
+        await this.provisioner.createDatabase(this.server(), dbName);
+      } catch (error) {
+        if (await this.provisioner.databaseExists(this.server(), dbName).catch(() => true)) ambiguous.push(`base ${dbName}`);
+        throw error;
+      }
       dbCreated = true;
-      await this.provisioner.createLogin(this.server(), login, password, dbName);
+      await this.provisioner.restrictDatabase(this.server(), dbName);
+      try {
+        await this.provisioner.createLogin(this.server(), login, password, dbName);
+      } catch (error) {
+        if (await this.provisioner.loginExists(this.server(), login).catch(() => true)) ambiguous.push(`usuario ${login}`);
+        throw error;
+      }
       loginCreated = true;
+      await this.provisioner.restrictLogin(this.server(), login);
       await this.provisioner.grantConnect(this.server(), dbName, login);
 
       const adminTenantDb = connect<TenantDatabase>(this.admin, dbName, 1);
@@ -179,7 +204,7 @@ export class TenantManager {
       await this.control().updateTable('tenants').set({ status: 'active', updated_at: nowIso() }).where('id', '=', id).execute();
       return { id, slug, name: cleanName, status: 'active', dbName, createdAt, warnings };
     } catch (error) {
-      const cleanup = await this.rollback({ id, dbName, login, dbCreated, loginCreated });
+      const cleanup = await this.rollback({ id, dbName, login, dbCreated, loginCreated, ambiguous });
       if (cleanup.length > 0) {
         throw new Error(`${message(error)} — Además, la reversión no pudo completarse: ${cleanup.join('; ')}. Ejecute: auditor-admin tenant cleanup-provisioning --slug ${slug}`, { cause: error });
       }
@@ -188,8 +213,10 @@ export class TenantManager {
   }
 
   /** Deshace un alta fallida. Devuelve los pasos que no pudo completar (vacío si todo ok). */
-  private async rollback(r: { id: string; dbName: string; login: string; dbCreated: boolean; loginCreated: boolean }): Promise<string[]> {
-    const failures: string[] = [];
+  private async rollback(r: { id: string; dbName: string; login: string; dbCreated: boolean; loginCreated: boolean; ambiguous: string[] }): Promise<string[]> {
+    // Un recurso que existe pero cuyo CREATE falló no se borra aquí: no hay certeza de que
+    // sea de esta operación. Se conserva el registro para decidirlo con cleanupProvisioning.
+    const failures = r.ambiguous.map((x) => `no se pudo determinar si ${x} fue creado por esta operación`);
     if (r.dbCreated) {
       await this.provisioner.dropDatabase(this.server(), r.dbName).catch((e: unknown) => failures.push(`eliminar base ${r.dbName}: ${message(e)}`));
     }
@@ -245,12 +272,18 @@ export class TenantManager {
       await this.provisioner.setLoginEnabled(this.server(), row.db_user, false);
       const w = await this.provisioner.terminateSessions(this.server(), row.db_user);
       if (w !== null) warnings.push(w);
+      // Se comprueba el resultado real: sesiones que sigan abiertas pueden seguir escribiendo (QA N-03).
+      const open = await this.provisioner.countSessions(this.server(), row.db_user).catch(() => -1);
+      if (open !== 0) {
+        warnings.push(open < 0 ? 'No se pudo comprobar si quedan sesiones abiertas.' : `Siguen abiertas ${String(open)} sesión(es) del usuario de la organización: pueden seguir operando hasta que se cierren.`);
+      }
+      await this.control().updateTable('tenants').set({ status, updated_at: nowIso() }).where('id', '=', row.id).execute();
     } else {
+      // Reactivar no es una medida de seguridad urgente: si la bitácora no puede registrarlo,
+      // no se reactiva (la excepción de B-03 solo aplica a suspender, QA N-03).
+      await this.appendAsAdmin(row, { actor, action, object: `organization/${slug}`, data: {} });
       await this.provisioner.setLoginEnabled(this.server(), row.db_user, true);
-    }
-    await this.control().updateTable('tenants').set({ status, updated_at: nowIso() }).where('id', '=', row.id).execute();
-    if (status === 'active') {
-      await this.appendAsAdmin(row, { actor, action, object: `organization/${slug}`, data: {} }).catch((e: unknown) => warnings.push(`No se registró en la bitácora: ${message(e)}`));
+      await this.control().updateTable('tenants').set({ status, updated_at: nowIso() }).where('id', '=', row.id).execute();
     }
     return { warnings };
   }
@@ -266,7 +299,7 @@ export class TenantManager {
     const password = generateDbPassword();
     const dek = unwrapKey(this.masterKeys, row.dek_wrapped, dekContext(row.id));
     await this.closeTenant(slug);
-    await this.provisioner.resetPassword(this.server(), row.db_user, password);
+    await this.provisioner.resetPassword(this.server(), row.db_user, password, row.db_name);
     await this.control()
       .updateTable('tenants')
       .set({ db_password_sealed: seal(dek, Buffer.from(password, 'utf8'), passwordContext(row.id)), updated_at: nowIso() })
@@ -276,20 +309,36 @@ export class TenantManager {
   }
 
   /**
-   * Comprueba que cada organización activa puede abrirse con sus credenciales. Detecta,
-   * por ejemplo, que el usuario de una organización cambió su contraseña.
+   * Comprueba cada organización activa: que abre con sus credenciales, que su usuario no
+   * se fijó parámetros de sesión y que no puede crear objetos grandes. Lista vacía = ok.
    */
-  async checkTenants(): Promise<Record<string, string | null>> {
-    const result: Record<string, string | null> = {};
+  async checkTenants(): Promise<Record<string, string[]>> {
+    const result: Record<string, string[]> = {};
     const rows = await this.control().selectFrom('tenants').selectAll().where('status', '=', 'active').orderBy('slug').execute();
     for (const row of rows) {
+      const problems: string[] = [];
       try {
         const handle = await this.openRow(row);
         await handle.db.destroy();
-        result[row.slug] = null;
       } catch (error) {
-        result[row.slug] = `${message(error)} — si la contraseña fue cambiada, ejecute: auditor-admin tenant rotate-password --slug ${row.slug}`;
+        problems.push(`${message(error)} — si la contraseña fue cambiada, ejecute: auditor-admin tenant rotate-password --slug ${row.slug}`);
       }
+      try {
+        // Parámetros de sesión fijados por el propio usuario (p. ej. solo lectura): QA N-02.
+        const settings = await this.provisioner.loginSettings(this.server(), row.db_user);
+        if (settings.length > 0) {
+          problems.push(`El usuario tiene parámetros de sesión propios (${settings.join(', ')}). Ejecute: auditor-admin tenant rotate-password --slug ${row.slug}`);
+        }
+        const db = connect<unknown>(this.admin, row.db_name, 1);
+        try {
+          problems.push(...(await this.provisioner.tenantDatabaseWarnings(db, row.db_user)));
+        } finally {
+          await db.destroy();
+        }
+      } catch (error) {
+        problems.push(`No se pudo revisar la configuración: ${message(error)}`);
+      }
+      result[row.slug] = problems;
     }
     return result;
   }

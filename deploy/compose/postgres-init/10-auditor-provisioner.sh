@@ -8,8 +8,10 @@
 # Crea la cuenta de aprovisionamiento SIN superusuario que usa `auditor-admin` y quita
 # accesos públicos que PostgreSQL concede por defecto.
 set -eu
-PROV_PW="$(cat /run/secrets/provisioner_password)"
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres -v prov_pw="$PROV_PW" <<'SQL'
+# La contraseña la lee psql desde el archivo (\set con comillas invertidas): nunca aparece
+# en los argumentos de un proceso visibles con "ps" (hallazgo QA N-06).
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<'SQL'
+\set prov_pw `cat /run/secrets/provisioner_password`
 -- Cuenta de aprovisionamiento: crea bases y usuarios de organizaciones, sin superusuario.
 CREATE ROLE auditor_provisioner LOGIN CREATEDB CREATEROLE NOSUPERUSER NOREPLICATION NOBYPASSRLS PASSWORD :'prov_pw';
 -- Permite cerrar las sesiones de una organización al suspenderla.

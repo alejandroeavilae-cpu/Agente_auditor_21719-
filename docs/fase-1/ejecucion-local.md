@@ -91,7 +91,7 @@ Con los servicios levantados (paso 3), en la misma terminal:
    ```sh
    docker compose -f deploy/compose/compose.yaml run --rm admin tenant list
    ```
-   La columna de la base muestra un nombre aleatorio (p. ej. `auditor_t_836cec1cff81`). Es intencional: así el usuario de una organización no puede deducir qué otras organizaciones existen.
+   La columna de la base muestra un nombre aleatorio (p. ej. `auditor_t_836cec1cff81`). Es intencional: así el usuario de una organización no ve los identificadores de las otras. En PostgreSQL sí puede ver **cuántas** bases hay (riesgo residual R-32).
 5. Exporte la bitácora de una organización a un archivo de su equipo. Funciona **también si la organización está suspendida**:
    ```sh
    docker compose -f deploy/compose/compose.yaml run --rm -T admin audit export --tenant muni-demo > bitacora-muni-demo.jsonl
@@ -107,12 +107,12 @@ Con los servicios levantados (paso 3), en la misma terminal:
    docker compose -f deploy/compose/compose.yaml run --rm admin tenant suspend --slug muni-demo
    docker compose -f deploy/compose/compose.yaml run --rm admin tenant reactivate --slug muni-demo
    ```
-   La suspensión la aplica el propio motor: el usuario de esa organización ya no puede iniciar sesión, y sus sesiones abiertas se cierran.
+   La suspensión la aplica el propio motor: el usuario de esa organización ya no puede iniciar sesión, y sus sesiones abiertas se cierran. Si el comando termina con `CON ADVERTENCIAS` (código 1), lea el aviso: por ejemplo, puede quedar una sesión abierta. La reactivación se rechaza si no puede registrarse en la bitácora.
 8. Otras operaciones:
 
    | Comando | Para qué sirve |
    |---|---|
-   | `tenant check` | Comprueba que cada organización activa puede abrirse con sus credenciales |
+   | `tenant check` | Comprueba cada organización activa: que abre con sus credenciales, que su usuario no se fijó parámetros de sesión propios y que no puede crear objetos grandes. Sale con código 1 si encuentra algo |
    | `tenant rotate-password --slug <id>` | Fija una contraseña nueva para el usuario de la organización (p. ej. si `tenant check` falla porque alguien la cambió) |
    | `tenant cleanup-provisioning --slug <id>` | Limpia un alta que quedó a medias (p. ej. si se cortó la luz durante `tenant create`). `init` avisa cuando hay una |
 

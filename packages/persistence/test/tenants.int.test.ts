@@ -115,7 +115,7 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     expect(await tryConnect(asA, credsA.dbName)).toBeNull();
   });
 
-  it('el usuario de una organización no puede deducir qué otras organizaciones existen', async () => {
+  it('el usuario de una organización no ve identificadores de otras organizaciones (sí cuántas hay en PostgreSQL: R-32)', async () => {
     const credsA = await manager.credentials(slugA);
     const credsB = await manager.credentials(slugB);
     const a = connect<unknown>({ ...server, user: credsA.user, password: credsA.password }, credsA.dbName, 1);
@@ -196,6 +196,8 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     if (engine === 'postgresql') {
       await sql`ALTER ROLE CURRENT_USER PASSWORD ${sql.lit(stolen)}`.execute(asA);
       await sql`ALTER ROLE CURRENT_USER SET statement_timeout = '1ms'`.execute(asA);
+      // También solo para su base (QA N-02): dejaría la bitácora en solo lectura.
+      await sql`ALTER ROLE CURRENT_USER IN DATABASE ${sql.id(credsA.dbName)} SET default_transaction_read_only = on`.execute(asA);
     } else {
       await sql`ALTER LOGIN ${sql.id(credsA.user)} WITH PASSWORD = ${sql.lit(stolen)} OLD_PASSWORD = ${sql.lit(credsA.password)}`.execute(asA);
     }
@@ -203,13 +205,14 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     await manager.closeTenant(slugA);
 
     const check = await manager.checkTenants();
-    expect(check[slugA]).toMatch(/rotate-password/);
-    expect(check[slugB]).toBeNull();
+    expect(check[slugA]?.join(' ')).toMatch(/rotate-password/);
+    if (engine === 'postgresql') expect(check[slugA]?.join(' ')).toMatch(/default_transaction_read_only/);
+    expect(check[slugB]).toEqual([]);
 
     await manager.rotatePassword(slugA, 'operador:pruebas');
-    expect((await manager.checkTenants())[slugA]).toBeNull();
+    expect((await manager.checkTenants())[slugA]).toEqual([]);
     const a = await manager.openTenant(slugA);
-    // La configuración que el usuario se fijó (statement_timeout) fue eliminada.
+    // Las configuraciones que el usuario se fijó (statement_timeout, solo lectura) fueron eliminadas.
     await expect(a.audit.append({ actor: 'usuario-sintetico', action: 'prueba.post-rotacion', object: 'o/1' })).resolves.toBeDefined();
     const actions = (await manager.exportAuditLog(slugA)).map((e) => e.action);
     expect(actions).toContain('tenant.password_rotated');
@@ -232,6 +235,10 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     await adminA.updateTable('audit_log').set({ data: 'no-es-json' }).where('seq', '=', last.seq).execute();
     const result = await manager.setStatus(slugA, 'suspended', 'operador:pruebas');
     expect(result.warnings.join(' ')).toMatch(/No se registró en la bitácora/);
+    expect((await manager.listTenants()).find((t) => t.slug === slugA)?.status).toBe('suspended');
+    expect(await tryConnect({ ...server, user: credsA.user, password: credsA.password }, credsA.dbName)).not.toBeNull();
+    // Reactivar sí exige poder registrarlo (QA N-03): se rechaza y sigue suspendida.
+    await expect(manager.setStatus(slugA, 'active', 'operador:pruebas')).rejects.toThrow();
     expect((await manager.listTenants()).find((t) => t.slug === slugA)?.status).toBe('suspended');
     expect(await tryConnect({ ...server, user: credsA.user, password: credsA.password }, credsA.dbName)).not.toBeNull();
     await adminA.updateTable('audit_log').set({ data: '{}' }).where('seq', '=', last.seq).execute();
@@ -270,13 +277,46 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
         await real.createDatabase(s, dbName); // el segundo CREATE falla: "ya existe"
       },
     });
-    await expect(racing.createTenant(slug, 'Carrera', 'operador:pruebas')).rejects.toThrow();
+    // Sin certeza de quién creó la base, no se borra y el alta queda pendiente de limpieza.
+    await expect(racing.createTenant(slug, 'Carrera', 'operador:pruebas')).rejects.toThrow(/no se pudo determinar.*cleanup-provisioning/s);
     await racing.close();
     const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
     expect(await real.databaseExists(serverDb, foreign)).toBe(true);
+    expect((await manager.listTenants()).find((t) => t.slug === slug)?.status).toBe('provisioning');
     await real.dropDatabase(serverDb, foreign);
     await serverDb.destroy();
+    await manager.cleanupProvisioning(slug);
     expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
+  });
+
+  it('N-01: si falla una restricción posterior al CREATE, la base creada igual se elimina', async () => {
+    const slug = `prueba-${id}-n`;
+    let created = '';
+    const failing = managerWith({
+      createDatabase: async (s, dbName) => {
+        created = dbName;
+        await real.createDatabase(s, dbName);
+      },
+      restrictDatabase: () => Promise.reject(new Error('fallo inyectado tras CREATE')),
+    });
+    await expect(failing.createTenant(slug, 'Restricción', 'operador:pruebas')).rejects.toThrow('fallo inyectado tras CREATE');
+    await failing.close();
+    const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
+    expect(await real.databaseExists(serverDb, created)).toBe(false);
+    await serverDb.destroy();
+    expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
+  });
+
+  it('N-01: init informa bases con el formato de la plataforma que no están registradas', async () => {
+    const orphan = 'auditor_t_0000000000ff';
+    const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
+    await real.createDatabase(serverDb, orphan);
+    try {
+      expect((await manager.initControl()).warnings.join(' ')).toContain(orphan);
+    } finally {
+      await real.dropDatabase(serverDb, orphan);
+      await serverDb.destroy();
+    }
   });
 
   it('M-06: un alta que no pudo revertirse queda señalada y se limpia con cleanupProvisioning', async () => {
