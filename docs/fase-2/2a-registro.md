@@ -1,7 +1,12 @@
 # Fase 2 · Entrega 2A — Base de datos y organizaciones: registro
 
 **Aprobación de inicio de la Fase 2:** Alejandro Ávila, 26-10-2026 23:37 (hora de Chile), en tres entregas con aprobación separada.
-**Rama:** `fase-2a`. **Estado:** Implementado y Probado. La primera revisión QA independiente (27-10-2026, sobre `375e794`) **no aprobó**: 2 hallazgos de severidad Alta, 7 Media y 15 Baja. Las correcciones están en la §6. Pendiente: nueva revisión QA y aprobación humana de cierre de 2A.
+**Rama:** `fase-2a`. **Estado:** Implementado y Probado. Revisiones QA independientes:
+
+- **Primera** (27-10-2026, sobre `375e794`): no aprobada, con 2 hallazgos Altos, 7 Medios y 15 Bajos. Correcciones en la §6.
+- **Segunda** (28-10-2026, sobre `d969f80`): no aprobada, con 1 hallazgo nuevo Medio y 6 Bajos. Correcciones en la §7.
+
+Pendiente: verificación QA de la §7 y aprobación humana de cierre de 2A.
 
 ## 1. Alcance entregado
 
@@ -83,7 +88,7 @@ Revisión QA independiente del 27-10-2026 sobre `375e794`: **no aprobada**. Corr
 | A-02 API con superusuario y clave maestra | Servicio `admin` (perfil `tools`) único con secretos; cuenta `auditor_provisioner` sin superusuario | Integración: `la cuenta de aprovisionamiento no es superusuario` (todas las pruebas usan esa cuenta); humo de Compose paso 9 |
 | M-01 La reversión borraba una base ajena | Banderas `dbCreated` / `loginCreated` marcadas después de cada CREATE exitoso | `M-01: la reversión nunca elimina una base que la plataforma no creó` (carrera simulada) |
 | M-02 El usuario cambia su contraseña | `tenant check`, `tenant rotate-password` (con `RESET ALL`), `search_path` fijo | `M-02: …se detecta y la rotación recupera el acceso` |
-| M-03 Catálogo y bases del sistema visibles | Nombres opacos; `REVOKE CONNECT, TEMP` en `postgres` y `template1`; `DENY VIEW ANY DATABASE`; `REVOKE CONNECT FROM guest` | `PT-12 (base)` ampliada a `postgres` y `template1`; `no puede deducir qué otras organizaciones existen` |
+| M-03 Catálogo y bases del sistema visibles | Nombres opacos; `REVOKE CONNECT, TEMP` en `postgres` y `template1`; `DENY VIEW ANY DATABASE`; `REVOKE CONNECT FROM guest` | `PT-12 (base)` ampliada a `postgres` y `template1`; `no ve identificadores de otras organizaciones` (en PostgreSQL sí se ve cuántas hay: R-32) |
 | M-04 Suspensión solo en la aplicación | `NOLOGIN` / `DISABLE` y cierre de sesiones | `M-04/M-05`: una conexión abierta antes de suspender queda cortada y no se puede volver a conectar |
 | M-05 No se exportaba una organización suspendida | Exportación con la cuenta de aprovisionamiento | `M-04/M-05`; humo de Compose paso 11 |
 | M-06 Alta interrumpida bloqueada | Registro `provisioning` previo; aviso en `init`; `tenant cleanup-provisioning` | `M-06: …se limpia con cleanupProvisioning` |
@@ -107,7 +112,7 @@ Revisión QA independiente del 27-10-2026 sobre `375e794`: **no aprobada**. Corr
 **Evidencia local (28-10-2026, Node 24.22.1, PostgreSQL 18.4):**
 
 - `pnpm run verify`: código de salida 0. Pruebas: web 4, crypto 14, audit-log 44, api 15, persistence 23 + 1 omitida (la de integración, sin motores). Licencias: 312 paquetes permitidos.
-- Integración con PostgreSQL (`REQUIRE_DB_ENGINES=postgresql`): **42 aprobadas, 0 fallidas, 0 omitidas** (23 unitarias + 19 de integración). La versión anterior, con 18 pruebas de integración, se ejecutó 4 veces seguidas con el mismo resultado.
+- Integración con PostgreSQL (`REQUIRE_DB_ENGINES=postgresql`): **42 aprobadas, 0 fallidas, 0 omitidas** (23 unitarias + 19 de integración). [PENDIENTE: no se conservó el informe de esa ejecución; la evidencia actual está en la §7]
   - Al terminar, el servidor solo conserva `postgres`, `template0`, `template1` y el rol `auditor`.
 
 **Evidencia de CI sobre `28c764f`** (todos los jobs en verde):
@@ -124,3 +129,44 @@ Revisión QA independiente del 27-10-2026 sobre `375e794`: **no aprobada**. Corr
   - La regla D-24 bloqueó la imagen web por CVE-2026-116587 en `go-jose` v4.1.5, que va dentro de Caddy. Se corrigió fijando la v4.1.6 en el Dockerfile.
   - Falló el job de integración. Como los logs de CI no son accesibles desde el entorno del agente (403), se añadió el reporte de pruebas fallidas como anotaciones.
 - Run 40695125716 (`38c6351`): el aviso de endurecimiento detectó una base `auditor` con acceso público, creada por la configuración del servicio PostgreSQL de CI. Se corrigió con `POSTGRES_DB: postgres`. Es el mismo aviso que verá un administrador real.
+
+## 7. Correcciones tras la segunda revisión QA (28-10-2026)
+
+Segunda revisión QA sobre `d969f80`: **no aprobada**.
+
+- **Hallazgos anteriores:** A-02, M-01 y M-03 a M-07 quedaron corregidos. A-01 y M-02 quedaron parciales; sus causas son los hallazgos nuevos N-01 y N-02.
+- **B-04:** QA lo ejecutó y confirmó el `lock timeout` a los 30 s. Lo cuento como evidencia de QA, no mía.
+- **Hallazgos nuevos:** N-01 (Media) y N-02 a N-07 (Bajas).
+
+Correcciones en `2119a8c` y `fefab6f`. Decisión nueva: D-71.
+
+| Hallazgo | Corrección | Prueba |
+|---|---|---|
+| N-01 Base huérfana sin registro si fallaba la 2.ª sentencia de un paso | `CREATE` aislado (`restrictDatabase` y `restrictLogin` son pasos aparte); la bandera se marca apenas termina el `CREATE`. Si el `CREATE` falla pero el recurso existe, el alta queda en `provisioning`. `init` lista bases `auditor_t_…` sin registro | `N-01: si falla una restricción posterior al CREATE…`; `N-01: init informa bases…`; `M-01` ajustada (el registro queda en `provisioning`) |
+| N-02 `rotate-password` no borraba parámetros `IN DATABASE` | `ALTER ROLE … IN DATABASE … RESET ALL`; `tenant check` lee `pg_db_role_setting` | `M-02` ampliada con `default_transaction_read_only` solo para su base |
+| N-03 `suspend` con sesiones vivas salía con 0; reactivar sin registro | Se espera hasta 5 s el cierre de sesiones y se avisa si siguen abiertas; la CLI sale con 1 si hay advertencias; reactivar se rechaza si no puede registrarse (D-71) | `B-03` ampliada (la reactivación se rechaza con la bitácora dañada) |
+| N-04 Objetos grandes solo se revisaban al crear | `tenant check` revisa cada organización (las 5 funciones `lo_*`) e indica la base | Revisión de código e integración (`check` vacío en servidor endurecido) |
+| N-05 `check-integration-report.mjs` aceptaba valores no numéricos | Validación de contadores y del mínimo (código 2) | Ejecutado: `MIN_TESTS_PER_ENGINE=abc` → código 2; informe con 1 omitida y sin `numTodoTests` → código 1 |
+| N-06 Contraseña en los argumentos de `psql` | `\set prov_pw \`cat …\`` dentro del script | Script ejecutado contra PostgreSQL 18.4 local: crea la cuenta y esta inicia sesión |
+| N-07 Documentación | Se aclara que se ve **cuántas** organizaciones hay; se advierte que `pg_signal_backend` alcanza a cualquier sesión que no sea de superusuario; la afirmación "4 veces" se marcó `[PENDIENTE]` | — |
+
+**Sobre N-07:** los dos pasos numerados 7 de `ejecucion-local.md` pertenecen a listas distintas (Opción A, administración, y Opción B). No se cambió la numeración.
+
+**Observación de QA, anterior a 2A:** `compose.offline.yaml` usa `postgres:18-alpine` sin digest, porque las imágenes cargadas con `docker load` no conservan el digest del registro. Su integridad depende del `SHA256SUMS` firmado del paquete offline. No se modificó en 2A.
+
+**Incidente durante la corrección:**
+- El commit `2119a8c` se subió con una prueba inestable: la suspensión contaba las sesiones antes de que el motor terminara de cerrarlas.
+- Localmente fallaron 3 pruebas en cadena. El informe está en el scratchpad del agente (`evidencia-2a/vi5.json`).
+- Su run de CI (40698647444) quedó cancelado por el siguiente push.
+- Se corrigió en `fefab6f`, que espera hasta 5 s.
+
+**Evidencia local (28-10-2026, `fefab6f`):**
+- `pnpm run verify`: código 0. Pruebas: crypto 14, audit-log 44, api 15, web 4, persistence 23 + 1 omitida.
+- Integración con PostgreSQL 18.4: **5 ejecuciones seguidas con 44 aprobadas, 0 fallidas y 0 omitidas** (postgresql=21). Informes JSON en el scratchpad del agente (`evidencia-2a/vi-1.json` a `vi-5.json`).
+
+**Evidencia de CI sobre `fefab6f`** (todo en verde):
+- CI run [40698772829](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40698772829):
+  - integración, job 122853286061: "**65 aprobadas, 0 fallidas, 0 omitidas · por motor: postgresql=21, sqlserver=21**";
+  - humo de Compose: job 122853285494;
+  - verificación: job 122853286080.
+- Seguridad: run [40698772823](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40698772823).
