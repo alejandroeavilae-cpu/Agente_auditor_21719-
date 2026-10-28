@@ -6,7 +6,9 @@
 - **Primera** (27-10-2026, sobre `375e794`): no aprobada, con 2 hallazgos Altos, 7 Medios y 15 Bajos. Correcciones en la §6.
 - **Segunda** (28-10-2026, sobre `d969f80`): no aprobada, con 1 hallazgo nuevo Medio y 6 Bajos. Correcciones en la §7.
 
-Pendiente: verificación QA de la §7 y aprobación humana de cierre de 2A.
+- **Tercera** (28-10-2026, sobre `930b5cd`): **APROBADA por QA**. N-01 a N-07 corregidos y sin regresiones. Quedan 2 hallazgos Bajos abiertos (X-01, X-02; ver §8).
+
+Pendiente: **aprobación humana de cierre de 2A**.
 
 ## 1. Alcance entregado
 
@@ -70,11 +72,11 @@ D-58 a D-64 en `docs/fase-0/21-decisiones.md` §5. La más relevante: **Kysely e
 | 3 | Pruebas ejecutadas | Cumplido (§2) |
 | 4 | Resultados verificables | Cumplido (runs de CI enlazados; anotaciones con conteos) |
 | 5 | Riesgos de seguridad evaluados | Cumplido (§4; regla D-24 aplicada) |
-| 6 | Permisos correctos | Corregido tras QA (A-02, M-02, M-03): usuario por organización con privilegios mínimos, cuenta de aprovisionamiento sin superusuario, API sin secretos de administración. Pendiente de la nueva revisión QA |
+| 6 | Permisos correctos | Cumplido según QA: usuario por organización con privilegios mínimos, cuenta de aprovisionamiento sin superusuario y API sin secretos de administración. En SQL Server, `securityadmin` sigue siendo poderoso (§4.10) |
 | 7 | Aislamiento de datos revisado | Cumplido a nivel de base de datos; el aislamiento por endpoint HTTP corresponde a 2C |
 | 8 | Comentarios en español | Cumplido |
 | 9 | Documentación actualizada | Cumplido (`docs/fase-1/ejecucion-local.md`, este registro) |
-| 10 | Revisión QA | Primera revisión: **no aprobada** (27-10-2026). Nueva revisión: **pendiente** |
+| 10 | Revisión QA | **Aprobada** en la tercera revisión (28-10-2026, `930b5cd`), con X-01 y X-02 (Bajos) abiertos; ver §8 |
 | 11 | Limitaciones documentadas | Cumplido (§4) |
 | 12 | Aprobación humana | **Pendiente** |
 
@@ -156,13 +158,13 @@ Correcciones en `2119a8c` y `fefab6f`. Decisión nueva: D-71.
 
 **Incidente durante la corrección:**
 - El commit `2119a8c` se subió con una prueba inestable: la suspensión contaba las sesiones antes de que el motor terminara de cerrarlas.
-- Localmente fallaron 3 pruebas en cadena. El informe está en el scratchpad del agente (`evidencia-2a/vi5.json`).
+- Localmente fallaron 3 pruebas en cadena. El informe está en `docs/fase-2/evidencia-2a/incidente-2119a8c.json`.
 - Su run de CI (40698647444) quedó cancelado por el siguiente push.
 - Se corrigió en `fefab6f`, que espera hasta 5 s.
 
 **Evidencia local (28-10-2026, `fefab6f`):**
 - `pnpm run verify`: código 0. Pruebas: crypto 14, audit-log 44, api 15, web 4, persistence 23 + 1 omitida.
-- Integración con PostgreSQL 18.4: **5 ejecuciones seguidas con 44 aprobadas, 0 fallidas y 0 omitidas** (postgresql=21). Informes JSON en el scratchpad del agente (`evidencia-2a/vi-1.json` a `vi-5.json`).
+- Integración con PostgreSQL 18.4: **5 ejecuciones seguidas con 44 aprobadas, 0 fallidas y 0 omitidas** (postgresql=21). Informes JSON en `docs/fase-2/evidencia-2a/` (`vi-1.json` a `vi-5.json`).
 
 **Evidencia de CI sobre `fefab6f`** (todo en verde):
 - CI run [40698772829](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40698772829):
@@ -170,3 +172,22 @@ Correcciones en `2119a8c` y `fefab6f`. Decisión nueva: D-71.
   - humo de Compose: job 122853285494;
   - verificación: job 122853286080.
 - Seguridad: run [40698772823](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40698772823).
+
+## 8. Tercera revisión QA: aprobada, con hallazgos Bajos abiertos
+
+**Revisión:** sobre `930b5cd`, en un clon nuevo, con la CLI real y una cuenta sin superusuario.
+
+**Resultado:**
+- **N-01:** QA ejecutó una matriz de 21 casos (cada paso × fallo, fallo después del paso o proceso muerto). En todos el alta quedó revertida o registrada en `provisioning`; no quedó ninguna base sin registro.
+- **N-02 a N-07:** corregidos con ejecución real.
+- **Regresiones:** ninguna.
+- **CI de `930b5cd`:** run 40699796629 en verde, verificado por QA.
+
+**Hallazgos abiertos.** No se corrigieron después de la aprobación para no introducir código sin revisar. Quedan como limitaciones conocidas [PENDIENTE], para corregir al inicio de 2B o antes de fusionar si el responsable lo prefiere:
+
+| ID | Severidad | Descripción | Corrección propuesta |
+|---|---|---|---|
+| X-01 | Baja | Si `CREATE` falla con "ya existe" (PostgreSQL 42P04/42710), el alta queda en `provisioning` en vez de tratarse como "no creado". Si esa base ajena pertenece a la misma cuenta de aprovisionamiento, seguir el mensaje (`cleanup-provisioning`) la elimina. Exige que coincida un nombre aleatorio de 48 bits, o un atacante que ya tenga las credenciales de aprovisionamiento | Tratar 42P04/42710 (y 1801/15025 en SQL Server) como "no creado"; que `cleanupProvisioning` verifique `organization.id` antes de eliminar |
+| X-02 | Baja | Si el usuario de una organización fija parámetros para **otra** base (`IN DATABASE <otra>`), `tenant check` sigue informando el problema y `rotate-password` no lo resuelve. No afecta la operación: ese usuario no puede conectarse a otras bases | `RESET ALL` en cada `setdatabase` del rol |
+
+**Pendiente** (fuera del alcance de QA): no se verificó si la protección de la rama `main` exige el job de integración para fusionar.
