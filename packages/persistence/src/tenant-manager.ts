@@ -273,7 +273,7 @@ export class TenantManager {
       const w = await this.provisioner.terminateSessions(this.server(), row.db_user);
       if (w !== null) warnings.push(w);
       // Se comprueba el resultado real: sesiones que sigan abiertas pueden seguir escribiendo (QA N-03).
-      const open = await this.provisioner.countSessions(this.server(), row.db_user).catch(() => -1);
+      const open = await this.waitForNoSessions(row.db_user);
       if (open !== 0) {
         warnings.push(open < 0 ? 'No se pudo comprobar si quedan sesiones abiertas.' : `Siguen abiertas ${String(open)} sesión(es) del usuario de la organización: pueden seguir operando hasta que se cierren.`);
       }
@@ -415,6 +415,20 @@ export class TenantManager {
     await this.serverDb?.destroy();
     this.controlDb = undefined;
     this.serverDb = undefined;
+  }
+
+  /**
+   * Cerrar una sesión es asíncrono en el motor: se espera hasta 5 s a que desaparezcan.
+   * Devuelve las que siguen abiertas, o -1 si no se pudo comprobar.
+   */
+  private async waitForNoSessions(login: string): Promise<number> {
+    let open = -1;
+    for (let attempt = 0; attempt < 25; attempt++) {
+      open = await this.provisioner.countSessions(this.server(), login).catch(() => -1);
+      if (open <= 0) return open;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return open;
   }
 
   protected async findRow(slug: string): Promise<TenantsTable> {
