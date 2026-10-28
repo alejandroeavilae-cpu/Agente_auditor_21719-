@@ -203,9 +203,23 @@ Correcciones en `2119a8c` y `fefab6f`. Decisión nueva: D-71.
 - El archivo se abre una sola vez, con `O_NOFOLLOW` cuando la comprobación está activa.
 - Permisos y tipo se comprueban sobre el descriptor abierto (`fstat`), y se lee desde ese mismo descriptor.
 - Se rechaza todo lo que no sea un archivo regular. Hay pruebas nuevas con un directorio y con una tubería con nombre (FIFO).
-- Mientras QA verificaba, el implementador detectó que abrir una FIFO podía quedar bloqueado indefinidamente. Se agregó `O_NONBLOCK` (commit siguiente a `3a8eca0`).
+- Durante la verificación se detectó que, en `3a8eca0`, abrir una FIFO dejaba el proceso bloqueado indefinidamente. QA lo reprodujo con y sin comprobación de permisos. Se corrigió con `O_NONBLOCK` en `e9bb6c1`.
 
 **Verificación.**
 - Local: `pnpm run verify`, código 0.
-- CI y CodeQL sobre el commit de la corrección: [PENDIENTE].
-- Verificación QA dirigida: [PENDIENTE].
+- CI, CodeQL y Seguridad sobre `e9bb6c1`: los 16 check-runs en `success`. CodeQL informa "No new alerts in code changed by this pull request". Integración: 65 aprobadas (postgresql=21, sqlserver=21). Runs 40706883746, 40706894629, 40706894565 y 40706894608.
+- Limitación de esa evidencia: no se pudo consultar la lista de alertas de code scanning (HTTP 403); la conclusión se basa en el check-run de CodeQL.
+- **Verificación QA dirigida (28-10-2026, sobre `e9bb6c1`): se mantiene la aprobación.** Casos ejecutados:
+  - permisos 600/400/640/604/644;
+  - enlaces simbólicos válidos y rotos;
+  - directorio, FIFO, `/dev/null` y `/dev/zero`, sin bloqueo;
+  - 3000 llamadas por caso sin fuga de descriptores;
+  - CLI con y sin comprobación;
+  - PR #3 en estado `clean`.
+
+**Hallazgos abiertos adicionales** (Bajos, para el inicio de 2B junto con X-01 y X-02) [PENDIENTE]:
+
+| ID | Descripción | Corrección propuesta |
+|---|---|---|
+| Y-02 | Si la clave maestra no corresponde, `tenant check` recomienda `rotate-password`, que tampoco funcionaría porque no puede descifrar la clave de la organización | Distinguir el error de descifrado e indicar que la clave maestra no corresponde |
+| Y-03 | La prueba de FIFO usa `mkfifo` y fallaría en Windows (la guía documenta PowerShell) | Omitirla en Windows con `it.skipIf` |
