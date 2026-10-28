@@ -76,8 +76,12 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     expect(Boolean(r.rows[0]?.s)).toBe(false);
   });
 
-  it('la base de control es idempotente: una segunda inicialización no aplica nada ni advierte', async () => {
-    expect(await manager.initControl()).toEqual({ applied: [], warnings: [] });
+  it('la base de control es idempotente: una segunda inicialización no aplica nada ni advierte sobre bases de la plataforma', async () => {
+    const { applied, warnings } = await manager.initControl();
+    expect(applied).toEqual([]);
+    // Puede advertir sobre bases ajenas del servidor de pruebas, nunca sobre la de control,
+    // las de organizaciones ni las del sistema ya endurecidas.
+    expect(warnings.filter((w) => /auditor_t_|auditor_ctl_|"postgres"|"template1"|incompleta/.test(w))).toEqual([]);
   });
 
   it('cada organización tiene su propia base, con nombre opaco, y queda activa', async () => {

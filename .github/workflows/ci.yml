@@ -56,6 +56,8 @@ jobs:
         image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
         env:
           POSTGRES_USER: auditor
+          # Sin base extra "auditor" con acceso público (igual que el perfil Compose).
+          POSTGRES_DB: postgres
           POSTGRES_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Pg_2026
         ports: ["127.0.0.1:5432:5432"]
         options: >-
