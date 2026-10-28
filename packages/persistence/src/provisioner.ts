@@ -7,25 +7,42 @@ import type { DbEngine } from './config.js';
  * Operaciones de aprovisionamiento que difieren entre motores.
  *
  * Modelo de privilegios (decisión D-04, aislamiento por base de datos):
- * - La cuenta administrativa es dueña de todas las bases y ejecuta las migraciones.
- * - Cada organización tiene un usuario propio de aplicación que SOLO puede conectarse a
- *   su base, y dentro de ella solo puede LEER e INSERTAR en la bitácora: no puede
- *   modificar ni borrar entradas (bitácora solo-anexar reforzada por el motor).
- * - Ese usuario no tiene acceso a la base de control ni a las bases de otras organizaciones.
+ * - Una cuenta de **aprovisionamiento SIN superusuario** (PostgreSQL: CREATEDB, CREATEROLE y
+ *   pg_signal_backend; SQL Server: dbcreator, securityadmin y processadmin) es dueña de las
+ *   bases y ejecuta migraciones (hallazgo QA A-02).
+ * - Cada organización tiene un usuario propio que SOLO puede conectarse a su base, y dentro
+ *   de ella solo puede LEER e INSERTAR en la bitácora.
+ *
+ * Cada operación hace UNA cosa, para que la reversión de un alta fallida pueda deshacer
+ * exactamente lo que se creó y nada más (hallazgos QA A-01 y M-01).
  */
 export interface Provisioner {
-  createDatabaseAndLogin(serverDb: Kysely<unknown>, dbName: string, login: string, password: string): Promise<void>;
-  /** Pasos previos a las migraciones, ejecutados en la base de la organización. */
+  /** Crea la base vacía y le quita el acceso público. */
+  createDatabase(serverDb: Kysely<unknown>, dbName: string): Promise<void>;
+  /** Crea el usuario de la organización. */
+  createLogin(serverDb: Kysely<unknown>, login: string, password: string, dbName: string): Promise<void>;
+  /** Permite al usuario conectarse a su base (solo a esa). */
+  grantConnect(serverDb: Kysely<unknown>, dbName: string, login: string): Promise<void>;
+  /** Pasos previos a las migraciones, en la base de la organización. */
   prepareTenantDatabase(adminTenantDb: Kysely<unknown>, login: string): Promise<void>;
   /** Privilegios mínimos del usuario de aplicación, tras las migraciones. */
   grantAppPrivileges(adminTenantDb: Kysely<unknown>, login: string): Promise<void>;
-  /** Elimina base y usuario (reversión de un alta fallida y limpieza de pruebas). */
-  dropDatabaseAndLogin(serverDb: Kysely<unknown>, dbName: string, login: string): Promise<void>;
-  /** Impide que usuarios de organizaciones se conecten a la base de control. */
-  protectControlDatabase(serverDb: Kysely<unknown>, controlDb: string): Promise<void>;
+  dropDatabase(serverDb: Kysely<unknown>, dbName: string): Promise<void>;
+  dropLogin(serverDb: Kysely<unknown>, login: string): Promise<void>;
+  /** Habilita o deshabilita el inicio de sesión del usuario (suspensión aplicada por el motor). */
+  setLoginEnabled(serverDb: Kysely<unknown>, login: string, enabled: boolean): Promise<void>;
+  /** Cierra las sesiones abiertas del usuario. Mejor esfuerzo: devuelve un aviso si no pudo. */
+  terminateSessions(serverDb: Kysely<unknown>, login: string): Promise<string | null>;
+  /** Cambia la contraseña y borra configuraciones de sesión que el usuario haya fijado. */
+  resetPassword(serverDb: Kysely<unknown>, login: string, password: string): Promise<void>;
+  /** Impide que usuarios de organizaciones entren a la base de control. */
+  protectControlDatabase(serverDb: Kysely<unknown>, controlDb: Kysely<unknown>, controlDbName: string): Promise<void>;
+  /** Avisos de endurecimiento del servidor que la cuenta de aprovisionamiento no puede corregir. */
+  hardeningWarnings(serverDb: Kysely<unknown>): Promise<string[]>;
+  /** Avisos sobre la base recién creada de una organización (heredados de la plantilla). */
+  tenantDatabaseWarnings(adminTenantDb: Kysely<unknown>, login: string): Promise<string[]>;
   databaseExists(serverDb: Kysely<unknown>, dbName: string): Promise<boolean>;
   loginExists(serverDb: Kysely<unknown>, login: string): Promise<boolean>;
-  createDatabase(serverDb: Kysely<unknown>, dbName: string): Promise<void>;
 }
 
 /**
@@ -41,11 +58,15 @@ function passwordLiteral(password: string): string {
 }
 
 const postgres: Provisioner = {
-  async createDatabaseAndLogin(serverDb, dbName, login, password) {
-    await sql`CREATE ROLE ${sql.id(login)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION PASSWORD ${sql.raw(passwordLiteral(password))}`.execute(serverDb);
+  async createDatabase(serverDb, dbName) {
     await sql`CREATE DATABASE ${sql.id(dbName)}`.execute(serverDb);
     // Por defecto PostgreSQL permite a cualquier usuario conectarse a cualquier base: se revoca.
     await sql`REVOKE ALL ON DATABASE ${sql.id(dbName)} FROM PUBLIC`.execute(serverDb);
+  },
+  async createLogin(serverDb, login, password) {
+    await sql`CREATE ROLE ${sql.id(login)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION PASSWORD ${sql.raw(passwordLiteral(password))}`.execute(serverDb);
+  },
+  async grantConnect(serverDb, dbName, login) {
     await sql`GRANT CONNECT ON DATABASE ${sql.id(dbName)} TO ${sql.id(login)}`.execute(serverDb);
   },
   async prepareTenantDatabase(adminTenantDb, login) {
@@ -56,19 +77,50 @@ const postgres: Provisioner = {
     await sql`GRANT SELECT, INSERT ON audit_log TO ${sql.id(login)}`.execute(adminTenantDb);
     await sql`GRANT SELECT ON organization TO ${sql.id(login)}`.execute(adminTenantDb);
   },
-  async dropDatabaseAndLogin(serverDb, dbName, login) {
+  async dropDatabase(serverDb, dbName) {
     await sql`DROP DATABASE IF EXISTS ${sql.id(dbName)} WITH (FORCE)`.execute(serverDb);
+  },
+  async dropLogin(serverDb, login) {
     await sql`DROP ROLE IF EXISTS ${sql.id(login)}`.execute(serverDb);
   },
-  async protectControlDatabase(serverDb, controlDb) {
-    await sql`REVOKE ALL ON DATABASE ${sql.id(controlDb)} FROM PUBLIC`.execute(serverDb);
+  async setLoginEnabled(serverDb, login, enabled) {
+    await sql`ALTER ROLE ${sql.id(login)} ${sql.raw(enabled ? 'LOGIN' : 'NOLOGIN')}`.execute(serverDb);
+  },
+  async terminateSessions(serverDb, login) {
+    try {
+      await sql`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = ${login}`.execute(serverDb);
+      return null;
+    } catch {
+      return `No se pudieron cerrar las sesiones abiertas de ${login} (¿falta pg_signal_backend?). Las nuevas conexiones sí quedan bloqueadas.`;
+    }
+  },
+  async resetPassword(serverDb, login, password) {
+    await sql`ALTER ROLE ${sql.id(login)} PASSWORD ${sql.raw(passwordLiteral(password))}`.execute(serverDb);
+    // El usuario de una organización puede fijar parámetros de sesión propios (p. ej.
+    // search_path o statement_timeout): se eliminan (hallazgo QA M-02).
+    await sql`ALTER ROLE ${sql.id(login)} RESET ALL`.execute(serverDb);
+  },
+  async protectControlDatabase(serverDb, _controlDb, controlDbName) {
+    await sql`REVOKE ALL ON DATABASE ${sql.id(controlDbName)} FROM PUBLIC`.execute(serverDb);
+  },
+  async hardeningWarnings(serverDb) {
+    const r = await sql<{ datname: string }>`SELECT datname FROM pg_database WHERE datallowconn AND has_database_privilege('public', datname, 'CONNECT') ORDER BY datname`.execute(serverDb);
+    return r.rows.map(
+      (row) => `Cualquier usuario puede conectarse a la base "${row.datname}". Ejecute como superusuario: REVOKE CONNECT, TEMPORARY ON DATABASE "${row.datname}" FROM PUBLIC; (ver docs/fase-2/servidor-de-base-de-datos.md)`,
+    );
+  },
+  async tenantDatabaseWarnings(adminTenantDb, login) {
+    // Los objetos grandes (lo_creat y similares) son un canal de escritura fuera de la
+    // bitácora (hallazgo QA B-12). Sus permisos viven en cada base y se copian de template1;
+    // solo un superusuario puede quitarlos allí (docs/fase-2/servidor-de-base-de-datos.md).
+    const r = await sql<{ ok: boolean }>`SELECT has_function_privilege(${login}, 'lo_creat(integer)', 'EXECUTE') AS ok`.execute(adminTenantDb);
+    return r.rows[0]?.ok === true
+      ? ['El usuario de la organización puede crear objetos grandes (lo_creat). Ejecute como superusuario en template1 lo indicado en docs/fase-2/servidor-de-base-de-datos.md.']
+      : [];
   },
   async databaseExists(serverDb, dbName) {
     const r = await sql<{ n: number }>`SELECT 1 AS n FROM pg_database WHERE datname = ${dbName}`.execute(serverDb);
     return r.rows.length > 0;
-  },
-  async createDatabase(serverDb, dbName) {
-    await sql`CREATE DATABASE ${sql.id(dbName)}`.execute(serverDb);
   },
   async loginExists(serverDb, login) {
     const r = await sql<{ n: number }>`SELECT 1 AS n FROM pg_roles WHERE rolname = ${login}`.execute(serverDb);
@@ -77,33 +129,61 @@ const postgres: Provisioner = {
 };
 
 const sqlserver: Provisioner = {
-  async createDatabaseAndLogin(serverDb, dbName, login, password) {
+  async createDatabase(serverDb, dbName) {
     await sql`CREATE DATABASE ${sql.id(dbName)}`.execute(serverDb);
+  },
+  async createLogin(serverDb, login, password, dbName) {
     await sql`CREATE LOGIN ${sql.id(login)} WITH PASSWORD = ${sql.raw(passwordLiteral(password))}, DEFAULT_DATABASE = ${sql.id(dbName)}, CHECK_POLICY = ON, CHECK_EXPIRATION = OFF`.execute(serverDb);
+    // Sin esto, cualquier login puede listar todas las bases del servidor (hallazgo QA M-03).
+    await sql`DENY VIEW ANY DATABASE TO ${sql.id(login)}`.execute(serverDb);
+  },
+  async grantConnect() {
+    // En SQL Server el acceso a una base se concede creando el usuario dentro de ella
+    // (ver prepareTenantDatabase): no hay un permiso de conexión separado.
   },
   async prepareTenantDatabase(adminTenantDb, login) {
-    // En SQL Server un login solo entra a una base si tiene un usuario en ella:
-    // se crea únicamente en la base de su organización.
     await sql`CREATE USER ${sql.id(login)} FOR LOGIN ${sql.id(login)}`.execute(adminTenantDb);
   },
   async grantAppPrivileges(adminTenantDb, login) {
     await sql`GRANT SELECT, INSERT ON dbo.audit_log TO ${sql.id(login)}`.execute(adminTenantDb);
     await sql`GRANT SELECT ON dbo.organization TO ${sql.id(login)}`.execute(adminTenantDb);
   },
-  async dropDatabaseAndLogin(serverDb, dbName, login) {
+  async dropDatabase(serverDb, dbName) {
     await sql`IF DB_ID(${dbName}) IS NOT NULL BEGIN ALTER DATABASE ${sql.id(dbName)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE ${sql.id(dbName)}; END`.execute(serverDb);
+  },
+  async dropLogin(serverDb, login) {
     await sql`IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = ${login}) DROP LOGIN ${sql.id(login)}`.execute(serverDb);
   },
-  async protectControlDatabase() {
-    // Sin acción: los logins de organizaciones no tienen usuario en la base de control,
-    // y el acceso de invitado ("guest") está deshabilitado por defecto en bases de usuario.
+  async setLoginEnabled(serverDb, login, enabled) {
+    await sql`ALTER LOGIN ${sql.id(login)} ${sql.raw(enabled ? 'ENABLE' : 'DISABLE')}`.execute(serverDb);
+  },
+  async terminateSessions(serverDb, login) {
+    try {
+      await sql`DECLARE @k nvarchar(max) = N''; SELECT @k = @k + N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = ${login} AND session_id <> @@SPID; EXEC(@k);`.execute(serverDb);
+      return null;
+    } catch {
+      return `No se pudieron cerrar las sesiones abiertas de ${login} (¿falta processadmin?). Las nuevas conexiones sí quedan bloqueadas.`;
+    }
+  },
+  async resetPassword(serverDb, login, password) {
+    await sql`ALTER LOGIN ${sql.id(login)} WITH PASSWORD = ${sql.raw(passwordLiteral(password))}`.execute(serverDb);
+  },
+  async protectControlDatabase(_serverDb, controlDb) {
+    // Los logins de organizaciones no tienen usuario en la base de control; además se
+    // revoca explícitamente el acceso de invitado (hallazgo QA M-03).
+    await sql`REVOKE CONNECT FROM guest`.execute(controlDb);
+  },
+  hardeningWarnings() {
+    // Cada login de organización recibe DENY VIEW ANY DATABASE al crearse; el acceso de
+    // invitado a master y tempdb es propio del motor y no puede quitarse.
+    return Promise.resolve([]);
+  },
+  tenantDatabaseWarnings() {
+    return Promise.resolve([]);
   },
   async databaseExists(serverDb, dbName) {
     const r = await sql<{ n: number }>`SELECT 1 AS n FROM sys.databases WHERE name = ${dbName}`.execute(serverDb);
     return r.rows.length > 0;
-  },
-  async createDatabase(serverDb, dbName) {
-    await sql`CREATE DATABASE ${sql.id(dbName)}`.execute(serverDb);
   },
   async loginExists(serverDb, login) {
     const r = await sql<{ n: number }>`SELECT 1 AS n FROM sys.server_principals WHERE name = ${login}`.execute(serverDb);

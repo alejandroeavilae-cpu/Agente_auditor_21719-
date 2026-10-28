@@ -42,19 +42,8 @@ services:
         BUILD_COMMIT: ${BUILD_COMMIT:-desarrollo}
         BUILD_VERSION: ${BUILD_VERSION:-0.1.0}
     image: auditor-21719-api:local
-    environment:
-      # Usadas por la CLI de administración (auditor-admin) dentro del contenedor.
-      DB_ENGINE: postgresql
-      DB_HOST: postgres
-      DB_ADMIN_USER: auditor
-      DB_ADMIN_PASSWORD_FILE: /run/secrets/postgres_password
-      DB_CONTROL_DATABASE: auditor_control
-      # Red interna aislada (sin salida a Internet): TLS se habilita en el perfil institucional (Fase 2C/11).
-      DB_TLS: disable
-      MASTER_KEY_FILE: /run/secrets/master.key
-      # Ver loadMasterKey: la protección del archivo está en el directorio del anfitrión.
-      MASTER_KEY_CHECK_PERMISSIONS: "false"
-    secrets: [postgres_password, master.key]
+    # La API que atiende HTTP NO recibe credenciales de administración ni la clave maestra
+    # (hallazgo QA A-02): esas solo las monta el servicio "admin".
     read_only: true
     tmpfs:
       - /tmp
@@ -66,14 +55,51 @@ services:
       valkey:
         condition: service_healthy
 
+  # CLI de administración (auditor-admin). No queda corriendo: se usa bajo demanda con
+  #   docker compose -f deploy/compose/compose.yaml run --rm admin <comando>
+  # Es el ÚNICO servicio que monta la contraseña de aprovisionamiento y la clave maestra.
+  admin:
+    <<: *hardening
+    image: auditor-21719-api:local
+    pull_policy: never
+    profiles: [tools]
+    restart: "no"
+    entrypoint: ["node", "dist/admin/cli.js"]
+    command: ["--help"]
+    environment:
+      DB_ENGINE: postgresql
+      DB_HOST: postgres
+      # Cuenta SIN superusuario (CREATEDB, CREATEROLE), creada por postgres-init.
+      DB_ADMIN_USER: auditor_provisioner
+      DB_ADMIN_PASSWORD_FILE: /run/secrets/provisioner_password
+      DB_CONTROL_DATABASE: auditor_control
+      # Red interna aislada (sin salida a Internet): TLS se habilita en el perfil institucional (Fase 2C/11).
+      DB_TLS: disable
+      MASTER_KEY_FILE: /run/secrets/master.key
+      # Ver loadMasterKey: la protección del archivo está en el directorio del anfitrión.
+      MASTER_KEY_CHECK_PERMISSIONS: "false"
+    secrets: [provisioner_password, master.key]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     <<: *hardening
     image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
     environment:
+      # Superusuario del motor: solo lo usa el propio contenedor de PostgreSQL. La plataforma
+      # usa auditor_provisioner (sin superusuario) y un usuario propio por organización.
       POSTGRES_USER: auditor
-      POSTGRES_DB: auditor_control
+      # "postgres" evita crear una base extra con acceso público; la base de control la crea
+      # `auditor-admin init` con la cuenta de aprovisionamiento.
+      POSTGRES_DB: postgres
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-    secrets: [postgres_password]
+    secrets: [postgres_password, provisioner_password]
     # El entrypoint oficial arranca como root para preparar el directorio de datos y luego
     # cambia al usuario "postgres": se eliminan todas las capacidades salvo las mínimas
     # para ese cambio de usuario y de propietario de archivos (hallazgo QA H-10).
@@ -81,9 +107,10 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     volumes:
       - postgres-data:/var/lib/postgresql
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     networks: [backend]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U auditor -d auditor_control"]
+      test: ["CMD-SHELL", "pg_isready -U auditor -d postgres"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -124,5 +151,7 @@ secrets:
     file: ./secrets/postgres_password
   valkey.conf:
     file: ./secrets/valkey.conf
+  provisioner_password:
+    file: ./secrets/provisioner_password
   master.key:
     file: ./secrets/master.key

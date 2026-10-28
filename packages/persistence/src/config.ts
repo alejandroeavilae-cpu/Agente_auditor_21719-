@@ -2,6 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import { assertControlDatabaseName } from './naming.js';
 
 /** Motores de base de datos soportados (decisión D-03). */
 export type DbEngine = 'postgresql' | 'sqlserver';
@@ -61,6 +62,7 @@ export function loadPlatformDbConfig(env: NodeJS.ProcessEnv = process.env): Plat
     throw new Error(`Configuración de base de datos inválida: ${detail}`);
   }
   const v = parsed.data;
+  assertControlDatabaseName(v.DB_CONTROL_DATABASE);
   let password: string;
   try {
     password = readFileSync(v.DB_ADMIN_PASSWORD_FILE, 'utf8').trim();

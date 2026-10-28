@@ -10,6 +10,8 @@ services:
     pull_policy: never
   api:
     pull_policy: never
+  admin:
+    pull_policy: never
   postgres:
     image: postgres:18-alpine
     pull_policy: never

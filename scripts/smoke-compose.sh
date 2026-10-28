@@ -58,23 +58,33 @@ echo "8. El proceso principal de PostgreSQL no se ejecuta como root"
 PG_UID="$($COMPOSE exec -T postgres awk '/^Uid:/{print $2}' /proc/1/status)"
 [ -n "$PG_UID" ] && [ "$PG_UID" != "0" ] || fail "el proceso principal de postgres se ejecuta como root"
 
-echo "9. Organizaciones (entrega 2A): alta de dos organizaciones con base propia"
-ADMIN="$COMPOSE exec -T api node dist/admin/cli.js"
+echo "9. La API no recibe credenciales de administración ni la clave maestra (hallazgo QA A-02)"
+API_SECRETS="$($COMPOSE exec -T api sh -c 'ls -A /run/secrets 2>/dev/null | wc -l')"
+[ "$(echo "$API_SECRETS" | tr -d ' \r')" = "0" ] || fail "el contenedor api monta secretos"
+$COMPOSE exec -T api sh -c 'env | grep -q -E "^(DB_ADMIN|MASTER_KEY)"' && fail "el contenedor api recibe variables de administración"
+PROV_SUPER="$($COMPOSE exec -T postgres psql -U auditor -d postgres -tAc "select rolsuper from pg_roles where rolname = 'auditor_provisioner'" | tr -d ' \r')"
+[ "$PROV_SUPER" = "f" ] || fail "auditor_provisioner debe existir y no ser superusuario (obtenido: '$PROV_SUPER')"
+
+echo "10. Organizaciones (entrega 2A): alta de dos organizaciones con base propia y nombre opaco"
+ADMIN="$COMPOSE run --rm -T admin"
 $ADMIN init
 $ADMIN tenant create --slug muni-ficticia --name "Municipalidad Ficticia"
 $ADMIN tenant create --slug empresa-ficticia --name "Empresa Ficticia"
 LIST="$($ADMIN tenant list)"
 echo "$LIST"
 [ "$(echo "$LIST" | grep -c ' active ')" = "2" ] || fail "se esperaban 2 organizaciones activas"
-DBS="$($COMPOSE exec -T postgres psql -U auditor -d postgres -tAc "select datname from pg_database where datname like 'auditor_t_%' order by 1")"
+DBS="$($COMPOSE exec -T postgres psql -U auditor -d postgres -tAc "select datname from pg_database where datname ~ '^auditor_t_[0-9a-f]{12}$'" | tr -d '\r')"
 echo "$DBS"
-[ "$(echo "$DBS" | tr -d '\r')" = "$(printf 'auditor_t_empresa_ficticia\nauditor_t_muni_ficticia')" ] || fail "bases por organización inesperadas"
+[ "$(echo "$DBS" | grep -c .)" = "2" ] || fail "se esperaban 2 bases de organización con nombre opaco"
+$ADMIN tenant check || fail "las organizaciones no pueden abrirse con sus credenciales"
 
-echo "10. La bitácora de cada organización se exporta y verifica con la CLI independiente"
+echo "11. La bitácora de cada organización se exporta y verifica con la CLI independiente (también suspendida)"
+$ADMIN tenant suspend --slug empresa-ficticia
 for t in muni-ficticia empresa-ficticia; do
-  $COMPOSE exec -T api sh -c "node dist/admin/cli.js audit export --tenant $t --out /tmp/$t.jsonl && node node_modules/@auditor-21719/audit-log/dist/cli.js verify --entries /tmp/$t.jsonl --chain-id $t" \
+  $COMPOSE run --rm -T --entrypoint sh admin -c "node dist/admin/cli.js audit export --tenant $t --out /tmp/$t.jsonl && node node_modules/@auditor-21719/audit-log/dist/cli.js verify --entries /tmp/$t.jsonl --chain-id $t" \
     || fail "la bitácora de $t no verificó"
 done
+$ADMIN tenant reactivate --slug empresa-ficticia
 
 # El aislamiento entre organizaciones (credenciales de A contra la base de B y la de control)
 # se prueba con las contraseñas reales en packages/persistence/test (job de integración de CI).

@@ -34,5 +34,7 @@ Escala cualitativa 1–5 para probabilidad (P) e impacto (I); severidad = P × I
 | R-28 | Seg | Archivos maliciosos (bomba zip, XXE, exploits de parsers) | 3 | 4 | 12 | D-45: parseo aislado con límites; PT-22 | Backend |
 | R-29 | Seg | Contenido hostil de sistemas auditados en reportes (XSS/SSRF en el renderizador, inyección de fórmulas CSV) | 3 | 3 | 9 | D-45: renderizado sin red, escape, neutralización; PT-23 | Backend/Frontend |
 | R-30 | Seg | Credenciales del agente web con privilegios excesivos o con MFA personal en la aplicación auditada | 3 | 4 | 12 | D-46: cuentas dedicadas de mínimo privilegio | Responsable institucional |
+| R-31 | Seg | El usuario de una organización cambia su propia contraseña o parámetros de sesión y deja a la plataforma sin acceso a esa base | 2 | 3 | 6 | D-68: `tenant check` lo detecta, `tenant rotate-password` lo corrige; `search_path` fijado en cada conexión | Backend |
+| R-32 | Priv | El usuario de una organización ve el catálogo del motor (nombres de bases y roles) | 3 | 2 | 6 | D-66: nombres opacos aleatorios; en SQL Server `DENY VIEW ANY DATABASE` | Backend/DevOps |
 
 **Riesgos más altos (≥ 15):** R-01, R-15, R-09. Los dos primeros no son técnicos y dependen de decisiones humanas pendientes.

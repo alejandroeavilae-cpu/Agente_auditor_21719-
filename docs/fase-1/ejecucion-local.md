@@ -67,26 +67,54 @@ Hay dos formas de ejecutar el proyecto. Elija **una**:
 
 ### Administrar organizaciones (entrega 2A)
 
+La administración se hace con el servicio `admin`. No queda corriendo: cada comando lo inicia, lo ejecuta y lo elimina (`run --rm`). Es el **único** contenedor que recibe la contraseña de aprovisionamiento y la clave maestra; la API que atiende la web no las tiene.
+
 Con los servicios levantados (paso 3), en la misma terminal:
 
-1. Prepare la base de control (una vez, y después de cada actualización):
+1. Si su volumen de PostgreSQL se creó **antes** de esta versión, bórrelo para que se cree la cuenta de aprovisionamiento. Esto elimina todos los datos locales (que solo deben ser ficticios):
    ```sh
-   docker compose -f deploy/compose/compose.yaml exec api node dist/admin/cli.js init
+   sh scripts/generate-secrets.sh
+   docker compose -f deploy/compose/compose.yaml down -v
+   docker compose -f deploy/compose/compose.yaml up -d --build --wait
    ```
-2. Cree una organización ficticia (identificador en minúsculas, dígitos y guiones):
+   Si no puede borrar los datos, siga `docs/fase-2/servidor-de-base-de-datos.md`, sección 1.
+2. Prepare la base de control (una vez, y después de cada actualización):
    ```sh
-   docker compose -f deploy/compose/compose.yaml exec api node dist/admin/cli.js tenant create --slug muni-demo --name "Municipalidad Demo"
+   docker compose -f deploy/compose/compose.yaml run --rm admin init
    ```
-3. Liste las organizaciones:
+   Si aparece una línea que empieza con `Aviso:`, léala: indica un ajuste de seguridad pendiente del servidor.
+3. Cree una organización ficticia (identificador en minúsculas, dígitos y guiones):
    ```sh
-   docker compose -f deploy/compose/compose.yaml exec api node dist/admin/cli.js tenant list
+   docker compose -f deploy/compose/compose.yaml run --rm admin tenant create --slug muni-demo --name "Municipalidad Demo"
    ```
-4. Exporte la bitácora de una organización a un archivo de su equipo:
+4. Liste las organizaciones:
    ```sh
-   docker compose -f deploy/compose/compose.yaml exec -T api node dist/admin/cli.js audit export --tenant muni-demo > bitacora-muni-demo.jsonl
+   docker compose -f deploy/compose/compose.yaml run --rm admin tenant list
+   ```
+   La columna de la base muestra un nombre aleatorio (p. ej. `auditor_t_836cec1cff81`). Es intencional: así el usuario de una organización no puede deducir qué otras organizaciones existen.
+5. Exporte la bitácora de una organización a un archivo de su equipo. Funciona **también si la organización está suspendida**:
+   ```sh
+   docker compose -f deploy/compose/compose.yaml run --rm -T admin audit export --tenant muni-demo > bitacora-muni-demo.jsonl
    ```
    Ábrala con cualquier editor de texto: cada línea es una acción registrada.
-5. Suspenda o reactive: `... cli.js tenant suspend --slug muni-demo` / `... cli.js tenant reactivate --slug muni-demo`.
+6. Verifique la integridad de esa exportación con la herramienta independiente (requiere la Opción B instalada: `pnpm install` y `pnpm run build`):
+   ```sh
+   node packages/audit-log/dist/cli.js verify --entries bitacora-muni-demo.jsonl --chain-id muni-demo
+   ```
+   Debe terminar con `RESULTADO: bitácora íntegra.` Sin anclajes externos no se detecta una reescritura completa de la bitácora; ver `docs/fase-1/verificacion-de-integridad.md`.
+7. Suspenda o reactive una organización:
+   ```sh
+   docker compose -f deploy/compose/compose.yaml run --rm admin tenant suspend --slug muni-demo
+   docker compose -f deploy/compose/compose.yaml run --rm admin tenant reactivate --slug muni-demo
+   ```
+   La suspensión la aplica el propio motor: el usuario de esa organización ya no puede iniciar sesión, y sus sesiones abiertas se cierran.
+8. Otras operaciones:
+
+   | Comando | Para qué sirve |
+   |---|---|
+   | `tenant check` | Comprueba que cada organización activa puede abrirse con sus credenciales |
+   | `tenant rotate-password --slug <id>` | Fija una contraseña nueva para el usuario de la organización (p. ej. si `tenant check` falla porque alguien la cambió) |
+   | `tenant cleanup-provisioning --slug <id>` | Limpia un alta que quedó a medias (p. ej. si se cortó la luz durante `tenant create`). `init` avisa cuando hay una |
 
 **Notas**
 - Solo el puerto 8080 queda abierto y únicamente en su propio equipo (127.0.0.1); nadie más en la red puede acceder.
@@ -123,6 +151,15 @@ Con los servicios levantados (paso 3), en la misma terminal:
      ```
      Abra la URL que muestra Vite (normalmente **http://localhost:5173**).
 6. Detenga cada terminal con `Ctrl + C`.
+7. (Opcional) Ejecute las pruebas de integración contra un PostgreSQL de pruebas. Sin estas variables, esas pruebas se omiten.
+   - **Use un servidor desechable**, nunca uno con datos reales. Las pruebas crean y eliminan bases y roles, y endurecen el servidor: quitan el acceso público a `postgres` y `template1`, y los objetos grandes en `template1`.
+   - La cuenta indicada debe ser superusuario. Las pruebas la usan solo para crear una cuenta de aprovisionamiento temporal **sin** superusuario, y operan con esa cuenta.
+   ```sh
+   export TEST_PG_HOST=127.0.0.1 TEST_PG_PORT=5432 TEST_PG_USER=postgres TEST_PG_PASSWORD='<contraseña de su servidor de pruebas>' TEST_PG_TLS=disable
+   export REQUIRE_DB_ENGINES=postgresql   # hace fallar (en vez de omitir) si falta el motor
+   pnpm --filter @auditor-21719/persistence exec vitest run
+   ```
+   Para SQL Server use las variables equivalentes `TEST_MSSQL_HOST`, `TEST_MSSQL_PORT`, `TEST_MSSQL_USER`, `TEST_MSSQL_PASSWORD` y `TEST_MSSQL_TLS` (`trust-server-certificate` solo para contenedores de prueba). En Windows (PowerShell) use `$env:TEST_PG_HOST="127.0.0.1"`, etc.
 
 ---
 

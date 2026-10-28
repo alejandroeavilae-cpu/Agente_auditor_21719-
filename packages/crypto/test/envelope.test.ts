@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -69,6 +69,21 @@ describe('DEK envueltas con la clave maestra', () => {
   });
 });
 
+describe('formato canónico (B-11)', () => {
+  it('rechaza representaciones base64url no canónicas o con caracteres ajenos', () => {
+    const key = generateKey();
+    const sealed = seal(key, Buffer.from('secreto'), 'ctx');
+    const parts = sealed.split('.');
+    const variants = [
+      [...parts.slice(0, 4), `${parts[4] ?? ''}=`].join('.'),
+      [...parts.slice(0, 2), `${parts[2] ?? ''}+`, ...parts.slice(3)].join('.'),
+      [...parts.slice(0, 3), ` ${parts[3] ?? ''}`, parts[4]].join('.'),
+    ];
+    for (const v of variants) expect(() => open([key], v, 'ctx')).toThrow(CryptoError);
+    expect(open([key], sealed, 'ctx').toString()).toBe('secreto');
+  });
+});
+
 describe('loadMasterKey', () => {
   const dir = mkdtempSync(join(tmpdir(), 'crypto-'));
 
@@ -86,6 +101,18 @@ describe('loadMasterKey', () => {
     expect(() => loadMasterKey(path)).toThrow(/Permisos inseguros/);
     // Excepción explícita para contenedores (la protección está en el directorio del anfitrión).
     expect(loadMasterKey(path, { checkPermissions: false }).id).toHaveLength(16);
+  });
+
+  it('rechaza archivos legibles por el grupo y enlaces simbólicos (B-09)', () => {
+    const grupo = join(dir, 'grupo.key');
+    writeFileSync(grupo, encodeKeyForFile(generateKey()));
+    chmodSync(grupo, 0o640);
+    expect(() => loadMasterKey(grupo)).toThrow(/Permisos inseguros/);
+    const real = join(dir, 'real.key');
+    writeFileSync(real, encodeKeyForFile(generateKey()), { mode: 0o600 });
+    const link = join(dir, 'enlace.key');
+    symlinkSync(real, link);
+    expect(() => loadMasterKey(link)).toThrow(/enlace simbólico/);
   });
 
   it('rechaza formato inválido y archivo inexistente', () => {

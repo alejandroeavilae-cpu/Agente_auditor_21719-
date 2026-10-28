@@ -7,6 +7,9 @@ import type { AuditLogTable, TenantDatabase } from './schema.js';
 
 const MAX_APPEND_ATTEMPTS = 8;
 
+/** Tolerancia de reloj: una última entrada fechada más allá de esto en el futuro es sospechosa. */
+const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
 /** Detecta violación de clave única (otro proceso escribió el mismo `seq`). */
 function isUniqueViolation(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
@@ -83,6 +86,8 @@ export class AuditLogRepository {
    */
   private async lock(trx: Transaction<TenantDatabase>): Promise<void> {
     if (this.engine === 'postgresql') {
+      // Espera acotada, igual que en SQL Server (hallazgo QA B-04).
+      await sql`SET LOCAL lock_timeout = '30s'`.execute(trx);
       await sql`SELECT pg_advisory_xact_lock(hashtext('auditor-21719:audit_log'))`.execute(trx);
     } else {
       await sql`DECLARE @r int; EXEC @r = sp_getapplock @Resource = 'auditor-21719:audit_log', @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 30000; IF @r < 0 THROW 50001, 'No se obtuvo el bloqueo de la bitácora', 1;`.execute(trx);
@@ -100,9 +105,15 @@ export class AuditLogRepository {
         return await this.db.transaction().execute(async (trx) => {
           await this.lock(trx);
           const previous = await this.lastIn(trx);
+          const previousTime = previous === null ? 0 : Date.parse(previous.timestamp);
+          // Una última entrada fechada en el futuro indica alteración o reloj erróneo: no se
+          // propaga esa fecha a entradas legítimas nuevas (hallazgo QA B-02).
+          if (previousTime > Date.now() + MAX_CLOCK_SKEW_MS) {
+            throw new Error('La última entrada de la bitácora tiene fecha futura: posible alteración. Exporte y verifique la bitácora antes de continuar.');
+          }
           // La marca de tiempo nunca retrocede, aunque el reloj del servidor se ajuste hacia
-          // atrás: la verificación exige marcas no decrecientes.
-          const now = new Date(Math.max(Date.now(), previous === null ? 0 : Date.parse(previous.timestamp)));
+          // atrás dentro de la tolerancia: la verificación exige marcas no decrecientes.
+          const now = new Date(Math.max(Date.now(), previousTime));
           const entry = createEntry(previous, this.chainId, input, now);
           await trx.insertInto('audit_log').values(toRow(entry)).execute();
           return entry;
@@ -132,7 +143,9 @@ export class AuditLogRepository {
       }
       return {
         chainId: row.chain_id,
-        seq: Number(row.seq),
+        // Si el número no es un entero seguro se exporta como texto, sin perder dígitos: la
+        // CLI de verificación lo reportará como formato inválido (hallazgo QA B-01).
+        seq: Number.isSafeInteger(Number(row.seq)) ? Number(row.seq) : String(row.seq),
         timestamp: row.ts,
         actor: row.actor,
         action: row.action,

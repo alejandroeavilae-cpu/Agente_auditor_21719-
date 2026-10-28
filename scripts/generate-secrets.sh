@@ -10,16 +10,24 @@ chmod 700 "$DIR"
 
 random() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
-if [ ! -f "$DIR/postgres_password" ]; then
-  random > "$DIR/postgres_password"
-  echo "Creado: postgres_password"
-else
-  echo "Ya existe: postgres_password (no se modifica)"
-fi
+# Los contenedores leen los secretos con un usuario distinto del anfitrión, por eso los
+# archivos NUEVOS quedan legibles (644); la protección está en el directorio (700): ningún
+# otro usuario del anfitrión puede entrar a él. Los permisos de secretos ya existentes NO se
+# modifican (hallazgo QA B-09).
+created() { chmod 644 "$1"; echo "Creado: $(basename "$1")${2:-}"; }
+
+for name in postgres_password provisioner_password; do
+  if [ ! -f "$DIR/$name" ]; then
+    random > "$DIR/$name"
+    created "$DIR/$name"
+  else
+    echo "Ya existe: $name (no se modifica)"
+  fi
+done
 
 if [ ! -f "$DIR/valkey.conf" ]; then
   printf 'requirepass %s\nprotected-mode yes\nappendonly yes\ndir /data\n' "$(random)" > "$DIR/valkey.conf"
-  echo "Creado: valkey.conf"
+  created "$DIR/valkey.conf"
 else
   echo "Ya existe: valkey.conf (no se modifica)"
 fi
@@ -28,12 +36,8 @@ if [ ! -f "$DIR/master.key" ]; then
   # credenciales de todas las organizaciones. RESPALDELA fuera del servidor: si se pierde,
   # no se pueden descifrar las credenciales de las bases de las organizaciones (R-24).
   head -c 32 /dev/urandom | base64 > "$DIR/master.key"
-  echo "Creado: master.key  ← respáldela en un lugar seguro fuera de este servidor"
+  created "$DIR/master.key" "  ← respáldela en un lugar seguro fuera de este servidor"
 else
   echo "Ya existe: master.key (no se modifica)"
 fi
-# Los contenedores leen los secretos con un usuario distinto del anfitrión, por eso los
-# archivos son legibles; la protección está en el directorio (700): ningún otro usuario
-# del anfitrión puede entrar a él.
-chmod 644 "$DIR/postgres_password" "$DIR/valkey.conf" "$DIR/master.key"
 echo "Secretos listos en $DIR (excluidos de git por .gitignore)."

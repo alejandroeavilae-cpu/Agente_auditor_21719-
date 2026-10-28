@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 
 /**
  * Cifrado de sobre (decisión D-12).
@@ -76,16 +76,22 @@ export function generateKey(): SymmetricKey {
  * @throws {CryptoError} si el archivo no existe, tiene permisos inseguros o formato inválido.
  */
 export function loadMasterKey(path: string, options: { checkPermissions?: boolean } = {}): SymmetricKey {
-  let mode: number;
+  const check = options.checkPermissions ?? true;
   let content: string;
   try {
-    mode = statSync(path).mode;
+    const info = lstatSync(path);
+    // Con la comprobación activa no se siguen enlaces simbólicos (otro usuario podría
+    // redirigir la lectura) y solo el dueño puede tener permisos (hallazgo QA B-09).
+    if (check && info.isSymbolicLink()) {
+      throw new CryptoError(`El archivo de clave maestra no puede ser un enlace simbólico: ${path}`);
+    }
+    if (check && (info.mode & 0o077) !== 0) {
+      throw new CryptoError(`Permisos inseguros en ${path}: la clave maestra solo debe ser legible por su dueño (chmod 600).`);
+    }
     content = readFileSync(path, 'utf8').trim();
-  } catch {
+  } catch (error) {
+    if (error instanceof CryptoError) throw error;
     throw new CryptoError(`No se pudo leer el archivo de clave maestra: ${path}`);
-  }
-  if ((options.checkPermissions ?? true) && (mode & 0o007) !== 0) {
-    throw new CryptoError(`Permisos inseguros en ${path}: la clave maestra no debe ser legible por otros usuarios.`);
   }
   if (!/^[A-Za-z0-9+/]{43}=$/.test(content)) {
     throw new CryptoError('La clave maestra debe ser 32 bytes en base64 (44 caracteres).');
@@ -117,6 +123,13 @@ export function seal(key: SymmetricKey, plaintext: Buffer, context: string): str
   return [FORMAT, key.id, iv.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join('.');
 }
 
+/** Decodifica base64url sin relleno; devuelve null si el texto no es su forma canónica. */
+function decodeBase64UrlStrict(text: string): Buffer | null {
+  if (!/^[A-Za-z0-9_-]*$/.test(text)) return null;
+  const bytes = Buffer.from(text, 'base64url');
+  return bytes.toString('base64url') === text ? bytes : null;
+}
+
 /**
  * Descifra un sobre producido por `seal`.
  *
@@ -131,14 +144,17 @@ export function open(keys: readonly SymmetricKey[], sealed: string, context: str
   const [, keyId, ivText, tagText, ctText] = parts as [string, string, string, string, string];
   const key = keys.find((k) => k.id === keyId);
   if (key === undefined) throw new CryptoError(`No está disponible la clave ${keyId} para descifrar.`);
-  const iv = Buffer.from(ivText, 'base64url');
-  const tag = Buffer.from(tagText, 'base64url');
-  if (iv.length !== IV_BYTES || tag.length !== TAG_BYTES) throw new CryptoError('Formato de texto cifrado inválido.');
+  // Solo se acepta base64url canónico (hallazgo QA B-11): un mismo sobre tiene una única
+  // representación textual.
+  const iv = decodeBase64UrlStrict(ivText);
+  const tag = decodeBase64UrlStrict(tagText);
+  const ciphertext = decodeBase64UrlStrict(ctText);
+  if (iv === null || tag === null || ciphertext === null || iv.length !== IV_BYTES || tag.length !== TAG_BYTES) throw new CryptoError('Formato de texto cifrado inválido.');
   try {
     const decipher = createDecipheriv(ALGORITHM, key.material, iv, { authTagLength: TAG_BYTES });
     decipher.setAAD(Buffer.from(`${FORMAT}|${key.id}|${context}`, 'utf8'));
     decipher.setAuthTag(tag);
-    return Buffer.concat([decipher.update(Buffer.from(ctText, 'base64url')), decipher.final()]);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   } catch {
     throw new CryptoError('No se pudo descifrar: contexto incorrecto o contenido alterado.');
   }

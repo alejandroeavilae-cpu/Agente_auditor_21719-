@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Pruebas de integración contra motores reales (PostgreSQL y SQL Server).
-// Solo datos sintéticos. Cada ejecución crea su propia base de control y la elimina al final.
+// Solo datos sintéticos. Cada ejecución crea su propia cuenta de aprovisionamiento (sin
+// superusuario) y su propia base de control, y elimina todo al final.
 
 import { parseJsonlLines, toJsonl, verifyChainItems } from '@auditor-21719/audit-log';
 import { generateKey } from '@auditor-21719/crypto';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connect, serverAdminDatabase, TenantManager, type ControlDatabase, type TenantDatabase } from '../src/index.js';
-import { provisionerFor } from '../src/provisioner.js';
-import { engineConfigs, runId } from './helpers.js';
+import { connect, provisionerFor, serverAdminDatabase, type ControlDatabase, type DbServerConfig, type Provisioner, type TenantDatabase } from '../src/index.js';
+import { createProvisionerAccount, engineConfigs, runId, TestTenantManager } from './helpers.js';
 
 const engines = engineConfigs();
 
@@ -18,58 +18,113 @@ if (engines.length === 0) {
   });
 }
 
-describe.each(engines)('organizaciones en $engine', ({ engine, server }) => {
+/** Ejecuta una consulta trivial con unas credenciales; devuelve el error o null. */
+async function tryConnect(server: DbServerConfig, database: string): Promise<unknown> {
+  const db = connect<unknown>(server, database, 1);
+  try {
+    await sql`SELECT 1 AS n`.execute(db);
+    return null;
+  } catch (error) {
+    return error;
+  } finally {
+    await db.destroy();
+  }
+}
+
+describe.each(engines)('organizaciones en $engine', ({ engine, server: superServer }) => {
   const id = runId();
   const controlDatabase = `auditor_ctl_test_${id}`;
   const slugA = `prueba-${id}-a`;
   const slugB = `prueba-${id}-b`;
   const master = generateKey();
-  let manager: TenantManager;
+  const real = provisionerFor(engine);
+  let server: DbServerConfig;
+  let dropAccount: () => Promise<void>;
+  let manager: TestTenantManager;
+  const extra: string[] = [];
+
+  /** Administrador con un aprovisionador alterado para inyectar fallos. */
+  const managerWith = (overrides: Partial<Provisioner>): TestTenantManager =>
+    new TestTenantManager({ admin: server, controlDatabase }, [master], { provisioner: { ...real, ...overrides } });
 
   beforeAll(async () => {
-    manager = new TenantManager({ admin: server, controlDatabase }, [master]);
+    const account = await createProvisionerAccount(superServer, id);
+    server = account.server;
+    dropAccount = account.drop;
+    manager = new TestTenantManager({ admin: server, controlDatabase }, [master]);
     await manager.initControl();
     await manager.createTenant(slugA, 'Municipalidad Ficticia A', 'operador:pruebas');
     await manager.createTenant(slugB, 'Empresa Ficticia B', 'operador:pruebas');
   });
 
   afterAll(async () => {
-    await manager.destroyTenantForTests(slugA).catch(() => undefined);
-    await manager.destroyTenantForTests(slugB).catch(() => undefined);
+    for (const slug of [slugA, slugB, ...extra]) await manager.destroy(slug).catch(() => undefined);
     await manager.close();
     const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
-    await provisionerFor(engine).dropDatabaseAndLogin(serverDb, controlDatabase, '__ninguno__').catch(() => undefined);
+    await real.dropDatabase(serverDb, controlDatabase).catch(() => undefined);
     await serverDb.destroy();
+    await dropAccount();
   });
 
-  it('la base de control es idempotente: una segunda inicialización no aplica nada', async () => {
-    expect(await manager.initControl()).toEqual([]);
+  it('la cuenta de aprovisionamiento no es superusuario', async () => {
+    const db = connect<unknown>(server, serverAdminDatabase(server), 1);
+    const r =
+      engine === 'postgresql'
+        ? await sql<{ s: boolean }>`SELECT rolsuper AS s FROM pg_roles WHERE rolname = current_user`.execute(db)
+        : await sql<{ s: number }>`SELECT IS_SRVROLEMEMBER('sysadmin') AS s`.execute(db);
+    await db.destroy();
+    expect(Boolean(r.rows[0]?.s)).toBe(false);
   });
 
-  it('cada organización tiene su propia base y queda activa', async () => {
+  it('la base de control es idempotente: una segunda inicialización no aplica nada ni advierte', async () => {
+    expect(await manager.initControl()).toEqual({ applied: [], warnings: [] });
+  });
+
+  it('cada organización tiene su propia base, con nombre opaco, y queda activa', async () => {
     const list = await manager.listTenants();
     const a = list.find((t) => t.slug === slugA);
     const b = list.find((t) => t.slug === slugB);
     expect(a?.status).toBe('active');
     expect(b?.status).toBe('active');
     expect(a?.dbName).not.toBe(b?.dbName);
+    expect(a?.dbName).toMatch(/^auditor_t_[0-9a-f]{12}$/);
+    expect(a?.dbName).not.toContain(id);
   });
 
   it('el alta queda en la bitácora de la organización, con su propia cadena', async () => {
-    const a = await manager.openTenant(slugA);
-    const entries = await a.audit.exportRaw();
+    const entries = await manager.exportAuditLog(slugA);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ chainId: slugA, seq: 0, action: 'tenant.created', actor: 'operador:pruebas' });
   });
 
-  it('PT-12 (base): las credenciales de A no abren la base de B ni la base de control', async () => {
-    const credsA = await manager.credentialsForTests(slugA);
-    const credsB = await manager.credentialsForTests(slugB);
+  it('PT-12 (base): las credenciales de A no abren la base de B, la de control ni las del sistema', async () => {
+    const credsA = await manager.credentials(slugA);
+    const credsB = await manager.credentials(slugB);
     const asA = { ...server, user: credsA.user, password: credsA.password };
-    for (const target of [credsB.dbName, controlDatabase]) {
-      const db = connect<unknown>(asA, target, 1);
-      await expect(sql`SELECT 1 AS n`.execute(db)).rejects.toThrow();
-      await db.destroy();
+    const targets = [credsB.dbName, controlDatabase];
+    // En SQL Server, master y tempdb admiten invitado por diseño del motor (riesgo residual
+    // documentado); en PostgreSQL la preparación del servidor les quita el acceso público.
+    if (engine === 'postgresql') targets.push('postgres', 'template1');
+    for (const target of targets) {
+      expect(await tryConnect(asA, target), target).not.toBeNull();
+    }
+    expect(await tryConnect(asA, credsA.dbName)).toBeNull();
+  });
+
+  it('el usuario de una organización no puede deducir qué otras organizaciones existen', async () => {
+    const credsA = await manager.credentials(slugA);
+    const credsB = await manager.credentials(slugB);
+    const a = connect<unknown>({ ...server, user: credsA.user, password: credsA.password }, credsA.dbName, 1);
+    const names =
+      engine === 'postgresql'
+        ? (await sql<{ n: string }>`SELECT datname AS n FROM pg_database UNION ALL SELECT rolname FROM pg_roles`.execute(a)).rows.map((r) => r.n)
+        : (await sql<{ n: string }>`SELECT name AS n FROM sys.databases`.execute(a)).rows.map((r) => r.n);
+    await a.destroy();
+    // Ningún nombre visible revela el identificador de una organización.
+    expect(names.filter((n) => n.includes('prueba') || (n.startsWith('auditor_t_') && n.includes(id)))).toEqual([]);
+    if (engine === 'sqlserver') {
+      expect(names).not.toContain(credsB.dbName);
+      expect(names).not.toContain(controlDatabase);
     }
   });
 
@@ -77,6 +132,10 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server }) => {
     const a = await manager.openTenant(slugA);
     await expect(a.db.updateTable('audit_log').set({ actor: 'atacante' }).where('seq', '=', 0).execute()).rejects.toThrow();
     await expect(a.db.deleteFrom('audit_log').where('seq', '=', 0).execute()).rejects.toThrow();
+    if (engine === 'postgresql') {
+      // Objetos grandes: canal de escritura fuera de la bitácora (hallazgo QA B-12).
+      await expect(sql`SELECT lo_creat(-1)`.execute(a.db)).rejects.toThrow();
+    }
   });
 
   it('20 escrituras concurrentes (bloqueo exclusivo) producen una cadena continua y válida', async () => {
@@ -84,26 +143,14 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server }) => {
     await Promise.all(
       Array.from({ length: 20 }, (_, i) => b.audit.append({ actor: 'usuario-sintetico', action: 'prueba.concurrencia', object: `o/${i}` })),
     );
-    const text = toJsonl(await b.audit.exportRaw());
-    const result = verifyChainItems(parseJsonlLines(text), slugB);
+    const result = verifyChainItems(parseJsonlLines(toJsonl(await manager.exportAuditLog(slugB))), slugB);
     expect(result.issues).toEqual([]);
     expect(result.count).toBe(21);
   });
 
-  it('PT-04 sobre la base de datos: una modificación hecha con la cuenta administrativa se detecta al verificar la exportación', async () => {
-    const credsA = await manager.credentialsForTests(slugA);
-    const adminA = connect<TenantDatabase>(server, credsA.dbName, 1);
-    await adminA.updateTable('audit_log').set({ actor: 'atacante' }).where('seq', '=', 0).execute();
-    await adminA.destroy();
-    const a = await manager.openTenant(slugA);
-    const result = verifyChainItems(parseJsonlLines(toJsonl(await a.audit.exportRaw())), slugA);
-    expect(result.ok).toBe(false);
-    expect(result.issues.some((i) => i.reason.includes('alterada'))).toBe(true);
-  });
-
   it('las credenciales se guardan cifradas y no pueden intercambiarse entre organizaciones', async () => {
     const control = connect<ControlDatabase>(server, controlDatabase, 1);
-    const credsA = await manager.credentialsForTests(slugA);
+    const credsA = await manager.credentials(slugA);
     const rowA = await control.selectFrom('tenants').selectAll().where('slug', '=', slugA).executeTakeFirstOrThrow();
     const rowB = await control.selectFrom('tenants').selectAll().where('slug', '=', slugB).executeTakeFirstOrThrow();
     expect(rowA.db_password_sealed).not.toContain(credsA.password);
@@ -116,38 +163,154 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server }) => {
     await expect(manager.openTenant(slugA)).resolves.toBeDefined();
   });
 
-  it('una organización suspendida no puede abrirse y la suspensión queda en su bitácora', async () => {
-    await manager.setStatus(slugB, 'suspended', 'operador:pruebas');
+  it('M-04/M-05: la suspensión la aplica el motor, queda en la bitácora y la exportación sigue disponible', async () => {
+    const credsB = await manager.credentials(slugB);
+    const asB = { ...server, user: credsB.user, password: credsB.password };
+    // Una conexión abierta antes de suspender (otro proceso) también queda cortada.
+    const other = connect<TenantDatabase>(asB, credsB.dbName, 1);
+    await sql`SELECT 1 AS n`.execute(other);
+
+    expect(await manager.setStatus(slugB, 'suspended', 'operador:pruebas')).toEqual({ warnings: [] });
     await expect(manager.openTenant(slugB)).rejects.toThrow(/no está activa/);
+    expect(await tryConnect(asB, credsB.dbName)).not.toBeNull();
+    await expect(other.insertInto('audit_log').values({ seq: 999, chain_id: 'x', ts: 'x', actor: 'x', action: 'x', object: 'x', data: '{}', prev_hash: 'x', hash: 'x' }).execute()).rejects.toThrow();
+    await other.destroy();
+
+    const exported = await manager.exportAuditLog(slugB);
+    expect(exported.at(-1)).toMatchObject({ action: 'tenant.suspended' });
+
     await manager.setStatus(slugB, 'active', 'operador:pruebas');
-    const b = await manager.openTenant(slugB);
-    const actions = (await b.audit.exportRaw()).map((e) => e.action);
+    expect(await tryConnect(asB, credsB.dbName)).toBeNull();
+    const actions = (await manager.exportAuditLog(slugB)).map((e) => e.action);
     expect(actions.slice(-2)).toEqual(['tenant.suspended', 'tenant.reactivated']);
   });
 
-  it('no se puede repetir un identificador ni pisar una base existente que no creó la plataforma', async () => {
-    await expect(manager.createTenant(slugA, 'Duplicada', 'operador:pruebas')).rejects.toThrow(/Ya existe una organización/);
-    const slugC = `prueba-${id}-c`;
-    const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
-    const provisioner = provisionerFor(engine);
-    await provisioner.createDatabase(serverDb, `auditor_t_prueba_${id}_c`);
-    await expect(manager.createTenant(slugC, 'Choque', 'operador:pruebas')).rejects.toThrow(/Ya existe una base/);
-    // La base preexistente sigue ahí: la plataforma no la tocó.
-    expect(await provisioner.databaseExists(serverDb, `auditor_t_prueba_${id}_c`)).toBe(true);
-    expect((await manager.listTenants()).some((t) => t.slug === slugC)).toBe(false);
-    await provisioner.dropDatabaseAndLogin(serverDb, `auditor_t_prueba_${id}_c`, '__ninguno__');
-    await serverDb.destroy();
+  it('M-02: si el usuario de la organización cambia su contraseña, se detecta y la rotación recupera el acceso', async () => {
+    const credsA = await manager.credentials(slugA);
+    const asA = connect<unknown>({ ...server, user: credsA.user, password: credsA.password }, credsA.dbName, 1);
+    const stolen = 'Cambiada-por-el-usuario-2026x';
+    if (engine === 'postgresql') {
+      await sql`ALTER ROLE CURRENT_USER PASSWORD ${sql.lit(stolen)}`.execute(asA);
+      await sql`ALTER ROLE CURRENT_USER SET statement_timeout = '1ms'`.execute(asA);
+    } else {
+      await sql`ALTER LOGIN ${sql.id(credsA.user)} WITH PASSWORD = ${sql.lit(stolen)} OLD_PASSWORD = ${sql.lit(credsA.password)}`.execute(asA);
+    }
+    await asA.destroy();
+    await manager.closeTenant(slugA);
+
+    const check = await manager.checkTenants();
+    expect(check[slugA]).toMatch(/rotate-password/);
+    expect(check[slugB]).toBeNull();
+
+    await manager.rotatePassword(slugA, 'operador:pruebas');
+    expect((await manager.checkTenants())[slugA]).toBeNull();
+    const a = await manager.openTenant(slugA);
+    // La configuración que el usuario se fijó (statement_timeout) fue eliminada.
+    await expect(a.audit.append({ actor: 'usuario-sintetico', action: 'prueba.post-rotacion', object: 'o/1' })).resolves.toBeDefined();
+    const actions = (await manager.exportAuditLog(slugA)).map((e) => e.action);
+    expect(actions).toContain('tenant.password_rotated');
   });
 
-  it('rechaza identificadores que podrían inyectar SQL en nombres de bases', async () => {
+  it('PT-04 sobre la base de datos: una modificación hecha con la cuenta administrativa se detecta al verificar la exportación', async () => {
+    const credsA = await manager.credentials(slugA);
+    const adminA = connect<TenantDatabase>(server, credsA.dbName, 1);
+    await adminA.updateTable('audit_log').set({ actor: 'atacante' }).where('seq', '=', 0).execute();
+    await adminA.destroy();
+    const result = verifyChainItems(parseJsonlLines(toJsonl(await manager.exportAuditLog(slugA))), slugA);
+    expect(result.ok).toBe(false);
+    expect(result.issues.some((i) => i.reason.includes('alterada'))).toBe(true);
+  });
+
+  it('B-03: con la bitácora dañada la suspensión igual se aplica y se informa', async () => {
+    const credsA = await manager.credentials(slugA);
+    const adminA = connect<TenantDatabase>(server, credsA.dbName, 1);
+    const last = await adminA.selectFrom('audit_log').select('seq').orderBy('seq', 'desc').executeTakeFirstOrThrow();
+    await adminA.updateTable('audit_log').set({ data: 'no-es-json' }).where('seq', '=', last.seq).execute();
+    const result = await manager.setStatus(slugA, 'suspended', 'operador:pruebas');
+    expect(result.warnings.join(' ')).toMatch(/No se registró en la bitácora/);
+    expect((await manager.listTenants()).find((t) => t.slug === slugA)?.status).toBe('suspended');
+    expect(await tryConnect({ ...server, user: credsA.user, password: credsA.password }, credsA.dbName)).not.toBeNull();
+    await adminA.updateTable('audit_log').set({ data: '{}' }).where('seq', '=', last.seq).execute();
+    await adminA.destroy();
+    await manager.setStatus(slugA, 'active', 'operador:pruebas');
+  });
+
+  it('A-01: si falla un paso del alta, la reversión elimina base, usuario y registro', async () => {
+    const slug = `prueba-${id}-f`;
+    let created: { dbName: string; login: string } | undefined;
+    const spy = managerWith({
+      createLogin: async (s, login, password, dbName) => {
+        created = { dbName, login };
+        await real.createLogin(s, login, password, dbName);
+      },
+      grantAppPrivileges: () => Promise.reject(new Error('fallo inyectado')),
+    });
+    await expect(spy.createTenant(slug, 'Falla', 'operador:pruebas')).rejects.toThrow('fallo inyectado');
+    await spy.close();
+    expect(created).toBeDefined();
+    const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
+    expect(await real.databaseExists(serverDb, created?.dbName ?? '')).toBe(false);
+    expect(await real.loginExists(serverDb, created?.login ?? '')).toBe(false);
+    await serverDb.destroy();
+    expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
+  });
+
+  it('M-01: la reversión nunca elimina una base que la plataforma no creó', async () => {
+    const slug = `prueba-${id}-g`;
+    let foreign = '';
+    // Simula una carrera: otro actor crea la base justo entre la comprobación y el CREATE.
+    const racing = managerWith({
+      createDatabase: async (s, dbName) => {
+        foreign = dbName;
+        await real.createDatabase(s, dbName);
+        await real.createDatabase(s, dbName); // el segundo CREATE falla: "ya existe"
+      },
+    });
+    await expect(racing.createTenant(slug, 'Carrera', 'operador:pruebas')).rejects.toThrow();
+    await racing.close();
+    const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
+    expect(await real.databaseExists(serverDb, foreign)).toBe(true);
+    await real.dropDatabase(serverDb, foreign);
+    await serverDb.destroy();
+    expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
+  });
+
+  it('M-06: un alta que no pudo revertirse queda señalada y se limpia con cleanupProvisioning', async () => {
+    const slug = `prueba-${id}-h`;
+    extra.push(slug);
+    const broken = managerWith({
+      grantAppPrivileges: () => Promise.reject(new Error('fallo inyectado')),
+      dropDatabase: () => Promise.reject(new Error('caída simulada')),
+    });
+    await expect(broken.createTenant(slug, 'Interrumpida', 'operador:pruebas')).rejects.toThrow(/cleanup-provisioning/);
+    await broken.close();
+    expect((await manager.listTenants()).find((t) => t.slug === slug)?.status).toBe('provisioning');
+    expect((await manager.initControl()).warnings.join(' ')).toContain(slug);
+    await expect(manager.cleanupProvisioning(slugA)).rejects.toThrow(/no está en alta incompleta/);
+    await manager.cleanupProvisioning(slug);
+    expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
+  });
+
+  it('M-07: migrar todas las organizaciones informa cada una y no se detiene ante un fallo', async () => {
+    const credsA = await manager.credentials(slugA);
+    const partial = managerWith({
+      grantAppPrivileges: (db, login) => (login === credsA.user ? Promise.reject(new Error('fallo inyectado')) : real.grantAppPrivileges(db, login)),
+    });
+    const result = await partial.migrateAllTenants('operador:pruebas');
+    await partial.close();
+    expect(result[slugA]).toEqual({ applied: [], error: 'fallo inyectado' });
+    expect(result[slugB]).toEqual({ applied: [] });
+    // Sin fallos, todo queda al día (idempotente).
+    const ok = await manager.migrateAllTenants('operador:pruebas');
+    expect(ok[slugA]).toEqual({ applied: [] });
+    expect(ok[slugB]).toEqual({ applied: [] });
+  });
+
+  it('rechaza identificadores que podrían inyectar SQL y nombres con caracteres de control', async () => {
     for (const bad of ['a"; DROP DATABASE x; --', 'Mayus', 'ab', 'x'.repeat(31), '-inicio', 'doble--guion']) {
       await expect(manager.createTenant(bad, 'Mala', 'operador:pruebas')).rejects.toThrow(/Identificador de organización inválido/);
     }
-  });
-
-  it('migrar todas las organizaciones es idempotente', async () => {
-    const result = await manager.migrateAllTenants('operador:pruebas');
-    expect(result[slugA]).toEqual([]);
-    expect(result[slugB]).toEqual([]);
+    await expect(manager.createTenant(`prueba-${id}-z`, 'Nombre\u001b[31m', 'operador:pruebas')).rejects.toThrow(/caracteres de control/);
+    await expect(manager.createTenant(slugA, 'Duplicada', 'operador:pruebas')).rejects.toThrow(/Ya existe una organización/);
   });
 });

@@ -112,3 +112,14 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-63 | Administración de organizaciones solo por **CLI en el servidor** (`auditor-admin`) durante 2A | Sin usuarios ni autenticación (2B), exponer estas operaciones por HTTP sería inseguro |
 | D-64 | Pruebas de integración con motores reales en CI (PostgreSQL 18 y SQL Server 2025 CU10 Developer); una prueba omitida hace fallar el job | Evitar que "omitida" se confunda con "aprobada" |
 
+### 5.1 Decisiones tomadas al corregir la revisión QA de 2A (28-10-2026)
+
+| ID | Decisión | Razón |
+|---|---|---|
+| D-65 | La plataforma usa una **cuenta de aprovisionamiento sin superusuario**. En PostgreSQL: `CREATEDB CREATEROLE` + `pg_signal_backend`. En SQL Server: `dbcreator`, `securityadmin` y `processadmin`. Solo la monta el servicio Compose `admin` (perfil `tools`), nunca la API | Hallazgo QA A-02: la API recibía el superusuario y la clave maestra. En SQL Server, `securityadmin` equivale en la práctica a `sysadmin` [VERIFICADO, ver `docs/fase-2/servidor-de-base-de-datos.md`]: allí la mejora principal es sacar la cuenta de la API |
+| D-66 | Nombres de base y usuario de cada organización **aleatorios y opacos** (`auditor_t_<12 hex>`), registrados en la base de control antes de crearlos | Hallazgo QA M-03: `pg_database` y `pg_roles` son visibles para todos los usuarios de PostgreSQL. Además, el registro previo permite limpiar un alta interrumpida (M-06) |
+| D-67 | La **suspensión la aplica el motor**: `NOLOGIN` / `ALTER LOGIN DISABLE` y cierre de sesiones. Si la bitácora no puede escribirse, la suspensión se aplica igual y se informa un aviso | Hallazgos QA M-04 y B-03: una medida de seguridad no puede depender de la aplicación ni quedar bloqueada por datos dañados |
+| D-68 | Que el usuario de una organización cambie su propia contraseña se trata como **riesgo residual detectable** (R-31): `tenant check` lo detecta y `tenant rotate-password` lo corrige; además se fija `search_path` en cada conexión | Hallazgo QA M-02: ningún motor permite impedirlo |
+| D-69 | La exportación forense usa la cuenta de aprovisionamiento en lectura, no las credenciales de la organización | Hallazgo QA M-05: debe funcionar con organizaciones suspendidas y aunque el usuario de la organización haya cambiado su contraseña |
+| D-70 | El alta revierte **solo** los recursos que ella misma creó, paso por paso. Si la reversión falla, el registro queda en `provisioning` y se limpia con `tenant cleanup-provisioning`. `migrateAllTenants` informa el resultado por organización y no se detiene ante un fallo | Hallazgos QA A-01, M-01, M-06 y M-07 |
+

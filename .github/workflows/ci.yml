@@ -57,7 +57,7 @@ jobs:
         env:
           POSTGRES_USER: auditor
           POSTGRES_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Pg_2026
-        ports: ["5432:5432"]
+        ports: ["127.0.0.1:5432:5432"]
         options: >-
           --health-cmd "pg_isready -U auditor"
           --health-interval 5s --health-timeout 3s --health-retries 30
@@ -68,7 +68,7 @@ jobs:
           ACCEPT_EULA: "Y"
           MSSQL_PID: Developer
           MSSQL_SA_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Sql_2026
-        ports: ["1433:1433"]
+        ports: ["127.0.0.1:1433:1433"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -117,14 +117,12 @@ jobs:
           TEST_MSSQL_PASSWORD: ${{ env.MSSQL_TEST_PASSWORD }}
           # Certificado autofirmado del contenedor de pruebas: solo aceptable aquí.
           TEST_MSSQL_TLS: trust-server-certificate
+          # Mínimo de pruebas aprobadas POR MOTOR (hallazgo QA B-13): si el archivo de
+          # integración no se ejecutara, o un motor se omitiera, el job falla.
+          MIN_TESTS_PER_ENGINE: "18"
         run: |
           pnpm exec vitest run --reporter=default --reporter=json --outputFile=vitest-integracion.json
-          node -e "
-            const r = require('./vitest-integracion.json');
-            const skipped = r.numPendingTests + r.numTodoTests;
-            console.log('Pruebas: ' + r.numPassedTests + ' aprobadas, ' + r.numFailedTests + ' fallidas, ' + skipped + ' omitidas');
-            console.log('::notice title=integración::' + r.numPassedTests + ' aprobadas, ' + r.numFailedTests + ' fallidas, ' + skipped + ' omitidas (PostgreSQL y SQL Server)');
-            if (skipped > 0) { console.log('::error title=integración::Hay pruebas omitidas: no se acepta como aprobado'); process.exit(1); }"
+          node ../../scripts/check-integration-report.mjs vitest-integracion.json
 
   compose-smoke:
     name: Prueba de humo de Docker Compose (perfil local)

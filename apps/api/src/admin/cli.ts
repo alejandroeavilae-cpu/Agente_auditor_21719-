@@ -26,10 +26,13 @@ const USAGE = `Uso: auditor-admin <comando>
   init                                     Crea/migra la base de control y migra todas las organizaciones
   tenant create --slug <id> --name <nombre> Da de alta una organización con base y usuario propios
   tenant list                              Lista las organizaciones
-  tenant suspend --slug <id>               Suspende una organización (queda en su bitácora)
+  tenant suspend --slug <id>               Suspende una organización: el motor bloquea su usuario
   tenant reactivate --slug <id>            Reactiva una organización suspendida
+  tenant check                             Comprueba que cada organización activa puede abrirse
+  tenant rotate-password --slug <id>       Cambia la contraseña de base de datos de una organización
+  tenant cleanup-provisioning --slug <id>  Limpia un alta que quedó incompleta
   audit export --tenant <id> [--out <archivo>]
-                                           Exporta la bitácora en JSONL (a la salida estándar si no hay --out)
+                                           Exporta la bitácora en JSONL (también de organizaciones suspendidas)
 
 Verifique una exportación con la CLI independiente:
   auditor-log verify --entries <archivo> --chain-id <id> [--anchors ... --public-key ...]`;
@@ -47,24 +50,39 @@ function manager(): TenantManager {
   return new TenantManager(config, [loadMasterKey(keyFile, { checkPermissions })]);
 }
 
-function slugArg(args: string[], name: 'slug' | 'tenant'): string {
-  const { values } = parseArgs({ args, options: { [name]: { type: 'string' } }, strict: true });
-  const value = values[name];
-  if (typeof value !== 'string' || value === '') throw new UsageError(`Falta --${name}.`);
+/** `parseArgs` con errores de uso convertidos en `UsageError` (código de salida 2, hallazgo QA B-05). */
+function parse<T extends Record<string, { type: 'string' }>>(args: string[], options: T): { [K in keyof T]?: string } {
+  try {
+    return parseArgs({ args, options, strict: true, allowPositionals: false }).values;
+  } catch (error) {
+    throw new UsageError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function required(value: string | undefined, name: string): string {
+  if (value === undefined || value === '') throw new UsageError(`Falta --${name}.`);
   return value;
+}
+
+/** Imprime avisos en la salida de errores. Devuelve si hubo alguno. */
+function printWarnings(warnings: readonly string[]): boolean {
+  for (const w of warnings) console.error(`Aviso: ${w}`);
+  return warnings.length > 0;
 }
 
 /**
  * Escribe un archivo nuevo. O_EXCL hace fallar la apertura si el archivo ya existe
  * (también si es un enlace simbólico, aunque apunte a un archivo inexistente): nunca se
- * sobrescribe ni se escribe a través de un enlace.
+ * sobrescribe ni se escribe a través de un enlace. El error informa la causa real (B-05).
  */
 function writeNewFile(path: string, content: string): void {
   let fd: number;
   try {
     fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o640);
-  } catch {
-    throw new UsageError(`No se puede crear el archivo (¿ya existe?); no se sobrescribe: ${path}`);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST' || code === 'ELOOP') throw new Error(`El archivo ya existe (o es un enlace); no se sobrescribe: ${path}`, { cause: error });
+    throw new Error(`No se puede crear el archivo ${path}: ${code ?? String(error)}`, { cause: error });
   }
   try {
     writeSync(fd, content);
@@ -73,57 +91,109 @@ function writeNewFile(path: string, content: string): void {
   }
 }
 
+const S = { type: 'string' } as const;
+/** Opciones admitidas por cada comando. */
+const COMMANDS: Record<string, Record<string, typeof S>> = {
+  init: {},
+  'tenant create': { slug: S, name: S },
+  'tenant list': {},
+  'tenant suspend': { slug: S },
+  'tenant reactivate': { slug: S },
+  'tenant check': {},
+  'tenant rotate-password': { slug: S },
+  'tenant cleanup-provisioning': { slug: S },
+  'audit export': { tenant: S, out: S },
+};
+
 async function run(argv: string[]): Promise<number> {
   const [group, command, ...rest] = argv;
   if (group === undefined || group === '--help' || group === 'help') {
     console.log(USAGE);
     return group === undefined ? 2 : 0;
   }
+  const key = group === 'init' ? (command === undefined ? 'init' : `init ${command}`) : `${group} ${command ?? ''}`;
+  // Comando y opciones se validan ANTES de leer configuración o secretos.
+  const spec = COMMANDS[key];
+  if (spec === undefined) throw new UsageError(`Comando desconocido: ${key.trim()}`);
+  const v = parse(key === 'init' ? [] : rest, spec);
+  for (const name of ['slug', 'name', 'tenant'] as const) {
+    if (name in spec) required(v[name], name);
+  }
 
   const m = manager();
   try {
-    if (group === 'init' && command === undefined) {
-      const applied = await m.initControl();
-      console.log(`Base de control: ${applied.length === 0 ? 'al día' : `migraciones aplicadas: ${applied.join(', ')}`}`);
-      const tenants = await m.migrateAllTenants(ACTOR);
-      for (const [slug, list] of Object.entries(tenants)) {
-        console.log(`Organización ${slug}: ${list.length === 0 ? 'al día' : `migraciones aplicadas: ${list.join(', ')}`}`);
+    switch (key) {
+      case 'init': {
+        const { applied, warnings } = await m.initControl();
+        console.log(`Base de control: ${applied.length === 0 ? 'al día' : `migraciones aplicadas: ${applied.join(', ')}`}`);
+        printWarnings(warnings);
+        let failed = false;
+        for (const [slug, r] of Object.entries(await m.migrateAllTenants(ACTOR))) {
+          if (r.error !== undefined) {
+            failed = true;
+            console.error(`Organización ${slug}: ERROR al migrar: ${r.error}`);
+          } else {
+            console.log(`Organización ${slug}: ${r.applied.length === 0 ? 'al día' : `migraciones aplicadas: ${r.applied.join(', ')}`}`);
+          }
+        }
+        return failed ? 1 : 0;
       }
-      return 0;
-    }
-    if (group === 'tenant' && command === 'create') {
-      const { values } = parseArgs({ args: rest, options: { slug: { type: 'string' }, name: { type: 'string' } }, strict: true });
-      if (!values.slug || !values.name) throw new UsageError('Faltan --slug o --name.');
-      const t = await m.createTenant(values.slug, values.name, ACTOR);
-      console.log(`Organización creada: ${t.slug} (${t.name}) · base ${t.dbName} · estado ${t.status}`);
-      return 0;
-    }
-    if (group === 'tenant' && command === 'list') {
-      const list = await m.listTenants();
-      if (list.length === 0) console.log('No hay organizaciones registradas.');
-      for (const t of list) console.log(`${t.slug.padEnd(30)} ${t.status.padEnd(12)} ${t.dbName.padEnd(45)} ${t.name}`);
-      return 0;
-    }
-    if (group === 'tenant' && (command === 'suspend' || command === 'reactivate')) {
-      const slug = slugArg(rest, 'slug');
-      await m.setStatus(slug, command === 'suspend' ? 'suspended' : 'active', ACTOR);
-      console.log(`Organización ${slug}: ${command === 'suspend' ? 'suspendida' : 'reactivada'}.`);
-      return 0;
-    }
-    if (group === 'audit' && command === 'export') {
-      const { values } = parseArgs({ args: rest, options: { tenant: { type: 'string' }, out: { type: 'string' } }, strict: true });
-      if (!values.tenant) throw new UsageError('Falta --tenant.');
-      const handle = await m.openTenant(values.tenant);
-      const jsonl = toJsonl(await handle.audit.exportRaw());
-      if (values.out === undefined) {
-        process.stdout.write(jsonl);
-      } else {
-        writeNewFile(values.out, jsonl);
-        console.error(`Bitácora exportada a ${values.out}. Identificador de cadena (--chain-id): ${values.tenant}`);
+      case 'tenant create': {
+        const t = await m.createTenant(required(v.slug, 'slug'), required(v.name, 'name'), ACTOR);
+        console.log(`Organización creada: ${t.slug} (${t.name}) · base ${t.dbName} · estado ${t.status}`);
+        printWarnings(t.warnings);
+        return 0;
       }
-      return 0;
+      case 'tenant list': {
+        const list = await m.listTenants();
+        if (list.length === 0) console.log('No hay organizaciones registradas.');
+        for (const t of list) console.log(`${t.slug.padEnd(30)} ${t.status.padEnd(12)} ${t.dbName.padEnd(28)} ${t.name}`);
+        return 0;
+      }
+      case 'tenant suspend':
+      case 'tenant reactivate': {
+        const slug = required(v.slug, 'slug');
+        const { warnings } = await m.setStatus(slug, command === 'suspend' ? 'suspended' : 'active', ACTOR);
+        console.log(`Organización ${slug}: ${command === 'suspend' ? 'suspendida' : 'reactivada'}.`);
+        printWarnings(warnings);
+        return 0;
+      }
+      case 'tenant check': {
+        let failed = false;
+        for (const [slug, problem] of Object.entries(await m.checkTenants())) {
+          if (problem === null) console.log(`${slug}: ok`);
+          else {
+            failed = true;
+            console.error(`${slug}: ERROR: ${problem}`);
+          }
+        }
+        return failed ? 1 : 0;
+      }
+      case 'tenant rotate-password': {
+        const slug = required(v.slug, 'slug');
+        await m.rotatePassword(slug, ACTOR);
+        console.log(`Organización ${slug}: contraseña de base de datos cambiada.`);
+        return 0;
+      }
+      case 'tenant cleanup-provisioning': {
+        const slug = required(v.slug, 'slug');
+        await m.cleanupProvisioning(slug);
+        console.log(`Organización ${slug}: alta incompleta eliminada. Puede volver a crearla.`);
+        return 0;
+      }
+      default: {
+        // audit export
+        const tenant = required(v.tenant, 'tenant');
+        const jsonl = toJsonl(await m.exportAuditLog(tenant));
+        if (v.out === undefined) {
+          process.stdout.write(jsonl);
+        } else {
+          writeNewFile(v.out, jsonl);
+          console.error(`Bitácora exportada a ${v.out}. Identificador de cadena (--chain-id): ${tenant}`);
+        }
+        return 0;
+      }
     }
-    throw new UsageError(`Comando desconocido: ${[group, command].filter(Boolean).join(' ')}`);
   } finally {
     await m.close();
   }
