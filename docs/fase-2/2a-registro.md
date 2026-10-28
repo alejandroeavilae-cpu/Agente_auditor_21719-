@@ -1,7 +1,7 @@
 # Fase 2 · Entrega 2A — Base de datos y organizaciones: registro
 
 **Aprobación de inicio de la Fase 2:** Alejandro Ávila, 26-10-2026 23:37 (hora de Chile), en tres entregas con aprobación separada.
-**Rama:** `fase-2a`. **Estado:** Implementado y Probado. Pendiente: revisión QA independiente y aprobación humana de cierre de 2A.
+**Rama:** `fase-2a`. **Estado:** Implementado y Probado. La primera revisión QA independiente (27-10-2026, sobre `375e794`) **no aprobó**: 2 hallazgos de severidad Alta, 7 Media y 15 Baja. Las correcciones están en la §6. Pendiente: nueva revisión QA y aprobación humana de cierre de 2A.
 
 ## 1. Alcance entregado
 
@@ -11,9 +11,10 @@
 | Base de control con registro de organizaciones | `packages/persistence` (`schema.ts`, `tenant-manager.ts`) | Probado en PostgreSQL y SQL Server |
 | Una base por organización con **usuario propio** y privilegios mínimos (D-04, D-61) | `provisioner.ts` | Probado en ambos motores |
 | Bitácora persistida en la base de cada organización, solo-anexar reforzada por el motor, escrituras serializadas (D-62) | `audit-log-repository.ts` | Probado en ambos motores |
-| Exportación forense de la bitácora (sin validar ni descartar) verificable con la CLI independiente | `exportRaw`, `auditor-admin audit export` | Probado |
-| CLI de administración `auditor-admin` (D-63) | `apps/api/src/admin/cli.ts` | Probado manualmente en PostgreSQL local y en la prueba de humo de Compose |
-| Compose con clave maestra y alta de organizaciones | `deploy/compose`, `scripts/generate-secrets.sh` | Probado en CI |
+| Exportación forense de la bitácora (sin validar ni descartar), verificable con la CLI independiente; también con organizaciones suspendidas | `exportAuditLog`, `auditor-admin audit export` | Probado |
+| CLI de administración `auditor-admin` (D-63): `init`, `tenant create/list/suspend/reactivate/check/rotate-password/cleanup-provisioning`, `audit export` | `apps/api/src/admin/cli.ts` | Códigos de salida: prueba automática (`admin-cli.test.ts`). Recorrido completo ejecutado a mano el 28-10-2026 contra PostgreSQL 18.4 local con la cuenta sin superusuario. Prueba de humo de Compose: §6 |
+| Compose: servicio `admin` separado (único con secretos de administración), cuenta `auditor_provisioner` sin superusuario creada al iniciar PostgreSQL | `deploy/compose`, `scripts/generate-secrets.sh` | Prueba de humo en CI (§6) |
+| Guía de preparación del servidor (PostgreSQL y SQL Server) | `docs/fase-2/servidor-de-base-de-datos.md` | Documentado; SQL de PostgreSQL ejecutado el 28-10-2026 en el servidor local |
 | CI: integración con PostgreSQL 18 y SQL Server 2025 reales; omitir = fallar (D-64) | `.github/workflows/ci.yml` (job `integration`) | Probado |
 
 **Sin implementar a propósito en 2A:** endpoints HTTP nuevos, usuarios, autenticación y pantallas (2B/2C); baja definitiva con acta de destrucción (O-09, fase posterior); TLS hacia la base en el perfil institucional (2C/11); respaldos cifrados por organización (D-44, pendiente).
@@ -27,13 +28,13 @@
 | PT-12 (base) | Las credenciales de la organización A **no abren** la base de B ni la base de control | `tenants.int.test.ts`, ambos motores | Aprobada |
 | PT-04 (BD) | Una modificación hecha con la cuenta administrativa en la base se detecta al exportar y verificar | `tenants.int.test.ts`, ambos motores | Aprobada (cierra la parte pendiente de PT-04 en Fase 1) |
 | — | El usuario de aplicación no puede UPDATE ni DELETE en la bitácora | ídem | Aprobada |
-| — | 20 escrituras concurrentes → cadena continua y válida | ídem | Aprobada. **Primera versión fallaba** (solo reintentos); corregido con bloqueo (D-62) |
+| — | 20 escrituras concurrentes → cadena continua y válida | ídem | Aprobada. Según el desarrollo, una primera versión que solo reintentaba fallaba y se corrigió con bloqueo (D-62). [PENDIENTE: no se conservó evidencia de ejecución de esa falla] |
 | — | Secreto cifrado copiado de una organización a otra no se descifra | ídem | Aprobada |
 | — | Suspensión: la organización no se abre y la acción queda en su bitácora | ídem | Aprobada |
-| — | No se pisa una base preexistente con el mismo nombre; identificadores con inyección SQL rechazados | ídem | Aprobada |
-| — | Integración completa: **37 aprobadas, 0 fallidas, 0 omitidas** con PostgreSQL 18 y SQL Server 2025 CU10 | CI run [40441155353](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40441155353), job "Integración" | Aprobada |
-| — | Compose: alta de 2 organizaciones, bases separadas, exportación y verificación de cada bitácora | `scripts/smoke-compose.sh` pasos 9–10, run 40441155353 | Aprobada |
-| PT-17 | La regla D-24 bloqueó la integración por `@azure/msal-node` 6.0.1 (CVE-2026-109461); corregido con override (D-59) | runs con hallazgo → run 40441155185 (Seguridad) en verde | Aprobada |
+| — | Identificadores con inyección SQL rechazados | ídem | Aprobada |
+| — | Integración completa sobre `375e794`: **37 aprobadas, 0 fallidas, 0 omitidas** con PostgreSQL 18 y SQL Server 2025 CU10 | CI run [40441561664](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40441561664), job "Integración" (confirmado por QA) | Aprobada |
+| — | Compose: alta de 2 organizaciones, bases separadas, exportación y verificación de cada bitácora | `scripts/smoke-compose.sh`, run 40441561664 | Aprobada |
+| PT-17 | La regla D-24 detectó `@azure/msal-node` 6.0.1 (CVE-2026-109461): en el run 40440771108 fallaron el escaneo Trivy (job 121980313742) y la prueba de humo de Compose (imagen de la API); la integración sí pasó. Corregido con override (D-59) | run 40440771108 → run 40441155185 (Seguridad) en verde | Aprobada |
 
 Motores usados en CI (registrados por el propio job): `postgres:18-alpine@sha256:898c60cb…` y `mcr.microsoft.com/mssql/server:2025-CU10-ubuntu-24.04` (digest `sha256:245f6b1c…`, ahora fijado).
 
@@ -45,9 +46,12 @@ D-58 a D-64 en `docs/fase-0/21-decisiones.md` §5. La más relevante: **Kysely e
 
 1. **La cuenta administrativa del motor puede alterar cualquier base** (incluida la bitácora). Mitigación: detección por exportación + anclajes externos (R-26). No es prevención.
 2. **Clave maestra única por instalación** (R-27): quien obtenga el archivo y la base de control puede descifrar las credenciales de todas las organizaciones. Se documenta y se exige respaldo fuera del servidor (R-24).
-3. En Compose la verificación de permisos del archivo de clave maestra está desactivada dentro del contenedor (el usuario del contenedor difiere del anfitrión); la protección es el directorio del anfitrión con permisos 700.
-4. En SQL Server, el login de una organización puede conectarse a `master` (comportamiento del motor; ve solo metadatos públicos). No puede entrar a otras bases de usuario.
-5. Las pruebas con SQL Server solo se ejecutan en CI (el entorno del agente no puede descargar la imagen); las de PostgreSQL se ejecutaron también localmente.
+3. En Compose la verificación de permisos del archivo de clave maestra está desactivada dentro del contenedor, porque el usuario del contenedor difiere del del anfitrión. Los secretos nuevos quedan en 644 y la protección es el directorio del anfitrión, con permisos 700. Fuera de Compose, `loadMasterKey` exige permisos 600 y rechaza enlaces simbólicos.
+9. **Rotación de la clave maestra** [PENDIENTE] (B-10): la librería admite varias claves y recifrado por identificador (probado en `packages/crypto`), pero la CLI carga una sola clave y no hay comando de recifrado. No es operable en 2A.
+10. **Cuenta de aprovisionamiento en SQL Server:** `securityadmin` equivale en la práctica a `sysadmin` [VERIFICADO, ver la guía del servidor]. En ese motor la separación aporta trazabilidad, no un límite fuerte.
+11. **El usuario de una organización puede cambiar su propia contraseña** (R-31, D-68): se detecta con `tenant check` y se corrige con `tenant rotate-password`.
+4. En SQL Server, el login de una organización puede conectarse a `master` y `tempdb` (usuario invitado propio del motor). Con `DENY VIEW ANY DATABASE` no ve los nombres de otras bases. No puede entrar a otras bases de usuario.
+5. Las pruebas con SQL Server solo se ejecutan en CI (el entorno del agente no puede descargar la imagen); las de PostgreSQL se ejecutaron también localmente. La prueba de humo de Compose solo se ejecuta en CI (el entorno del agente no tiene Docker).
 6. La CLI de administración registra como actor `operador-plataforma:cli`, sin identidad individual: la identidad llega en 2B.
 7. Override de `@azure/msal-node` a una versión mayor que la declarada por `@azure/identity` (D-59): retirar cuando el proveedor publique compatibilidad.
 8. Los digests "flotantes" de algunas imágenes base cambiaron en el registro (p. ej. `postgres:18-alpine`); el proyecto mantiene los fijados y los actualiza deliberadamente.
@@ -61,10 +65,49 @@ D-58 a D-64 en `docs/fase-0/21-decisiones.md` §5. La más relevante: **Kysely e
 | 3 | Pruebas ejecutadas | Cumplido (§2) |
 | 4 | Resultados verificables | Cumplido (runs de CI enlazados; anotaciones con conteos) |
 | 5 | Riesgos de seguridad evaluados | Cumplido (§4; regla D-24 aplicada) |
-| 6 | Permisos correctos | Cumplido: usuario por organización con privilegios mínimos |
+| 6 | Permisos correctos | Corregido tras QA (A-02, M-02, M-03): usuario por organización con privilegios mínimos, cuenta de aprovisionamiento sin superusuario, API sin secretos de administración. Pendiente de la nueva revisión QA |
 | 7 | Aislamiento de datos revisado | Cumplido a nivel de base de datos; el aislamiento por endpoint HTTP corresponde a 2C |
 | 8 | Comentarios en español | Cumplido |
 | 9 | Documentación actualizada | Cumplido (`docs/fase-1/ejecucion-local.md`, este registro) |
-| 10 | Revisión QA | **Pendiente** |
+| 10 | Revisión QA | Primera revisión: **no aprobada** (27-10-2026). Nueva revisión: **pendiente** |
 | 11 | Limitaciones documentadas | Cumplido (§4) |
 | 12 | Aprobación humana | **Pendiente** |
+
+## 6. Correcciones tras la primera revisión QA (28-10-2026)
+
+Revisión QA independiente del 27-10-2026 sobre `375e794`: **no aprobada**. Correcciones en el commit `7a84b3a`; decisiones D-65 a D-70; riesgos nuevos R-31 y R-32.
+
+| Hallazgo | Corrección | Prueba que lo cubre |
+|---|---|---|
+| A-01 Reversión inestable | Manejador de errores en los pools de `pg` y `tedious`; la reversión borra base, usuario y registro por separado | `A-01: si falla un paso del alta…` (fallo inyectado en `grantAppPrivileges`) |
+| A-02 API con superusuario y clave maestra | Servicio `admin` (perfil `tools`) único con secretos; cuenta `auditor_provisioner` sin superusuario | Integración: `la cuenta de aprovisionamiento no es superusuario` (todas las pruebas usan esa cuenta); humo de Compose paso 9 |
+| M-01 La reversión borraba una base ajena | Banderas `dbCreated` / `loginCreated` marcadas después de cada CREATE exitoso | `M-01: la reversión nunca elimina una base que la plataforma no creó` (carrera simulada) |
+| M-02 El usuario cambia su contraseña | `tenant check`, `tenant rotate-password` (con `RESET ALL`), `search_path` fijo | `M-02: …se detecta y la rotación recupera el acceso` |
+| M-03 Catálogo y bases del sistema visibles | Nombres opacos; `REVOKE CONNECT, TEMP` en `postgres` y `template1`; `DENY VIEW ANY DATABASE`; `REVOKE CONNECT FROM guest` | `PT-12 (base)` ampliada a `postgres` y `template1`; `no puede deducir qué otras organizaciones existen` |
+| M-04 Suspensión solo en la aplicación | `NOLOGIN` / `DISABLE` y cierre de sesiones | `M-04/M-05`: una conexión abierta antes de suspender queda cortada y no se puede volver a conectar |
+| M-05 No se exportaba una organización suspendida | Exportación con la cuenta de aprovisionamiento | `M-04/M-05`; humo de Compose paso 11 |
+| M-06 Alta interrumpida bloqueada | Registro `provisioning` previo; aviso en `init`; `tenant cleanup-provisioning` | `M-06: …se limpia con cleanupProvisioning` |
+| M-07 La migración se detenía en el primer fallo | Resultado por organización; `init` sale con código 1 si alguna falló | `M-07: …no se detiene ante un fallo` |
+| B-01 `seq` impreciso | Se exporta como texto si excede el rango seguro | `B-01/B-02` (seq 9007199254740993 exportado exacto) |
+| B-02 Fecha futura contagiada | Error "fecha futura: posible alteración" si la última entrada excede 5 minutos en el futuro | `B-01/B-02` |
+| B-03 Fila dañada impedía suspender | La suspensión se aplica igual y se informa aviso | `B-03: con la bitácora dañada la suspensión igual se aplica` |
+| B-04 Espera de bloqueo sin límite | `SET LOCAL lock_timeout = '30s'` | Revisión de código [PENDIENTE: sin prueba automática] |
+| B-05 Errores de archivo y de opciones | Causa real del error de archivo (código 1); errores de opciones con código 2, antes de leer secretos | `admin-cli.test.ts`; recorrido manual (`/nonexistent/x.jsonl` → código 1) |
+| B-06 Caracteres de control en el nombre | `assertTenantName` rechaza `\p{C}` | `naming-config.test.ts` e integración |
+| B-07 Funciones de prueba en producción | Movidas a `TestTenantManager` en `test/helpers.ts` | Compila; no se exportan |
+| B-08 Nombres reservados para la base de control | `assertControlDatabaseName` | `naming-config.test.ts` |
+| B-09 Permisos de secretos | `generate-secrets.sh` no cambia permisos de secretos existentes; `loadMasterKey` exige 600 y rechaza enlaces | `envelope.test.ts` |
+| B-10 Rotación de clave maestra | Marcada `[PENDIENTE]` (§4.9) | — |
+| B-11 base64url permisivo | Solo forma canónica | `envelope.test.ts` |
+| B-12 Objetos grandes | `REVOKE EXECUTE` de `lo_*` en `template1` (guía y Compose); aviso al crear la organización si siguen permitidos | Integración (`lo_creat` rechazado) |
+| B-13 Control de pruebas en CI | `scripts/check-integration-report.mjs`: mínimo de 19 pruebas aprobadas **por motor**; puertos de servicios solo en 127.0.0.1 | Ejecutado localmente: con un motor faltante el script falla |
+| B-14 Inexactitudes del registro | Corregidas en §1, §2 y §4 | — |
+| B-15 Guía incompleta | `docs/fase-1/ejecucion-local.md`: verificación de exportación, suspendidas, variables `TEST_PG_*` / `TEST_MSSQL_*` | — |
+
+**Evidencia local (28-10-2026, Node 24.22.1, PostgreSQL 18.4):**
+
+- `pnpm run verify`: código de salida 0. Pruebas: web 4, crypto 14, audit-log 44, api 15, persistence 23 + 1 omitida (la de integración, sin motores). Licencias: 312 paquetes permitidos.
+- Integración con PostgreSQL (`REQUIRE_DB_ENGINES=postgresql`): **42 aprobadas, 0 fallidas, 0 omitidas** (23 unitarias + 19 de integración). La versión anterior, con 18 pruebas de integración, se ejecutó 4 veces seguidas con el mismo resultado.
+  - Al terminar, el servidor solo conserva `postgres`, `template0`, `template1` y el rol `auditor`.
+
+**Evidencia de CI sobre `7a84b3a`:** [PENDIENTE: se completa al terminar los runs]

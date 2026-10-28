@@ -306,6 +306,27 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     expect(ok[slugB]).toEqual({ applied: [] });
   });
 
+  it('B-01/B-02: la exportación conserva un seq fuera de rango seguro y una fecha futura bloquea nuevas entradas', async () => {
+    const credsB = await manager.credentials(slugB);
+    const adminB = connect<TenantDatabase>(server, credsB.dbName, 1);
+    const last = await adminB.selectFrom('audit_log').select(['seq', 'ts']).orderBy('seq', 'desc').executeTakeFirstOrThrow();
+    const lastSeq = Number(last.seq);
+
+    // B-02: una última entrada fechada en el futuro (alteración) no se propaga a la siguiente.
+    await adminB.updateTable('audit_log').set({ ts: '2099-01-01T00:00:00.000Z' }).where('seq', '=', lastSeq).execute();
+    const b = await manager.openTenant(slugB);
+    await expect(b.audit.append({ actor: 'usuario-sintetico', action: 'prueba.fecha', object: 'o/1' })).rejects.toThrow(/fecha futura/);
+    await adminB.updateTable('audit_log').set({ ts: last.ts }).where('seq', '=', lastSeq).execute();
+
+    // B-01: un seq mayor que 2^53 se exporta exacto, como texto.
+    await adminB.updateTable('audit_log').set({ seq: '9007199254740993' }).where('seq', '=', lastSeq).execute();
+    const exported = await manager.exportAuditLog(slugB);
+    expect(exported.at(-1)?.seq).toBe('9007199254740993');
+    await adminB.updateTable('audit_log').set({ seq: lastSeq }).where('seq', '=', '9007199254740993').execute();
+    await adminB.destroy();
+    expect(verifyChainItems(parseJsonlLines(toJsonl(await manager.exportAuditLog(slugB))), slugB).ok).toBe(true);
+  });
+
   it('rechaza identificadores que podrían inyectar SQL y nombres con caracteres de control', async () => {
     for (const bad of ['a"; DROP DATABASE x; --', 'Mayus', 'ab', 'x'.repeat(31), '-inicio', 'doble--guion']) {
       await expect(manager.createTenant(bad, 'Mala', 'operador:pruebas')).rejects.toThrow(/Identificador de organización inválido/);

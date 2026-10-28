@@ -35,9 +35,10 @@ FROM ${GO_IMAGE} AS caddy-build
 ARG CADDY_VERSION=v2.11.7
 WORKDIR /build
 COPY deploy/docker/caddy-build/main.go ./
-# Se fuerza x/net a una versión corregida (vulnerabilidad alta en v0.59.0, D-24).
+# Se fuerzan dependencias a versiones corregidas (regla D-24): x/net (alta en v0.59.0) y
+# go-jose (CVE-2026-116587, alta en v4.1.5, corregida en v4.1.6 según Trivy).
 RUN go mod init auditor21719/caddy \
- && go get github.com/caddyserver/caddy/v2@${CADDY_VERSION} golang.org/x/net@v0.60.0 \
+ && go get github.com/caddyserver/caddy/v2@${CADDY_VERSION} golang.org/x/net@v0.60.0 github.com/go-jose/go-jose/v4@v4.1.6 \
  && go mod tidy \
  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/caddy .
 
