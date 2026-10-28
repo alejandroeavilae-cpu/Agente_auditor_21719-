@@ -6,7 +6,7 @@ Este archivo rige a cualquier agente de IA (orquestador o especializado) que con
 
 **Fase 0 aprobada** (25-10-2026). **Fase 1 aprobada y cerrada** (26-10-2026, PR #1). **Fase 2 aprobada por el responsable el 26-10-2026 23:37 (hora de Chile), en tres entregas con aprobación humana separada:**
 
-- **2A — Base de datos y organizaciones: EN CURSO** (rama `fase-2a`). Alcance: BD de control, una BD por organización con usuario propio, cifrado de sobre de credenciales, bitácora persistida en BD, CLI de administración, CI con PostgreSQL y SQL Server.
+- **2A — Base de datos y organizaciones: APROBADA POR QA (28-10-2026), PENDIENTE DE APROBACIÓN HUMANA** (rama `fase-2a`, PR #3). Alcance: BD de control, una BD por organización con usuario propio, cifrado de sobre de credenciales, bitácora persistida en BD, CLI de administración, CI con PostgreSQL y SQL Server.
 - 2B — Identidad y permisos: NO iniciada (requiere aprobación del cierre de 2A).
 - 2C — Pantallas y pruebas de aislamiento: NO iniciada.
 
