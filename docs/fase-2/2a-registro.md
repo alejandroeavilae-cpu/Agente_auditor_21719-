@@ -75,7 +75,7 @@ D-58 a D-64 en `docs/fase-0/21-decisiones.md` §5. La más relevante: **Kysely e
 
 ## 6. Correcciones tras la primera revisión QA (28-10-2026)
 
-Revisión QA independiente del 27-10-2026 sobre `375e794`: **no aprobada**. Correcciones en el commit `7a84b3a`; decisiones D-65 a D-70; riesgos nuevos R-31 y R-32.
+Revisión QA independiente del 27-10-2026 sobre `375e794`: **no aprobada**. Correcciones en los commits `7a84b3a`, `38c6351` y `28c764f`; decisiones D-65 a D-70; riesgos nuevos R-31 y R-32.
 
 | Hallazgo | Corrección | Prueba que lo cubre |
 |---|---|---|
@@ -110,4 +110,17 @@ Revisión QA independiente del 27-10-2026 sobre `375e794`: **no aprobada**. Corr
 - Integración con PostgreSQL (`REQUIRE_DB_ENGINES=postgresql`): **42 aprobadas, 0 fallidas, 0 omitidas** (23 unitarias + 19 de integración). La versión anterior, con 18 pruebas de integración, se ejecutó 4 veces seguidas con el mismo resultado.
   - Al terminar, el servidor solo conserva `postgres`, `template0`, `template1` y el rol `auditor`.
 
-**Evidencia de CI sobre `7a84b3a`:** [PENDIENTE: se completa al terminar los runs]
+**Evidencia de CI sobre `28c764f`** (todos los jobs en verde):
+
+- CI run [40695749197](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40695749197):
+  - Verificación: job 122841927019.
+  - Integración: job 122841927551, anotación "**61 aprobadas, 0 fallidas, 0 omitidas · por motor: postgresql=19, sqlserver=19**". Motores fijados por digest. Todas las pruebas de organizaciones se ejecutan con la cuenta de aprovisionamiento sin superusuario.
+  - Prueba de humo de Compose (pasos 1–11, incluidos API sin secretos, `auditor_provisioner` sin superusuario, nombres opacos y exportación de una organización suspendida): job 122841927373.
+- Seguridad run [40695749289](https://github.com/alejandroeavilae-cpu/Agente_auditor_21719-/actions/runs/40695749289).
+
+**Hallazgos que aparecieron al ejecutar CI durante la corrección (registrados por transparencia):**
+
+- Run 40694426271 (`7a84b3a`):
+  - La regla D-24 bloqueó la imagen web por CVE-2026-116587 en `go-jose` v4.1.5, que va dentro de Caddy. Se corrigió fijando la v4.1.6 en el Dockerfile.
+  - Falló el job de integración. Como los logs de CI no son accesibles desde el entorno del agente (403), se añadió el reporte de pruebas fallidas como anotaciones.
+- Run 40695125716 (`38c6351`): el aviso de endurecimiento detectó una base `auditor` con acceso público, creada por la configuración del servicio PostgreSQL de CI. Se corrigió con `POSTGRES_DB: postgres`. Es el mismo aviso que verá un administrador real.
