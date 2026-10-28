@@ -202,7 +202,8 @@ Correcciones en `2119a8c` y `fefab6f`. Decisión nueva: D-71.
 **Corrección.**
 - El archivo se abre una sola vez, con `O_NOFOLLOW` cuando la comprobación está activa.
 - Permisos y tipo se comprueban sobre el descriptor abierto (`fstat`), y se lee desde ese mismo descriptor.
-- Se rechaza todo lo que no sea un archivo regular. Hay una prueba nueva con un directorio.
+- Se rechaza todo lo que no sea un archivo regular. Hay pruebas nuevas con un directorio y con una tubería con nombre (FIFO).
+- Mientras QA verificaba, el implementador detectó que abrir una FIFO podía quedar bloqueado indefinidamente. Se agregó `O_NONBLOCK` (commit siguiente a `3a8eca0`).
 
 **Verificación.**
 - Local: `pnpm run verify`, código 0.

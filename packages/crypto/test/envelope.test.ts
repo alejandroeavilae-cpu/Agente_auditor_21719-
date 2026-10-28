@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -117,6 +118,11 @@ describe('loadMasterKey', () => {
     const sub = mkdtempSync(join(dir, 'dir-'));
     chmodSync(sub, 0o700);
     expect(() => loadMasterKey(sub)).toThrow(CryptoError);
+    // Una tubería con nombre (FIFO) se rechaza sin quedar esperando un escritor.
+    const fifo = join(dir, 'tuberia.key');
+    execFileSync('mkfifo', ['-m', '600', fifo]);
+    expect(() => loadMasterKey(fifo)).toThrow(/archivo regular/);
+    expect(() => loadMasterKey(fifo, { checkPermissions: false })).toThrow(/archivo regular/);
   });
 
   it('rechaza formato inválido y archivo inexistente', () => {

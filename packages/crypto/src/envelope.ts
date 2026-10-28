@@ -86,7 +86,10 @@ export function loadMasterKey(path: string, options: { checkPermissions?: boolea
     // Con la comprobación activa, O_NOFOLLOW hace fallar la apertura de un enlace
     // simbólico (otro usuario podría redirigir la lectura, hallazgo QA B-09).
     try {
-      fd = openSync(path, check ? constants.O_RDONLY | constants.O_NOFOLLOW : constants.O_RDONLY);
+      // O_NONBLOCK evita que la apertura de una tubería con nombre (FIFO) quede esperando
+      // indefinidamente; en archivos regulares no tiene efecto. Luego fstat la rechaza.
+      const flags = constants.O_RDONLY | constants.O_NONBLOCK;
+      fd = openSync(path, check ? flags | constants.O_NOFOLLOW : flags);
     } catch (error) {
       if (check && (error as NodeJS.ErrnoException).code === 'ELOOP') {
         throw new CryptoError(`El archivo de clave maestra no puede ser un enlace simbólico: ${path}`);
