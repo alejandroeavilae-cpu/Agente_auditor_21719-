@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { lstatSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 
 /**
  * Cifrado de sobre (decisión D-12).
@@ -78,20 +78,32 @@ export function generateKey(): SymmetricKey {
 export function loadMasterKey(path: string, options: { checkPermissions?: boolean } = {}): SymmetricKey {
   const check = options.checkPermissions ?? true;
   let content: string;
+  let fd: number | undefined;
   try {
-    const info = lstatSync(path);
-    // Con la comprobación activa no se siguen enlaces simbólicos (otro usuario podría
-    // redirigir la lectura) y solo el dueño puede tener permisos (hallazgo QA B-09).
-    if (check && info.isSymbolicLink()) {
-      throw new CryptoError(`El archivo de clave maestra no puede ser un enlace simbólico: ${path}`);
+    // Se abre UNA vez y todas las comprobaciones se hacen sobre el descriptor abierto
+    // (fstat), no sobre la ruta: así el archivo comprobado es exactamente el que se lee y
+    // no hay carrera entre comprobar y leer (alerta CodeQL js/file-system-race).
+    // Con la comprobación activa, O_NOFOLLOW hace fallar la apertura de un enlace
+    // simbólico (otro usuario podría redirigir la lectura, hallazgo QA B-09).
+    try {
+      fd = openSync(path, check ? constants.O_RDONLY | constants.O_NOFOLLOW : constants.O_RDONLY);
+    } catch (error) {
+      if (check && (error as NodeJS.ErrnoException).code === 'ELOOP') {
+        throw new CryptoError(`El archivo de clave maestra no puede ser un enlace simbólico: ${path}`);
+      }
+      throw error;
     }
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw new CryptoError(`La clave maestra debe ser un archivo regular: ${path}`);
     if (check && (info.mode & 0o077) !== 0) {
       throw new CryptoError(`Permisos inseguros en ${path}: la clave maestra solo debe ser legible por su dueño (chmod 600).`);
     }
-    content = readFileSync(path, 'utf8').trim();
+    content = readFileSync(fd, 'utf8').trim();
   } catch (error) {
     if (error instanceof CryptoError) throw error;
     throw new CryptoError(`No se pudo leer el archivo de clave maestra: ${path}`);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
   if (!/^[A-Za-z0-9+/]{43}=$/.test(content)) {
     throw new CryptoError('La clave maestra debe ser 32 bytes en base64 (44 caracteres).');

@@ -113,6 +113,10 @@ describe('loadMasterKey', () => {
     const link = join(dir, 'enlace.key');
     symlinkSync(real, link);
     expect(() => loadMasterKey(link)).toThrow(/enlace simbólico/);
+    // Un directorio no es una clave aunque tenga permisos 700.
+    const sub = mkdtempSync(join(dir, 'dir-'));
+    chmodSync(sub, 0o700);
+    expect(() => loadMasterKey(sub)).toThrow(CryptoError);
   });
 
   it('rechaza formato inválido y archivo inexistente', () => {

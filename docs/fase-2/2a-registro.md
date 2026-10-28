@@ -191,3 +191,20 @@ Correcciones en `2119a8c` y `fefab6f`. Decisión nueva: D-71.
 | X-02 | Baja | Si el usuario de una organización fija parámetros para **otra** base (`IN DATABASE <otra>`), `tenant check` sigue informando el problema y `rotate-password` no lo resuelve. No afecta la operación: ese usuario no puede conectarse a otras bases | `RESET ALL` en cada `setdatabase` del rol |
 
 **Pendiente** (fuera del alcance de QA): no se verificó si la protección de la rama `main` exige el job de integración para fusionar.
+
+## 9. Hallazgo de CodeQL en el PR #3, posterior a la aprobación QA (28-10-2026)
+
+**Hallazgo.** El análisis CodeQL del PR #3 (commit `1396457`) reportó **1 alerta nueva de severidad alta**, `js/file-system-race`, en `packages/crypto/src/envelope.ts:91`.
+- **Causa:** `loadMasterKey` comprobaba el archivo por su ruta (`lstat`) y luego lo leía por la ruta. Entre ambas operaciones, el archivo podía cambiar.
+- **Origen:** la corrección de B-09.
+- **Detección:** no lo detectaron ni QA ni las pruebas.
+
+**Corrección.**
+- El archivo se abre una sola vez, con `O_NOFOLLOW` cuando la comprobación está activa.
+- Permisos y tipo se comprueban sobre el descriptor abierto (`fstat`), y se lee desde ese mismo descriptor.
+- Se rechaza todo lo que no sea un archivo regular. Hay una prueba nueva con un directorio.
+
+**Verificación.**
+- Local: `pnpm run verify`, código 0.
+- CI y CodeQL sobre el commit de la corrección: [PENDIENTE].
+- Verificación QA dirigida: [PENDIENTE].
