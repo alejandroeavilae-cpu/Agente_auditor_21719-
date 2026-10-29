@@ -63,9 +63,9 @@ API_SECRETS="$($COMPOSE exec -T api sh -c 'ls -A /run/secrets 2>/dev/null | sort
 echo "secretos de api: $API_SECRETS"
 [ "$(echo "$API_SECRETS" | tr -d '\r' | sed 's/ *$//')" = "api_db_password master.key" ] || fail "el contenedor api debe montar solo api_db_password y master.key"
 $COMPOSE exec -T api sh -c 'env | grep -q -E "^DB_ADMIN"' && fail "el contenedor api recibe variables de aprovisionamiento"
-ROLES="$($COMPOSE exec -T postgres psql -U auditor -d postgres -tAc "select rolname || ':' || rolsuper || rolcreatedb || rolcreaterole from pg_roles where rolname in ('auditor_provisioner','auditor_api') order by 1" | tr -d '\r' | tr '\n' ' ')"
+ROLES="$($COMPOSE exec -T postgres psql -U auditor -d postgres -tAc "select rolname || ':' || rolsuper::int || rolcreatedb::int || rolcreaterole::int from pg_roles where rolname in ('auditor_provisioner','auditor_api') order by 1" | tr -d '\r' | tr '\n' ' ')"
 echo "$ROLES"
-[ "$ROLES" = "auditor_api:fff auditor_provisioner:ftt " ] || fail "cuentas inesperadas (esperado auditor_api sin privilegios y auditor_provisioner sin superusuario): $ROLES"
+[ "$ROLES" = "auditor_api:000 auditor_provisioner:011 " ] || fail "cuentas inesperadas (esperado auditor_api sin privilegios y auditor_provisioner sin superusuario): $ROLES"
 
 echo "10. Organizaciones (entrega 2A): alta de dos organizaciones con base propia y nombre opaco"
 ADMIN="$COMPOSE run --rm -T admin"
