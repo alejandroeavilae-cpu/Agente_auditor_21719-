@@ -168,6 +168,10 @@ QA: [PENDIENTE].
 |---|---|---|---|---|
 | 2B-11 | Media | El bloqueo funcionaba como denegación de servicio permanente: el atacante reclamaba el único intento de cada ventana, los intentos de la propia persona durante el bloqueo lo alargaban, y no había forma de desbloquear | Los intentos durante un bloqueo vigente no cuentan. Desbloqueo por API (administrador, alto riesgo) y por CLI (`user unlock`). Restablecer la MFA levanta el bloqueo de MFA (D-83). **Riesgo residual R-34**, registrado | `2B-11`: 5 intentos bloquean; 3 intentos más durante el bloqueo no cambian nada; el desbloqueo deja la cuenta en 0 y la persona entra; `user.unlocked` queda en la bitácora |
 
-**Evidencia local (29-10-2026):** integración de identidad, **3 ejecuciones seguidas con 21 de 21 aprobadas** (`evidencia-2b/identidad-qa2-*.json`). CI y QA: [PENDIENTE].
+**Evidencia local (29-10-2026):** integración de identidad, **3 ejecuciones seguidas con 21 de 21 aprobadas** (`evidencia-2b/identidad-qa2-*.json`).
+
+**CI de `6970c24`:** 7 de 7 jobs en verde. Identidad: "**42 aprobadas, 0 fallidas, 0 omitidas · postgresql=21, sqlserver=21**" (job 123800772789). 2A: 71 aprobadas. Prueba de humo: en verde (job 123800772372).
+
+QA: [PENDIENTE].
 
 **Riesgo residual que requiere aceptación del responsable:** R-34. Un atacante que conoce la organización y el correo de una persona puede seguir bloqueando su cuenta con unas 4 peticiones por hora. El remedio es el desbloqueo manual. La mitigación de fondo (bloqueo por cuenta e IP, o por dispositivo) se propone para 2C.
