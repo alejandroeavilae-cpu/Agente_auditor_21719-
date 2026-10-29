@@ -4,7 +4,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [No publicado]
 
-### Fase 1 — Infraestructura base
+### Fase 1 — Infraestructura base (aprobada 26-10-2026)
 - Monorepo pnpm (Node.js 24, TypeScript 6.0 estricto, ESLint, Vitest).
 - `@auditor-21719/audit-log`: bitácora encadenada, anclaje externo Ed25519 y CLI `auditor-log` de verificación independiente.
 - API NestJS mínima (`/health`, `/api/v1/about`) y web React mínima.

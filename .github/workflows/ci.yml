@@ -42,6 +42,90 @@ jobs:
       - name: Probar la CLI de la bitácora compilada (PT-04 y PT-21 de extremo a extremo)
         run: sh scripts/smoke-audit-log.sh
 
+  integration:
+    name: Integración con PostgreSQL y SQL Server reales
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Contraseñas efímeras de un solo uso, distintas en cada ejecución; solo existen
+      # dentro de los contenedores de servicio de este job.
+      PG_TEST_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Pg_2026
+      MSSQL_TEST_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Sql_2026
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
+        env:
+          POSTGRES_USER: auditor
+          # Sin base extra "auditor" con acceso público (igual que el perfil Compose).
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Pg_2026
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U auditor"
+          --health-interval 5s --health-timeout 3s --health-retries 30
+      mssql:
+        # Edición Developer: licenciada solo para desarrollo y pruebas (nunca producción).
+        image: mcr.microsoft.com/mssql/server:2025-CU10-ubuntu-24.04@sha256:245f6b1c8903edae52cb20fa31419cefcde1a49938bb8c3447099011fc871ca3
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_PID: Developer
+          MSSQL_SA_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Sql_2026
+        ports: ["127.0.0.1:1433:1433"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Instalar dependencias (lockfile congelado)
+        run: pnpm install --frozen-lockfile
+      - name: Compilar paquetes
+        run: pnpm --filter "@auditor-21719/persistence..." run build
+      - name: Esperar a SQL Server (hasta 3 minutos)
+        run: |
+          for i in $(seq 1 60); do
+            if node --input-type=module -e "
+              import { connect } from './dist/index.js';
+              import { sql } from 'kysely';
+              const db = connect({ engine: 'sqlserver', host: '127.0.0.1', port: 1433, user: 'sa', password: process.env.MSSQL_TEST_PASSWORD, tls: 'trust-server-certificate' }, 'master', 1);
+              await sql\`SELECT 1 AS n\`.execute(db); await db.destroy();" 2>/dev/null; then
+              echo "SQL Server listo"; exit 0
+            fi
+            sleep 3
+          done
+          echo "::error title=mssql::SQL Server no respondió a tiempo"; exit 1
+        # Desde el paquete: pnpm solo expone `kysely` a quien lo declara como dependencia.
+        working-directory: packages/persistence
+      - name: Registrar versiones y digests de los motores (evidencia)
+        run: |
+          for c in $(docker ps --format '{{.ID}}'); do
+            echo "::notice title=servicio::$(docker inspect --format '{{.Config.Image}} -> {{.Image}}' "$c")"
+          done
+      - name: Pruebas de integración (se exigen ambos motores; omitir no cuenta como aprobado)
+        working-directory: packages/persistence
+        env:
+          REQUIRE_DB_ENGINES: postgresql,sqlserver
+          TEST_PG_HOST: 127.0.0.1
+          TEST_PG_PORT: "5432"
+          TEST_PG_USER: auditor
+          TEST_PG_PASSWORD: ${{ env.PG_TEST_PASSWORD }}
+          TEST_PG_TLS: disable
+          TEST_MSSQL_HOST: 127.0.0.1
+          TEST_MSSQL_PORT: "1433"
+          TEST_MSSQL_USER: sa
+          TEST_MSSQL_PASSWORD: ${{ env.MSSQL_TEST_PASSWORD }}
+          # Certificado autofirmado del contenedor de pruebas: solo aceptable aquí.
+          TEST_MSSQL_TLS: trust-server-certificate
+          # Mínimo de pruebas aprobadas POR MOTOR (hallazgo QA B-13): si el archivo de
+          # integración no se ejecutara, o un motor se omitiera, el job falla.
+          MIN_TESTS_PER_ENGINE: "21"
+        run: |
+          pnpm exec vitest run --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-integracion.json
+          node ../../scripts/check-integration-report.mjs vitest-integracion.json
+
   compose-smoke:
     name: Prueba de humo de Docker Compose (perfil local)
     runs-on: ubuntu-latest

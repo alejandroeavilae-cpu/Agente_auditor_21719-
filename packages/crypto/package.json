@@ -1,0 +1,19 @@
+{
+  "name": "@auditor-21719/crypto",
+  "version": "0.1.0",
+  "description": "Cifrado de sobre AES-256-GCM: clave maestra de instalación y claves de datos por organización (D-12)",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}

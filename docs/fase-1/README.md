@@ -1,7 +1,7 @@
 # Fase 1 — Infraestructura base: registro de fase
 
 **Aprobación de inicio:** Alejandro Ávila, 25-10-2026 03:33 (hora de Chile) (P-10).
-**Rama:** `fase-1`. **Estado:** Implementado y Probado. Pendiente: revisión QA independiente y aprobación humana de cierre.
+**Rama:** `fase-1`, fusionada en `main` (PR #1, commit `e186415`). **Estado:** Implementado, Probado, revisado por QA independiente y **aprobado por el responsable del proyecto el 26-10-2026 01:47 (hora de Chile)**.
 
 ## 1. Alcance entregado
 
@@ -57,7 +57,7 @@ Pre-versiones de prueba `v0.1.0-rc.1` a `v0.1.0-rc.3`: publicadas con clave efí
 | 9 | Documentación actualizada | Cumplido |
 | 10 | Revisión QA | Primera revisión **no aprobada** (27 hallazgos); correcciones en `29e28b4` y `e84f473`. **Re-revisión sobre `c925ef0`: sin bloqueos**, cumple 1–11; sus 7 observaciones (N-01 a N-07) se corrigieron después |
 | 11 | Limitaciones documentadas | Cumplido (§5) |
-| 12 | Aprobación humana | **Pendiente** (fusión del pull request) |
+| 12 | Aprobación humana | **Cumplido:** fusión del PR #1 por el responsable, 26-10-2026. Sobre `e186415` pasan CI (40270840947), Seguridad (40270840975), CodeQL (40270840937) y Scorecard (40270840946) |
 
 ## 4. Decisiones de la fase
 

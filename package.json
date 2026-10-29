@@ -16,7 +16,7 @@
     "test": "pnpm -r run test",
     "check:spdx": "node scripts/check-spdx.mjs",
     "check:licenses": "node scripts/check-licenses.mjs",
-    "verify": "pnpm run check:spdx && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run check:licenses",
+    "verify": "pnpm run check:spdx && pnpm run build && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run check:licenses",
     "licenses:inventory": "node scripts/check-licenses.mjs --write"
   },
   "devDependencies": {
@@ -29,7 +29,8 @@
   },
   "pnpm": {
     "overrides": {
-      "multer": "2.5.0"
+      "multer": "2.5.0",
+      "@azure/msal-node": "7.1.1"
     }
   }
 }

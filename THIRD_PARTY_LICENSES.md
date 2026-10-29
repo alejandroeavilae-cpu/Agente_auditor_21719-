@@ -2,10 +2,27 @@
 
 Generado automáticamente por `scripts/check-licenses.mjs` a partir de las dependencias instaladas (incluye dependencias de desarrollo y transitivas). No editar a mano.
 
-Total de paquetes: 235
+Total de paquetes: 312
 
 | Paquete | Versión(es) | Licencia (SPDX) |
 |---|---|---|
+| @azure-rest/core-client | 2.9.0 | MIT |
+| @azure/abort-controller | 2.2.0 | MIT |
+| @azure/core-auth | 1.11.0 | MIT |
+| @azure/core-client | 1.11.1 | MIT |
+| @azure/core-lro | 2.7.2 | MIT |
+| @azure/core-paging | 1.7.0 | MIT |
+| @azure/core-process | 1.0.0 | MIT |
+| @azure/core-rest-pipeline | 1.25.0 | MIT |
+| @azure/core-tracing | 1.4.0 | MIT |
+| @azure/core-util | 1.14.0 | MIT |
+| @azure/identity | 4.14.0 | MIT |
+| @azure/keyvault-common | 2.1.0 | MIT |
+| @azure/keyvault-keys | 4.10.2 | MIT |
+| @azure/logger | 1.4.0 | MIT |
+| @azure/msal-browser | 5.26.0 | MIT |
+| @azure/msal-common | 16.14.3 | MIT |
+| @azure/msal-node | 7.1.1 | MIT |
 | @borewit/text-codec | 0.2.2 | MIT |
 | @cacheable/memory | 2.2.0 | MIT |
 | @cacheable/utils | 2.5.0 | MIT |
@@ -25,6 +42,7 @@ Total de paquetes: 235
 | @jridgewell/resolve-uri | 3.1.2 | MIT |
 | @jridgewell/sourcemap-codec | 1.6.0 | MIT |
 | @jridgewell/trace-mapping | 0.3.31 | MIT |
+| @js-joda/core | 6.3.0 | BSD-3-Clause |
 | @keyv/bigmap | 1.3.1 | MIT |
 | @keyv/serialize | 1.1.1 | MIT |
 | @lukeed/csprng | 1.1.0 | MIT |
@@ -50,10 +68,12 @@ Total de paquetes: 235
 | @types/http-errors | 2.0.5 | MIT |
 | @types/json-schema | 7.0.15 | MIT |
 | @types/node | 24.19.2 | MIT |
+| @types/pg | 8.23.1 | MIT |
 | @types/qs | 6.15.1 | MIT |
 | @types/range-parser | 1.2.7 | MIT |
 | @types/react | 19.3.0 | MIT |
 | @types/react-dom | 19.3.0 | MIT |
+| @types/readable-stream | 4.0.25 | MIT |
 | @types/send | 1.2.1 | MIT |
 | @types/serve-static | 2.2.0 | MIT |
 | @typescript-eslint/eslint-plugin | 8.72.0 | MIT |
@@ -66,18 +86,26 @@ Total de paquetes: 235
 | @typescript-eslint/typescript-estree | 8.72.0 | MIT |
 | @typescript-eslint/utils | 8.72.0 | MIT |
 | @typescript-eslint/visitor-keys | 8.72.0 | MIT |
+| @typespec/ts-http-runtime | 0.3.9 | MIT |
 | @vitejs/plugin-react | 6.1.2 | MIT |
 | @vitest/mocker | 5.0.5 | MIT |
 | @vitest/spy | 5.0.5 | MIT |
+| abort-controller | 3.0.0 | MIT |
 | accepts | 2.0.0 | MIT |
 | acorn | 8.19.0 | MIT |
 | acorn-jsx | 5.3.2 | MIT |
+| agent-base | 7.1.4 | MIT |
 | ajv | 6.15.0 | MIT |
 | append-field | 1.0.0 | MIT |
 | assertion-error | 2.0.1 | MIT |
 | balanced-match | 4.0.4 | MIT |
+| base64-js | 1.5.1 | MIT |
+| bl | 6.1.6 | MIT |
 | body-parser | 2.4.0 | MIT |
 | brace-expansion | 5.0.12 | MIT |
+| buffer | 6.0.3 | MIT |
+| buffer-equal-constant-time | 1.0.1 | BSD-3-Clause |
+| bundle-name | 4.1.1 | MIT |
 | busboy | 1.6.0 | MIT |
 | bytes | 3.1.2 | MIT |
 | cacheable | 2.5.0 | MIT |
@@ -93,9 +121,13 @@ Total de paquetes: 235
 | csstype | 3.2.3 | MIT |
 | debug | 4.4.3 | MIT |
 | deep-is | 0.1.4 | MIT |
+| default-browser | 5.5.1 | MIT |
+| default-browser-id | 5.0.1 | MIT |
+| define-lazy-prop | 3.0.0 | MIT |
 | depd | 2.0.0 | MIT |
 | detect-libc | 2.1.2 | Apache-2.0 |
 | dunder-proto | 1.0.1 | MIT |
+| ecdsa-sig-formatter | 1.0.11 | Apache-2.0 |
 | ee-first | 1.1.1 | MIT |
 | encodeurl | 2.0.0 | MIT |
 | es-define-property | 1.0.1 | MIT |
@@ -114,6 +146,8 @@ Total de paquetes: 235
 | estree-walker | 3.0.3 | MIT |
 | esutils | 2.0.3 | BSD-2-Clause |
 | etag | 1.8.1 | MIT |
+| event-target-shim | 5.0.1 | MIT |
+| events | 3.3.0 | MIT |
 | expect-type | 1.4.0 | Apache-2.0 |
 | express | 5.3.0 | MIT |
 | fast-deep-equal | 3.1.3 | MIT |
@@ -139,26 +173,44 @@ Total de paquetes: 235
 | hasown | 2.0.4 | MIT |
 | hookified | 1.15.1, 2.2.0 | MIT |
 | http-errors | 2.0.1 | MIT |
+| http-proxy-agent | 7.0.2 | MIT |
+| https-proxy-agent | 7.0.6 | MIT |
 | iconv-lite | 0.7.3 | MIT |
 | ieee754 | 1.2.1 | BSD-3-Clause |
 | ignore | 5.3.2, 7.0.14 | MIT |
 | imurmurhash | 0.1.4 | MIT |
 | inherits | 2.0.4 | ISC |
 | ipaddr.js | 1.9.1 | MIT |
+| is-docker | 3.0.0 | MIT |
 | is-extglob | 2.1.1 | MIT |
 | is-glob | 4.0.3 | MIT |
+| is-in-ssh | 1.0.0 | MIT |
+| is-inside-container | 1.0.0 | MIT |
 | is-promise | 4.0.0 | MIT |
+| is-wsl | 3.1.1 | MIT |
 | isexe | 2.0.0 | ISC |
 | iterare | 1.2.1 | ISC |
+| js-md4 | 0.3.2 | MIT |
 | json-schema-traverse | 0.4.1 | MIT |
 | json-stable-stringify-without-jsonify | 1.0.1 | MIT |
+| jsonwebtoken | 9.0.3 | MIT |
+| jwa | 2.0.1 | MIT |
+| jws | 4.0.1 | MIT |
 | keyv | 5.6.0 | MIT |
+| kysely | 0.29.7 | MIT |
 | levn | 0.4.1 | MIT |
 | lightningcss | 1.33.0 | MPL-2.0 |
 | lightningcss-linux-x64-gnu | 1.33.0 | MPL-2.0 |
 | lightningcss-linux-x64-musl | 1.33.0 | MPL-2.0 |
 | load-esm | 1.0.3 | MIT |
 | locate-path | 6.0.0 | MIT |
+| lodash.includes | 4.3.0 | MIT |
+| lodash.isboolean | 3.0.3 | MIT |
+| lodash.isinteger | 4.0.4 | MIT |
+| lodash.isnumber | 3.0.3 | MIT |
+| lodash.isplainobject | 4.0.6 | MIT |
+| lodash.isstring | 4.0.1 | MIT |
+| lodash.once | 4.1.1 | MIT |
 | magic-string | 1.4.3 | MIT |
 | math-intrinsics | 1.1.0 | MIT |
 | media-typer | 0.3.0, 1.1.1 | MIT |
@@ -169,6 +221,7 @@ Total de paquetes: 235
 | ms | 2.1.3 | MIT |
 | multer | 2.5.0 | MIT |
 | nanoid | 3.3.20 | MIT |
+| native-duplexpair | 1.0.0 | MIT |
 | natural-compare | 1.4.0 | MIT |
 | negotiator | 1.1.0 | MIT |
 | object-assign | 4.1.1 | MIT |
@@ -176,6 +229,7 @@ Total de paquetes: 235
 | obug | 3.0.0 | MIT |
 | on-finished | 2.4.2 | MIT |
 | once | 1.4.0 | ISC |
+| open | 11.0.4 | MIT |
 | optionator | 0.9.4 | MIT |
 | p-limit | 3.1.0 | MIT |
 | p-locate | 5.0.0 | MIT |
@@ -183,10 +237,24 @@ Total de paquetes: 235
 | path-exists | 4.0.0 | MIT |
 | path-key | 3.1.1 | MIT |
 | path-to-regexp | 8.4.2 | MIT |
+| pg | 8.23.1 | MIT |
+| pg-cloudflare | 1.4.1 | MIT |
+| pg-connection-string | 2.14.1 | MIT |
+| pg-int8 | 1.0.1 | ISC |
+| pg-pool | 3.14.0 | MIT |
+| pg-protocol | 1.16.1 | MIT |
+| pg-types | 2.2.0 | MIT |
+| pgpass | 1.0.5 | MIT |
 | picocolors | 1.1.1 | ISC |
 | picomatch | 4.0.7 | MIT |
 | postcss | 8.5.31 | MIT |
+| postgres-array | 2.0.0 | MIT |
+| postgres-bytea | 1.0.1 | MIT |
+| postgres-date | 1.0.7 | MIT |
+| postgres-interval | 1.2.0 | MIT |
+| powershell-utils | 0.2.1 | MIT |
 | prelude-ls | 1.2.1 | MIT |
+| process | 0.11.10 | MIT |
 | proxy-addr | 2.0.8 | MIT |
 | punycode | 2.3.1 | MIT |
 | qified | 0.10.1 | MIT |
@@ -195,10 +263,13 @@ Total de paquetes: 235
 | raw-body | 3.0.2 | MIT |
 | react | 19.3.1 | MIT |
 | react-dom | 19.3.1 | MIT |
+| readable-stream | 4.8.0 | MIT |
 | reflect-metadata | 0.2.2 | Apache-2.0 |
 | rolldown | 1.2.15 | MIT |
 | router | 2.2.0 | MIT |
+| run-applescript | 7.1.0 | MIT |
 | rxjs | 7.8.2 | Apache-2.0 |
+| safe-buffer | 5.2.1 | MIT |
 | safer-buffer | 2.1.2 | MIT |
 | scheduler | 0.28.0 | MIT |
 | semver | 7.8.5 | ISC |
@@ -212,10 +283,14 @@ Total de paquetes: 235
 | side-channel-map | 1.0.1 | MIT |
 | side-channel-weakmap | 1.0.2 | MIT |
 | source-map-js | 1.2.2 | BSD-3-Clause |
+| split2 | 4.2.0 | ISC |
 | statuses | 2.0.2 | MIT |
 | std-env | 4.3.0 | MIT |
 | streamsearch | 1.1.0 | MIT |
+| string_decoder | 1.3.0 | MIT |
 | strtok3 | 10.6.2 | MIT |
+| tarn | 3.1.2 | MIT |
+| tedious | 20.3.8 | MIT |
 | tinybench | 6.2.2 | MIT |
 | tinyexec | 1.3.1 | MIT |
 | tinyglobby | 0.2.17 | MIT |
@@ -239,5 +314,7 @@ Total de paquetes: 235
 | why-is-node-running | 3.2.1 | MIT |
 | word-wrap | 1.2.5 | MIT |
 | wrappy | 1.0.2 | ISC |
+| wsl-utils | 1.0.1 | MIT |
+| xtend | 4.0.2 | MIT |
 | yocto-queue | 0.1.0 | MIT |
 | zod | 4.6.7 | MIT |
