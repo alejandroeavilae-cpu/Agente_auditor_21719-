@@ -220,8 +220,11 @@ const sqlserver: Provisioner = {
   },
   async foreignObjects(db, allowedTables) {
     const allowed = sql.join(allowedTables.map((t) => sql`${t}`));
-    const r = await sql<{ o: string }>`
-      SELECT s.name + '.' + o.name + ' (' + o.type_desc + ')' AS o
+    // Las columnas de catálogo tienen intercalaciones distintas según la vista; se fuerzan a
+    // la de la base para poder unirlas, y el texto se arma en JavaScript.
+    const c = (expr: ReturnType<typeof sql.raw>) => sql`CAST(${expr} AS nvarchar(256)) COLLATE DATABASE_DEFAULT`;
+    const r = await sql<{ k: string; s: string; n: string }>`
+      SELECT ${c(sql.raw('o.type_desc'))} AS k, ${c(sql.raw('s.name'))} AS s, ${c(sql.raw('o.name'))} AS n
         FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id
        WHERE o.is_ms_shipped = 0
          AND NOT (s.name = 'dbo' AND (
@@ -229,10 +232,10 @@ const sqlserver: Provisioner = {
             OR (o.type IN ('PK', 'UQ', 'D', 'F', 'C') AND OBJECT_SCHEMA_NAME(o.parent_object_id) = 'dbo'
                 AND OBJECT_NAME(o.parent_object_id) IN (${allowed}))))
       UNION ALL
-      SELECT 'tipo ' + name FROM sys.types WHERE is_user_defined = 1
+      SELECT ${c(sql.raw("'TYPE'"))}, ${c(sql.raw('SCHEMA_NAME(schema_id)'))}, ${c(sql.raw('name'))} FROM sys.types WHERE is_user_defined = 1
       UNION ALL
-      SELECT 'esquema ' + name FROM sys.schemas WHERE schema_id BETWEEN 5 AND 16383`.execute(db);
-    return r.rows.map((x) => x.o);
+      SELECT ${c(sql.raw("'SCHEMA'"))}, ${c(sql.raw("''"))}, ${c(sql.raw('name'))} FROM sys.schemas WHERE schema_id BETWEEN 5 AND 16383`.execute(db);
+    return r.rows.map((x) => `${x.s === '' ? '' : `${x.s}.`}${x.n} (${x.k})`);
   },
   loginSettings() {
     // SQL Server no tiene parámetros de sesión por login equivalentes a los de PostgreSQL;

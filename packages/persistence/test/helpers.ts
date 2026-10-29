@@ -113,6 +113,8 @@ export async function createProvisionerAccount(
           await sql`REVOKE CONNECT ON DATABASE postgres FROM ${sql.id(user)}`.execute(db);
           await sql`DROP ROLE IF EXISTS ${sql.id(user)}`.execute(db);
         } else {
+          // Una prueba fallida puede dejar conexiones abiertas: se cierran antes de borrar.
+          await sql`DECLARE @k nvarchar(max) = N''; SELECT @k = @k + N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = ${user} AND session_id <> @@SPID; EXEC(@k);`.execute(db);
           await sql`IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = ${user}) DROP LOGIN ${sql.id(user)}`.execute(db);
         }
       } finally {
