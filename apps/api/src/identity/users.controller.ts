@@ -61,6 +61,15 @@ export class UsersController {
     await this.identity.service.deactivate(sessionOf(req), userId(id), requestMeta(req));
   }
 
+  /** Desbloquea una cuenta bloqueada por intentos fallidos (QA 2B-11). */
+  @Post(':id/unlock')
+  @HttpCode(204)
+  @Authenticated({ permission: 'users.manage', recentMfa: true })
+  async unlock(@Param('id') id: string, @Req() req: IdentityRequest): Promise<void> {
+    const ctx = sessionOf(req);
+    await this.identity.service.unlockUser(ctx.tenant, { userId: ctx.user.id }, userId(id), requestMeta(req));
+  }
+
   @Post(':id/mfa/reset')
   @HttpCode(204)
   @Authenticated({ permission: 'users.manage', recentMfa: true })

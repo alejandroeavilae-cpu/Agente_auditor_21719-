@@ -351,9 +351,10 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     const counters = async (): Promise<{ failed_attempts: number; mfa_failed_attempts: number }> =>
       handle.db.selectFrom('app_user').select(['failed_attempts', 'mfa_failed_attempts']).where('id', '=', invited.userId).executeTakeFirstOrThrow();
 
-    // 30 contraseñas erróneas en paralelo: TODAS cuentan y la cuenta queda bloqueada.
+    // 30 contraseñas erróneas en paralelo: ninguna se pierde antes del bloqueo y la cuenta
+    // queda bloqueada (las que llegan con el bloqueo vigente ya no cuentan, QA 2B-11).
     await Promise.all(Array.from({ length: 30 }, (_, i) => client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'jefa@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` })));
-    expect((await counters()).failed_attempts).toBe(30);
+    expect((await counters()).failed_attempts).toBeGreaterThanOrEqual(LOCK_AT);
     expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'jefa@ejemplo.cl', password: PASSWORD })).body.error).toBe('invalid_credentials');
     offsetMs += 16 * 60_000; // vence el bloqueo máximo (15 min)
     const ok = client();
@@ -380,6 +381,30 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     // 20 códigos erróneos en paralelo: a lo sumo uno se evalúa (el que reclama el turno).
     await Promise.all(Array.from({ length: 20 }, () => after.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })));
     expect((await after.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode('jefa@ejemplo.cl') })).body.error).toBe('invalid_code');
+  });
+
+  it('2B-11: los intentos durante un bloqueo no lo alargan; un administrador puede desbloquear', async () => {
+    const handle = await provisioner.openTenant(slugA);
+    const invited = await service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'lectora@ejemplo.cl', displayName: 'Lectora Sintética', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    await client().request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: PASSWORD });
+    const state = async (): Promise<{ failed_attempts: number; locked_until: string | null }> =>
+      handle.db.selectFrom('app_user').select(['failed_attempts', 'locked_until']).where('id', '=', invited.userId).executeTakeFirstOrThrow();
+    // Un "atacante" bloquea la cuenta con 5 intentos.
+    for (let i = 0; i < 5; i++) await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'lectora@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
+    const locked = await state();
+    expect(locked.failed_attempts).toBe(5);
+    expect(locked.locked_until).not.toBeNull();
+    // La dueña y el atacante insisten durante el bloqueo: no se cuenta ni se alarga.
+    for (let i = 0; i < 3; i++) await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'lectora@ejemplo.cl', password: PASSWORD });
+    expect(await state()).toEqual(locked);
+    // El administrador la desbloquea (acción de alto riesgo) y ella entra.
+    const admin = await loggedAdmin();
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
+    expect(await state()).toEqual({ failed_attempts: 0, locked_until: null });
+    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'lectora@ejemplo.cl', password: PASSWORD })).body.stage).toBe('full');
+    const actions = (await provisioner.exportAuditLog(slugA)).map((e) => e.action);
+    expect(actions).toContain('user.unlocked');
   });
 
   it('2B-02: tras rotar la contraseña de la organización, la API sigue funcionando sin reiniciar', async () => {

@@ -41,7 +41,7 @@ describe('denegar por defecto', () => {
     const proto = UsersController.prototype as unknown as Record<string, object>;
     const policy = (name: string): RoutePolicy => Reflect.getMetadata(ROUTE_POLICY, proto[name] as object) as RoutePolicy;
     expect(policy('list')).toMatchObject({ kind: 'session', permission: 'users.read' });
-    for (const name of ['invite', 'setRoles', 'deactivate', 'resetMfa']) {
+    for (const name of ['invite', 'setRoles', 'deactivate', 'resetMfa', 'unlock']) {
       expect(policy(name)).toMatchObject({ kind: 'session', permission: 'users.manage', recentMfa: true });
     }
   });

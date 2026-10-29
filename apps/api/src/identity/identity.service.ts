@@ -23,7 +23,7 @@ import {
   type Role,
 } from '@auditor-21719/identity';
 import { assertTenantSlug, type AppUserTable, type SessionStage, type TenantDatabase, type TenantHandle, type UserSessionTable } from '@auditor-21719/persistence';
-import type { Transaction } from 'kysely';
+import type { ExpressionBuilder, Transaction } from 'kysely';
 import { ApiError, INVALID_CREDENTIALS, UNAUTHENTICATED } from './errors.js';
 
 /**
@@ -318,11 +318,14 @@ export class IdentityService {
   private async beginAttempt(tenant: TenantHandle, userId: string, counter: Counter): Promise<{ allowed: boolean; lockedNow: boolean }> {
     const now = this.now();
     const row = await tenant.db.transaction().execute(async (trx) => {
-      // Incremento atómico en la base: peticiones simultáneas no pierden cuentas.
+      // Incremento atómico en la base: peticiones simultáneas no pierden cuentas. Los
+      // intentos que llegan DURANTE un bloqueo vigente no cuentan: así ni el atacante ni la
+      // propia persona alargan la espera mientras la cuenta está bloqueada (QA 2B-11).
+      const notLocked = (eb: ExpressionBuilder<TenantDatabase, 'app_user'>) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', iso(now))]);
       if (counter === 'failed_attempts') {
-        await trx.updateTable('app_user').set((eb) => ({ failed_attempts: eb('failed_attempts', '+', 1) })).where('id', '=', userId).execute();
+        await trx.updateTable('app_user').set((eb) => ({ failed_attempts: eb('failed_attempts', '+', 1) })).where('id', '=', userId).where(notLocked).execute();
       } else {
-        await trx.updateTable('app_user').set((eb) => ({ mfa_failed_attempts: eb('mfa_failed_attempts', '+', 1) })).where('id', '=', userId).execute();
+        await trx.updateTable('app_user').set((eb) => ({ mfa_failed_attempts: eb('mfa_failed_attempts', '+', 1) })).where('id', '=', userId).where(notLocked).execute();
       }
       return trx.selectFrom('app_user').select(['failed_attempts', 'mfa_failed_attempts', 'locked_until']).where('id', '=', userId).executeTakeFirstOrThrow();
     });
@@ -714,11 +717,29 @@ export class IdentityService {
     await this.findUser(ctx.tenant, userId);
     await ctx.tenant.db
       .updateTable('app_user')
-      .set({ mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, updated_at: iso(this.now()) })
+      .set({ mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, mfa_failed_attempts: 0, locked_until: null, updated_at: iso(this.now()) })
       .where('id', '=', userId)
       .execute();
     await ctx.tenant.db.deleteFrom('recovery_code').where('user_id', '=', userId).execute();
     await this.revokeAllSessions(ctx.tenant, userId);
     await this.record(ctx.tenant, 'user.mfa.reset', { actor: { userId: ctx.user.id }, subjectUserId: userId, meta });
+  }
+
+  /**
+   * Desbloquea una cuenta: pone en cero ambos contadores y levanta el bloqueo (QA 2B-11).
+   * Es el remedio cuando alguien mantiene bloqueada una cuenta enviando intentos fallidos.
+   * Lo usan un administrador por la API (alto riesgo) o el operador por la CLI.
+   */
+  async unlockUser(tenant: TenantHandle, actor: Actor, userId: string, meta: RequestMeta | null): Promise<void> {
+    await this.findUser(tenant, userId);
+    await tenant.db.updateTable('app_user').set({ failed_attempts: 0, mfa_failed_attempts: 0, locked_until: null, updated_at: iso(this.now()) }).where('id', '=', userId).execute();
+    await this.record(tenant, 'user.unlocked', { actor, subjectUserId: userId, meta });
+  }
+
+  /** Busca un usuario por correo (para la CLI). */
+  async userIdByEmail(tenant: TenantHandle, email: string): Promise<string> {
+    const row = await tenant.db.selectFrom('app_user').select('id').where('email', '=', normalizeEmail(email)).executeTakeFirst();
+    if (row === undefined) throw new ApiError(404, 'user_not_found', 'Usuario no encontrado.');
+    return row.id;
   }
 }

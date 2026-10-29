@@ -129,7 +129,7 @@ QA atacó la API como lo haría un adversario.
 | 2B-01 | **Alta** | El bloqueo progresivo se eludía con peticiones en paralelo (incrementos perdidos), y en la MFA bastaba con volver a iniciar sesión cada 4 intentos | Contadores separados de contraseña y MFA (columna `mfa_failed_attempts`), incremento atómico **antes** de verificar, un intento por ventana reclamado de forma condicional; acertar la contraseña no reinicia el contador de MFA (D-82) | `2B-01`: 30 contraseñas en paralelo → contador 30 y bloqueo; ciclos de contraseña + 4 códigos → bloqueo; 20 códigos en paralelo → bloqueo |
 | 2B-02 | **Media** | Tras `tenant rotate-password`, la API seguía con la credencial vieja (500) | `openTenant` reabre la conexión si cambió la credencial cifrada | `2B-02` |
 | 2B-03 | Baja | Carrera en "último administrador" | Comprobación y cambio en una transacción **SERIALIZABLE**; un conflicto responde 409 | `2B-03`: desactivación y quita de rol simultáneas → queda exactamente 1 administrador |
-| 2B-04 | Baja | El tiempo revelaba si existe la organización (≈4 ms) | Duración mínima de 300 ms para fallos de inicio de sesión y de activación (D-82) | [PENDIENTE: medición por QA] |
+| 2B-04 | Baja | El tiempo revelaba si existe la organización (≈4 ms) | Duración mínima de 300 ms para fallos de inicio de sesión y de activación (D-82) | Medición de QA (100 muestras por caso): medianas de 302,3 a 302,5 ms, sin diferencia significativa (Mann-Whitney \|z\| ≤ 1,11) |
 | 2B-05 | Baja | Con `TRUST_PROXY=true` y acceso directo a la API, `X-Forwarded-For` se falsifica | En Compose la API no publica puertos: solo Caddy la alcanza. Paso 13 nuevo en la prueba de humo, que verifica que la IP falsa no queda registrada | Prueba de humo en CI (`bff8f64`): aprobada |
 | 2B-06 | Baja | Un cuerpo de más de 100 KB respondía 500 | El filtro responde 413 `payload_too_large` | `2B-06` |
 | 2B-07 | Baja | `/auth/me` en `mfa_pending` mostraba el correo y los roles | Antes de completar la MFA solo se informan la etapa y la organización | `2B-01` (parte `/me`) |
@@ -154,3 +154,20 @@ QA atacó la API como lo haría un adversario.
   - Advertencia: esa carrera no es determinista. Una sola ejecución en verde no demuestra que el caso de SQL Server esté cubierto en todas las intercalaciones posibles [PENDIENTE: verificación QA].
 
 QA: [PENDIENTE].
+
+## 5. Segunda revisión QA de 2B (29-10-2026, sobre `5243d1f`): NO APROBADA
+
+- **Corregidos y sin regresiones:** 2B-01 a 2B-10, verificados con ejecución real (detalle en el informe de QA). Destacan:
+  - 2B-01: 120 contraseñas en paralelo → solo 5 verificaciones reales;
+  - 2B-02: 392 respuestas 200 y 0 errores 500 con rotaciones concurrentes;
+  - 2B-04: tiempos sin diferencia significativa.
+- **Pendiente:** la carrera de 2B-03 en SQL Server sigue `[PENDIENTE]`, porque no es determinista.
+- **Hallazgo nuevo:** QA reconoció que ya existía y no lo había reportado en la primera revisión.
+
+| ID | Sev. | Hallazgo | Corrección | Prueba |
+|---|---|---|---|---|
+| 2B-11 | Media | El bloqueo funcionaba como denegación de servicio permanente: el atacante reclamaba el único intento de cada ventana, los intentos de la propia persona durante el bloqueo lo alargaban, y no había forma de desbloquear | Los intentos durante un bloqueo vigente no cuentan. Desbloqueo por API (administrador, alto riesgo) y por CLI (`user unlock`). Restablecer la MFA levanta el bloqueo de MFA (D-83). **Riesgo residual R-34**, registrado | `2B-11`: 5 intentos bloquean; 3 intentos más durante el bloqueo no cambian nada; el desbloqueo deja la cuenta en 0 y la persona entra; `user.unlocked` queda en la bitácora |
+
+**Evidencia local (29-10-2026):** integración de identidad, **3 ejecuciones seguidas con 21 de 21 aprobadas** (`evidencia-2b/identidad-qa2-*.json`). CI y QA: [PENDIENTE].
+
+**Riesgo residual que requiere aceptación del responsable:** R-34. Un atacante que conoce la organización y el correo de una persona puede seguir bloqueando su cuenta con unas 4 peticiones por hora. El remedio es el desbloqueo manual. La mitigación de fondo (bloqueo por cuenta e IP, o por dispositivo) se propone para 2C.

@@ -35,6 +35,8 @@ const USAGE = `Uso: auditor-admin <comando>
   user invite-admin --tenant <id> --email <correo> --name <nombre>
                                            Invita al primer administrador de una organización
                                            (imprime un token de activación de un solo uso, 24 h)
+  user unlock --tenant <id> --email <correo>
+                                           Desbloquea una cuenta bloqueada por intentos fallidos
   audit export --tenant <id> [--out <archivo>]
                                            Exporta la bitácora en JSONL (también de organizaciones suspendidas)
 
@@ -107,6 +109,7 @@ const COMMANDS: Record<string, Record<string, typeof S>> = {
   'tenant rotate-password': { slug: S },
   'tenant cleanup-provisioning': { slug: S },
   'user invite-admin': { tenant: S, email: S, name: S },
+  'user unlock': { tenant: S, email: S },
   'audit export': { tenant: S, out: S },
 };
 
@@ -197,6 +200,14 @@ async function run(argv: string[]): Promise<number> {
         console.log('Entregue este token de activación por un canal seguro (se muestra UNA sola vez):');
         console.log(invited.activationToken);
         console.log('Con él, la persona fija su contraseña (POST /api/v1/auth/activate) y luego debe configurar la verificación en dos pasos.');
+        return 0;
+      }
+      case 'user unlock': {
+        const tenant = required(v.tenant, 'tenant');
+        const handle = await m.openTenant(tenant);
+        const service = new IdentityService(m, { accessLogRetentionDays: 90 });
+        await service.unlockUser(handle, { label: ACTOR }, await service.userIdByEmail(handle, required(v.email, 'email')), null);
+        console.log(`Cuenta desbloqueada en ${tenant}.`);
         return 0;
       }
       default: {
