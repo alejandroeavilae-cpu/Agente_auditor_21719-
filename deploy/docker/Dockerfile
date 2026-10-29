@@ -21,6 +21,7 @@ COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
 COPY packages/audit-log/package.json packages/audit-log/
 COPY packages/crypto/package.json packages/crypto/
+COPY packages/identity/package.json packages/identity/
 COPY packages/persistence/package.json packages/persistence/
 # --frozen-lockfile: la compilación falla si el lockfile no coincide (versiones fijadas, sección 15.4).
 RUN pnpm install --frozen-lockfile

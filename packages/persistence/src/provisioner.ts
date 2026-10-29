@@ -277,7 +277,8 @@ const sqlserver: Provisioner = {
     }
   },
   async grantControlRead(_serverDb, controlDb, _controlDbName, login) {
-    await sql`IF DATABASE_PRINCIPAL_ID(${login}) IS NULL EXEC(N'CREATE USER ' + QUOTENAME(${login}) + N' FOR LOGIN ' + QUOTENAME(${login}))`.execute(controlDb);
+    // EXEC no admite expresiones: el texto se arma primero en una variable.
+    await sql`IF DATABASE_PRINCIPAL_ID(${login}) IS NULL BEGIN DECLARE @s nvarchar(max) = N'CREATE USER ' + QUOTENAME(${login}) + N' FOR LOGIN ' + QUOTENAME(${login}); EXEC(@s); END`.execute(controlDb);
     await sql`GRANT SELECT ON dbo.tenants TO ${sql.id(login)}`.execute(controlDb);
   },
   async dropDatabase(serverDb, dbName) {

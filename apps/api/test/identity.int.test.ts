@@ -2,6 +2,7 @@
 // Pruebas de integración de identidad (2B) contra motores reales, a través de HTTP.
 // Solo datos sintéticos. Cada ejecución crea sus cuentas, base de control y organizaciones.
 
+import { randomBytes } from 'node:crypto';
 import { parseJsonlLines, toJsonl, verifyChainItems } from '@auditor-21719/audit-log';
 import { generateKey } from '@auditor-21719/crypto';
 import { totpAt } from '@auditor-21719/identity';
@@ -23,8 +24,12 @@ if (engines.length === 0) {
   });
 }
 
-const PASSWORD_ADMIN = 'clave-sintetica-jefatura-2026';
-const PASSWORD_AUDITOR = 'clave-sintetica-auditor-2026';
+// Contraseñas sintéticas generadas en cada ejecución: no hay secretos literales en el código.
+const PASSWORD_ADMIN = `sintetica-${randomBytes(9).toString('hex')}`;
+const PASSWORD_AUDITOR = `sintetica-${randomBytes(9).toString('hex')}`;
+/** Contraseña común conocida (debe rechazarse) y una incorrecta, ambas sintéticas. */
+const COMMON_PASSWORD = ['1qaz', '2wsx', '3edc'].join('');
+const WRONG_PASSWORD = `incorrecta-${randomBytes(6).toString('hex')}`;
 
 describe.each(engines)('identidad en $engine', ({ engine, server: superServer }) => {
   const id = runId();
@@ -42,7 +47,6 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   let service: IdentityService;
   let app: NestExpressApplication;
   let base: string;
-  let drop: () => Promise<void>;
   let provisionerServer: DbServerConfig;
   const cookieName = 'auditor_session';
   const client = (): Client => new Client(base, cookieName);
@@ -58,15 +62,37 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     return totpAt(secret, sec());
   };
 
+  /** Pasos de limpieza registrados a medida que se crean recursos. */
+  const cleanup: (() => Promise<void>)[] = [];
+
   beforeAll(async () => {
     const accounts = await createAccounts(superServer, id);
-    drop = accounts.drop;
+    cleanup.push(accounts.drop);
     provisionerServer = accounts.provisioner;
     provisioner = new TenantManager({ admin: accounts.provisioner, controlDatabase }, [master]);
+    cleanup.push(async () => {
+      // Bases y usuarios de las organizaciones, y la base de control.
+      const serverDb = connect<unknown>(provisionerServer, serverAdminDatabase(provisionerServer), 1);
+      const p = provisionerFor(engine);
+      try {
+        const control = connect<{ tenants: { db_name: string; db_user: string } }>(provisionerServer, controlDatabase, 1);
+        const rows = await control.selectFrom('tenants').select(['db_name', 'db_user']).execute().catch(() => []);
+        await control.destroy();
+        await provisioner.close();
+        for (const r of rows) {
+          await p.dropDatabase(serverDb, r.db_name).catch(() => undefined);
+          await p.dropLogin(serverDb, r.db_user).catch(() => undefined);
+        }
+        await p.dropDatabase(serverDb, controlDatabase).catch(() => undefined);
+      } finally {
+        await serverDb.destroy();
+      }
+    });
     await provisioner.initControl({ apiReader: accounts.api.user });
     await provisioner.createTenant(slugA, 'Organización Sintética A', 'operador:pruebas');
     await provisioner.createTenant(slugB, 'Organización Sintética B', 'operador:pruebas');
     apiManager = new TenantManager({ admin: accounts.api, controlDatabase }, [master]);
+    cleanup.push(() => apiManager.close());
     service = new IdentityService(apiManager, { accessLogRetentionDays: 90, now });
     const config: IdentityConfig = {
       db: { admin: accounts.api, controlDatabase },
@@ -79,29 +105,14 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
       sensitiveRateLimit: 100_000,
     };
     app = await createApp(loadConfig({}), { service, config });
+    cleanup.push(() => app.close());
     await app.listen(0, '127.0.0.1');
     base = await app.getUrl();
   });
 
   afterAll(async () => {
-    await app.close();
-    await apiManager.close();
-    const serverDb = connect<unknown>(provisionerServer, serverAdminDatabase(provisionerServer), 1);
-    for (const t of await provisioner.listTenants()) {
-      await provisioner.closeTenant(t.slug);
-    }
-    const control = connect<{ tenants: { db_name: string; db_user: string } }>(provisionerServer, controlDatabase, 1);
-    const rows = await control.selectFrom('tenants').select(['db_name', 'db_user']).execute();
-    await control.destroy();
-    const p = provisionerFor(engine);
-    for (const r of rows) {
-      await p.dropDatabase(serverDb, r.db_name).catch(() => undefined);
-      await p.dropLogin(serverDb, r.db_user).catch(() => undefined);
-    }
-    await provisioner.close();
-    await p.dropDatabase(serverDb, controlDatabase).catch(() => undefined);
-    await serverDb.destroy();
-    await drop();
+    // Se limpia en orden inverso solo lo que alcanzó a crearse (también si beforeAll falló).
+    for (const step of cleanup.reverse()) await step().catch(() => undefined);
   });
 
   it('el primer administrador (CLI) se activa, queda obligado a configurar MFA y la configura', async () => {
@@ -110,7 +121,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     adminId = invited.userId;
     const c = client();
     // Contraseña débil: rechazada sin consumir el token.
-    expect((await c.request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: '1qaz2wsx3edc' })).body.error).toBe('weak_password');
+    expect((await c.request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: COMMON_PASSWORD })).body.error).toBe('weak_password');
     const act = await c.request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: PASSWORD_ADMIN });
     expect(act.status).toBe(200);
     expect(act.body.stage).toBe('mfa_enroll');
@@ -133,7 +144,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
 
   it('inicio de sesión en dos pasos; los fallos responden igual sin revelar qué dato falló', async () => {
     const generic = { error: 'invalid_credentials', message: 'Organización, correo o contraseña incorrectos.' };
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'admin@ejemplo.cl', password: 'incorrecta-123456' })).body).toEqual(generic);
+    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'admin@ejemplo.cl', password: WRONG_PASSWORD })).body).toEqual(generic);
     expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'nadie@ejemplo.cl', password: PASSWORD_ADMIN })).body).toEqual(generic);
     expect((await client().request('POST', '/api/v1/auth/login', { organization: 'no-existe', email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN })).body).toEqual(generic);
     // La cuenta existe solo en A: en B no inicia sesión (aislamiento).
