@@ -198,6 +198,8 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
       await sql`ALTER ROLE CURRENT_USER SET statement_timeout = '1ms'`.execute(asA);
       // También solo para su base (QA N-02): dejaría la bitácora en solo lectura.
       await sql`ALTER ROLE CURRENT_USER IN DATABASE ${sql.id(credsA.dbName)} SET default_transaction_read_only = on`.execute(asA);
+      // Y para una base AJENA (QA X-02): rotate-password también debe borrarlo.
+      await sql`ALTER ROLE CURRENT_USER IN DATABASE ${sql.id(controlDatabase)} SET statement_timeout = '1ms'`.execute(asA);
     } else {
       await sql`ALTER LOGIN ${sql.id(credsA.user)} WITH PASSWORD = ${sql.lit(stolen)} OLD_PASSWORD = ${sql.lit(credsA.password)}`.execute(asA);
     }
@@ -266,7 +268,7 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
   });
 
-  it('M-01: la reversión nunca elimina una base que la plataforma no creó', async () => {
+  it('M-01/X-01: si el CREATE informa "ya existe", la base ajena se conserva y el alta se revierte', async () => {
     const slug = `prueba-${id}-g`;
     let foreign = '';
     // Simula una carrera: otro actor crea la base justo entre la comprobación y el CREATE.
@@ -277,16 +279,55 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
         await real.createDatabase(s, dbName); // el segundo CREATE falla: "ya existe"
       },
     });
-    // Sin certeza de quién creó la base, no se borra y el alta queda pendiente de limpieza.
-    await expect(racing.createTenant(slug, 'Carrera', 'operador:pruebas')).rejects.toThrow(/no se pudo determinar.*cleanup-provisioning/s);
+    // "Ya existe" es un resultado seguro: la base no es de esta operación y no se toca.
+    await expect(racing.createTenant(slug, 'Carrera', 'operador:pruebas')).rejects.toThrow(/exist/i);
     await racing.close();
     const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
     expect(await real.databaseExists(serverDb, foreign)).toBe(true);
-    expect((await manager.listTenants()).find((t) => t.slug === slug)?.status).toBe('provisioning');
+    expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
     await real.dropDatabase(serverDb, foreign);
     await serverDb.destroy();
+  });
+
+  it('X-01: cleanupProvisioning no elimina una base con tablas ajenas', async () => {
+    const slug = `prueba-${id}-x`;
+    let created = '';
+    // Corte de conexión simulado: el CREATE se ejecutó pero se informa un error distinto
+    // de "ya existe" → autoría incierta → el alta queda en provisioning.
+    const cut = managerWith({
+      createDatabase: async (s, dbName) => {
+        created = dbName;
+        await real.createDatabase(s, dbName);
+        throw new Error('conexión interrumpida (simulada)');
+      },
+    });
+    await expect(cut.createTenant(slug, 'Corte', 'operador:pruebas')).rejects.toThrow(/cleanup-provisioning/);
+    await cut.close();
+    expect((await manager.listTenants()).find((t) => t.slug === slug)?.status).toBe('provisioning');
+
+    const target = connect<unknown>(server, created, 1);
+    await sql`CREATE TABLE datos_ajenos (n int)`.execute(target);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/tablas ajenas/);
+    const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
+    expect(await real.databaseExists(serverDb, created)).toBe(true);
+    await sql`DROP TABLE datos_ajenos`.execute(target);
+    await target.destroy();
+    // Sin tablas ajenas, la limpieza procede.
     await manager.cleanupProvisioning(slug);
+    expect(await real.databaseExists(serverDb, created)).toBe(false);
+    await serverDb.destroy();
     expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
+  });
+
+  it('Y-02: con una clave maestra que no corresponde, tenant check lo dice y no recomienda rotar', async () => {
+    const wrong = new TestTenantManager({ admin: server, controlDatabase }, [generateKey()]);
+    try {
+      const check = await wrong.checkTenants();
+      expect(check[slugA]?.join(' ')).toMatch(/clave maestra/);
+      expect(check[slugA]?.join(' ')).toMatch(/no lo resuelve/);
+    } finally {
+      await wrong.close();
+    }
   });
 
   it('N-01: si falla una restricción posterior al CREATE, la base creada igual se elimina', async () => {

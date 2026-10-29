@@ -127,7 +127,11 @@ const postgres: Provisioner = {
     // search_path o default_transaction_read_only), globales o solo para su base: se
     // eliminan ambos (hallazgos QA M-02 y N-02).
     await sql`ALTER ROLE ${sql.id(login)} RESET ALL`.execute(serverDb);
-    await sql`ALTER ROLE ${sql.id(login)} IN DATABASE ${sql.id(dbName)} RESET ALL`.execute(serverDb);
+    // Parámetros fijados para CUALQUIER base, no solo la propia (hallazgo QA X-02).
+    const dbs = await sql<{ d: string }>`SELECT d.datname AS d FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole JOIN pg_database d ON d.oid = s.setdatabase WHERE r.rolname = ${login}`.execute(serverDb);
+    for (const name of new Set([dbName, ...dbs.rows.map((x) => x.d)])) {
+      await sql`ALTER ROLE ${sql.id(login)} IN DATABASE ${sql.id(name)} RESET ALL`.execute(serverDb);
+    }
   },
   async protectControlDatabase(serverDb, _controlDb, controlDbName) {
     await sql`REVOKE ALL ON DATABASE ${sql.id(controlDbName)} FROM PUBLIC`.execute(serverDb);

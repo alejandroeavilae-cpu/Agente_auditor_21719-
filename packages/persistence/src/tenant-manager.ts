@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { randomUUID } from 'node:crypto';
-import { generateDbPassword, generateKey, open, seal, unwrapKey, wrapKey, type SymmetricKey } from '@auditor-21719/crypto';
+import { CryptoError, generateDbPassword, generateKey, open, seal, unwrapKey, wrapKey, type SymmetricKey } from '@auditor-21719/crypto';
 import type { Kysely } from 'kysely';
 import { AuditLogRepository } from './audit-log-repository.js';
 import type { DbServerConfig, PlatformDbConfig } from './config.js';
@@ -45,6 +45,20 @@ export interface TenantManagerOptions {
 }
 
 const nowIso = (): string => new Date().toISOString();
+
+/** Tablas que crean las migraciones de una base de organización. */
+const TENANT_TABLES = new Set(['organization', 'audit_log', 'kysely_migration', 'kysely_migration_lock']);
+
+/**
+ * El motor informó que el objeto YA existía: resultado seguro, el CREATE no lo creó
+ * (hallazgo QA X-01). PostgreSQL: 42P04 (base) y 42710 (rol). SQL Server: 1801 (base)
+ * y 15025 (login).
+ */
+function isAlreadyExists(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const e = error as { code?: unknown; number?: unknown };
+  return e.code === '42P04' || e.code === '42710' || e.number === 1801 || e.number === 15025;
+}
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
@@ -167,7 +181,7 @@ export class TenantManager {
       try {
         await this.provisioner.createDatabase(this.server(), dbName);
       } catch (error) {
-        if (await this.provisioner.databaseExists(this.server(), dbName).catch(() => true)) ambiguous.push(`base ${dbName}`);
+        if (!isAlreadyExists(error) && (await this.provisioner.databaseExists(this.server(), dbName).catch(() => true))) ambiguous.push(`base ${dbName}`);
         throw error;
       }
       dbCreated = true;
@@ -175,7 +189,7 @@ export class TenantManager {
       try {
         await this.provisioner.createLogin(this.server(), login, password, dbName);
       } catch (error) {
-        if (await this.provisioner.loginExists(this.server(), login).catch(() => true)) ambiguous.push(`usuario ${login}`);
+        if (!isAlreadyExists(error) && (await this.provisioner.loginExists(this.server(), login).catch(() => true))) ambiguous.push(`usuario ${login}`);
         throw error;
       }
       loginCreated = true;
@@ -240,9 +254,39 @@ export class TenantManager {
     const row = await this.control().selectFrom('tenants').selectAll().where('slug', '=', slug).executeTakeFirst();
     if (row === undefined) throw new Error(`No existe la organización "${slug}".`);
     if (row.status !== 'provisioning') throw new Error(`La organización "${slug}" no está en alta incompleta (estado: ${row.status}); no se modifica.`);
-    await this.provisioner.dropDatabase(this.server(), row.db_name);
+    if (await this.provisioner.databaseExists(this.server(), row.db_name)) {
+      await this.assertDatabaseBelongsTo(row);
+      await this.provisioner.dropDatabase(this.server(), row.db_name);
+    }
     await this.provisioner.dropLogin(this.server(), row.db_user);
     await this.control().deleteFrom('tenants').where('id', '=', row.id).execute();
+  }
+
+  /**
+   * Antes de eliminar una base, comprueba que sea de esta organización: o declara su
+   * mismo identificador, o solo contiene tablas de la plataforma (alta interrumpida antes
+   * de registrarse). Si no, se rechaza: la base puede ser ajena (hallazgo QA X-01).
+   */
+  private async assertDatabaseBelongsTo(row: TenantsTable): Promise<void> {
+    const db = connect<TenantDatabase>(this.admin, row.db_name, 1);
+    try {
+      const tables = (await db.introspection.getTables()).map((t) => t.name);
+      const foreign = tables.filter((t) => !TENANT_TABLES.has(t));
+      if (foreign.length > 0) {
+        throw new Error(`La base ${row.db_name} contiene tablas ajenas a la plataforma (${foreign.join(', ')}); no se elimina. Revísela manualmente.`);
+      }
+      if (tables.includes('organization')) {
+        const orgs = await db.selectFrom('organization').select('id').execute();
+        if (orgs.some((o) => o.id !== row.id)) {
+          throw new Error(`La base ${row.db_name} pertenece a otra organización; no se elimina. Revísela manualmente.`);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('no se elimina')) throw error;
+      throw new Error(`No se pudo comprobar a quién pertenece la base ${row.db_name}; no se elimina: ${message(error)}`, { cause: error });
+    } finally {
+      await db.destroy();
+    }
   }
 
   /** Lista las organizaciones registradas. */
@@ -317,6 +361,17 @@ export class TenantManager {
     const rows = await this.control().selectFrom('tenants').selectAll().where('status', '=', 'active').orderBy('slug').execute();
     for (const row of rows) {
       const problems: string[] = [];
+      try {
+        // Primero el descifrado: si falla, la causa no es la contraseña de la base sino la
+        // clave maestra o un registro alterado, y rotar no lo resuelve (hallazgo QA Y-02).
+        this.decryptPassword(row);
+      } catch (error) {
+        if (!(error instanceof CryptoError)) throw error;
+        result[row.slug] = [
+          `No se pudo descifrar su credencial: la clave maestra (MASTER_KEY_FILE) no corresponde a esta instalación o el registro de control fue alterado. "rotate-password" no lo resuelve; revise la clave maestra y su respaldo. (${error.message})`,
+        ];
+        continue;
+      }
       try {
         const handle = await this.openRow(row);
         await handle.db.destroy();
