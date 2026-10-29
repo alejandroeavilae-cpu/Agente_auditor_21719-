@@ -1,6 +1,6 @@
 # Fase 2 · Entrega 2B: Identidad y permisos. Diseño para aprobación
 
-**Estado:** Diseñado. Pendiente de **aprobación del responsable antes de implementar**. Las decisiones marcadas `[PROPUESTA]` pasan a `[DECISIÓN]` (D-75 en adelante) solo con esa aprobación.
+**Estado:** Diseñado y **aprobado por el responsable el 29-10-2026 a las 14:46 (D-79)**. Las marcas `[PROPUESTA]` de este documento quedan aprobadas como `[DECISIÓN D-79]`.
 
 **Base:**
 - Especificación §17.
