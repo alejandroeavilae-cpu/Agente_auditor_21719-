@@ -46,8 +46,17 @@ export interface TenantManagerOptions {
 
 const nowIso = (): string => new Date().toISOString();
 
-/** Tablas que crean las migraciones de una base de organización. */
-const TENANT_TABLES = new Set(['organization', 'audit_log', 'kysely_migration', 'kysely_migration_lock']);
+/**
+ * Tablas que crean las migraciones de una base de organización y sus columnas exactas.
+ * Una tabla con el mismo nombre pero otras columnas se trata como ajena (QA Z-04, Z-05).
+ */
+const TENANT_TABLE_COLUMNS: Record<string, readonly string[]> = {
+  organization: ['created_at', 'id', 'name', 'slug'],
+  audit_log: ['action', 'actor', 'chain_id', 'data', 'hash', 'object', 'prev_hash', 'seq', 'ts'],
+  kysely_migration: ['name', 'timestamp'],
+  kysely_migration_lock: ['id', 'is_locked'],
+};
+const TENANT_TABLES = new Set(Object.keys(TENANT_TABLE_COLUMNS));
 
 /**
  * El motor informó que el objeto YA existía: resultado seguro, el CREATE no lo creó
@@ -276,7 +285,24 @@ export class TenantManager {
         const shown = foreign.slice(0, 10).join(', ') + (foreign.length > 10 ? ` y ${String(foreign.length - 10)} más` : '');
         throw new Error(`La base ${row.db_name} contiene objetos ajenos a la plataforma (${shown}); no se elimina. Revísela manualmente.`);
       }
-      const tables = (await db.introspection.getTables()).map((t) => t.name);
+      const metadata = await db.introspection.getTables({ withInternalKyselyTables: true });
+      for (const t of metadata) {
+        const expected = TENANT_TABLE_COLUMNS[t.name];
+        const actual = t.columns.map((c) => c.name).sort();
+        if (expected !== undefined && actual.join(',') !== expected.join(',')) {
+          throw new Error(`La tabla ${t.name} de la base ${row.db_name} no tiene las columnas de la plataforma (${actual.join(', ')}); no se elimina. Revísela manualmente.`);
+        }
+      }
+      // Las migraciones registradas deben ser migraciones conocidas de la plataforma.
+      if (metadata.some((t) => t.name === 'kysely_migration')) {
+        const known = new Set(Object.keys(tenantMigrations(this.admin.engine)));
+        const r = await sql<{ name: string }>`SELECT name FROM ${sql.table('kysely_migration')}`.execute(db);
+        const unknown = r.rows.map((x) => x.name).filter((n) => !known.has(n));
+        if (unknown.length > 0) {
+          throw new Error(`La base ${row.db_name} registra migraciones desconocidas (${unknown.slice(0, 5).join(', ')}); no se elimina. Revísela manualmente.`);
+        }
+      }
+      const tables = metadata.map((t) => t.name);
       let declaresThis = false;
       if (tables.includes('organization')) {
         const orgs = await db.selectFrom('organization').select('id').execute();

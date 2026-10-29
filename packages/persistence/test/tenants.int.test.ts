@@ -333,8 +333,18 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     // Z-04: tabla con nombre de la plataforma pero con datos ajenos.
     await sql.raw('CREATE TABLE audit_log (secreto varchar(50))').execute(target);
     await sql.raw("INSERT INTO audit_log (secreto) VALUES ('dato-sintetico-ajeno')").execute(target);
-    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/datos en audit_log/);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/columnas de la plataforma|datos en audit_log/);
     await sql.raw('DROP TABLE audit_log').execute(target);
+    // Z-05: tabla de migraciones con nombre de Kysely pero columnas y datos ajenos.
+    await sql.raw('CREATE TABLE kysely_migration (secreto varchar(50))').execute(target);
+    await sql.raw("INSERT INTO kysely_migration (secreto) VALUES ('dato-sintetico-ajeno')").execute(target);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/columnas de la plataforma/);
+    await sql.raw('DROP TABLE kysely_migration').execute(target);
+    // Z-05: columnas correctas pero una migración desconocida.
+    await sql.raw('CREATE TABLE kysely_migration (name varchar(255), timestamp varchar(255))').execute(target);
+    await sql.raw("INSERT INTO kysely_migration (name, timestamp) VALUES ('datos-ajenos', 'x')").execute(target);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/migraciones desconocidas/);
+    await sql.raw('DROP TABLE kysely_migration').execute(target);
     if (engine === 'postgresql') {
       // Objeto grande: la cuenta de aprovisionamiento no puede crearlo (template1 endurecido),
       // así que lo crea el superusuario de pruebas.
