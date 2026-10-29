@@ -2,7 +2,7 @@
 
 - **Aprobación de inicio:** Alejandro Ávila, 29-10-2026 14:07 (hora de Chile), después de aprobar el cierre de 2A (fusión del PR #3, 29-10-2026 13:32).
 - **Rama:** `fase-2b`.
-- **Estado:** diseño aprobado (D-79, 29-10-2026 14:46). Implementado y probado localmente con PostgreSQL. Pendiente: CI con ambos motores, QA independiente y aprobación humana del cierre.
+- **Estado:** diseño aprobado (D-79, 29-10-2026 14:46). Implementado y probado: local con PostgreSQL; CI con PostgreSQL y SQL Server. Pendiente: QA independiente y aprobación humana del cierre.
 - **Orden de trabajo:**
   1. Corregir los hallazgos abiertos de 2A.
   2. Diseñar identidad y permisos y **presentar el diseño al responsable antes de implementarlo**.
@@ -61,13 +61,13 @@ Residual aceptado [DECISIÓN]: los comentarios, los triggers con funciones del c
 | TOTP (RFC 6238) sin dependencias, con ±1 paso y sin reuso | `packages/identity/src/totp.ts` | Probado con los vectores del RFC |
 | Tokens (sesión, CSRF, activación) guardados solo como hash; 10 códigos de recuperación | `packages/identity/src/tokens.ts` | Probado |
 | Matriz de 6 roles web y 8 permisos; MFA obligatoria en 3 roles; 3 combinaciones prohibidas | `packages/identity/src/rbac.ts` | Probado |
-| Tablas de identidad en la base de cada organización (migración `0002_identity`); permisos del usuario de la organización sobre ellas; la bitácora sigue solo SELECT/INSERT | `packages/persistence/src/schema.ts`, `provisioner.ts` | Probado en PostgreSQL. SQL Server: [PENDIENTE: CI] |
+| Tablas de identidad en la base de cada organización (migración `0002_identity`); permisos del usuario de la organización sobre ellas; la bitácora sigue solo SELECT/INSERT | `packages/persistence/src/schema.ts`, `provisioner.ts` | Probado en PostgreSQL y SQL Server (CI) |
 | Cifrado y HMAC con la DEK de cada organización (`TenantHandle.crypto`) | `tenant-manager.ts` | Probado |
 | Servicio de identidad: inicio de sesión en dos pasos, bloqueo progresivo, sesiones (30 min / 12 h), CSRF, reautenticación (5 min), activación (24 h), gestión de usuarios con "último administrador" | `apps/api/src/identity/identity.service.ts` | Probado por HTTP |
 | Guardia global que **deniega por defecto**, límite de tasa, filtro de errores sin trazas, cabeceras CSP/no-store | `guard.ts`, `errors.ts`, `bootstrap.ts` | Probado |
 | Endpoints `/api/v1/auth/*` y `/api/v1/users/*` (sin pantallas) | `auth.controller.ts`, `users.controller.ts` | Probado |
 | CLI `user invite-admin`; `init` concede lectura a la cuenta de la API | `apps/api/src/admin/cli.ts` | Ejecutado a mano contra PostgreSQL local (ver abajo) |
-| Compose: cuenta `auditor_api` (solo lectura del registro), API con clave maestra (D-80), cookie sin `Secure` en perfil local (D-81) | `deploy/compose`, `scripts/generate-secrets.sh`, `scripts/smoke-compose.sh` paso 12 | [PENDIENTE: CI] |
+| Compose: cuenta `auditor_api` (solo lectura del registro), API con clave maestra (D-80), cookie sin `Secure` en perfil local (D-81) | `deploy/compose`, `scripts/generate-secrets.sh`, `scripts/smoke-compose.sh` pasos 9 y 12 | Probado en CI (prueba de humo) |
 
 **Valores verificados contra su fuente durante la implementación** (antes estaban `[PENDIENTE]` en el diseño):
 - **argon2id:** m=19456, t=2, p=1 es una de las configuraciones mínimas de OWASP [VERIFICADO: OWASP Password Storage Cheat Sheet, 29-10-2026].
@@ -100,4 +100,21 @@ Residual aceptado [DECISIÓN]: los comentarios, los triggers con funciones del c
 - La contraseña de prueba del administrador contenía la parte local del correo ("admin"), y la política la rechazó correctamente.
 - Una ejecución con Node 22 falló porque `crypto.argon2` no existe en esa versión. El proyecto exige Node 24 (`engines`).
 
-CI y QA: [PENDIENTE].
+**Evidencia de CI sobre `685f38d`** (7 de 7 jobs en verde):
+
+| Job | ID | Resultado |
+|---|---|---|
+| Integración | 123646533420 | 2A: "**71 aprobadas · postgresql=24, sqlserver=24**". Identidad: "**32 aprobadas, 0 fallidas, 0 omitidas · postgresql=16, sqlserver=16**" |
+| Prueba de humo de Compose | 123646534138 | Pasos 1–12: la API monta solo `api_db_password` y `master.key`; `auditor_api` sin privilegios; activación HTTP → `mfa_enroll` con cookie `HttpOnly` |
+| Seguridad (Gitleaks, Semgrep, Trivy, OSV) | — | En verde |
+
+**Incidentes de CI durante la implementación:**
+
+| Commit | Qué pasó | Corrección |
+|---|---|---|
+| `0de6ac2` | **Imagen:** el Dockerfile no copiaba `packages/identity/package.json` y el build falló | Agregado al Dockerfile |
+| `0de6ac2` | **SQL Server:** `EXEC(N'…' + QUOTENAME(…))` no es válido, porque EXEC no admite expresiones | El texto se arma en una variable antes del EXEC |
+| `0de6ac2` | **Gitleaks:** marcó como "generic-api-key" tres contraseñas **sintéticas** literales de la prueba | Ahora se generan al azar en cada ejecución. Los tres hallazgos del commit histórico se registraron en `.gitleaksignore`, con justificación |
+| `4b78dd5` | **Prueba de humo:** PostgreSQL 18 concatena los booleanos como `false`/`true`, no como `f`/`t` | Se comparan como enteros |
+
+QA: [PENDIENTE].
