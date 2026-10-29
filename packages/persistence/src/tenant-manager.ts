@@ -263,18 +263,20 @@ export class TenantManager {
   }
 
   /**
-   * Antes de eliminar una base, comprueba que sea de esta organización: o declara su
-   * mismo identificador, o solo contiene tablas de la plataforma (alta interrumpida antes
-   * de registrarse). Si no, se rechaza: la base puede ser ajena (hallazgo QA X-01).
+   * Antes de eliminar una base, comprueba que sea de esta organización: no declara otra
+   * organización y no contiene NINGÚN objeto ajeno a la plataforma (tablas en cualquier
+   * esquema, vistas, secuencias, funciones, tipos, objetos grandes). Si no, se rechaza: la
+   * base puede ser ajena (hallazgos QA X-01 y Z-01).
    */
   private async assertDatabaseBelongsTo(row: TenantsTable): Promise<void> {
     const db = connect<TenantDatabase>(this.admin, row.db_name, 1);
     try {
-      const tables = (await db.introspection.getTables()).map((t) => t.name);
-      const foreign = tables.filter((t) => !TENANT_TABLES.has(t));
+      const foreign = await this.provisioner.foreignObjects(db as Kysely<unknown>, [...TENANT_TABLES]);
       if (foreign.length > 0) {
-        throw new Error(`La base ${row.db_name} contiene tablas ajenas a la plataforma (${foreign.join(', ')}); no se elimina. Revísela manualmente.`);
+        const shown = foreign.slice(0, 10).join(', ') + (foreign.length > 10 ? ` y ${String(foreign.length - 10)} más` : '');
+        throw new Error(`La base ${row.db_name} contiene objetos ajenos a la plataforma (${shown}); no se elimina. Revísela manualmente.`);
       }
+      const tables = (await db.introspection.getTables()).map((t) => t.name);
       if (tables.includes('organization')) {
         const orgs = await db.selectFrom('organization').select('id').execute();
         if (orgs.some((o) => o.id !== row.id)) {
@@ -361,14 +363,27 @@ export class TenantManager {
     const rows = await this.control().selectFrom('tenants').selectAll().where('status', '=', 'active').orderBy('slug').execute();
     for (const row of rows) {
       const problems: string[] = [];
+      // Primero el descifrado, en dos pasos, porque el remedio es distinto (QA Y-02 y Z-02):
+      // - si no se puede abrir la DEK, la clave maestra no corresponde (o la DEK guardada fue
+      //   alterada) y rotar NO lo resuelve;
+      // - si la DEK abre pero la contraseña guardada no, el registro fue alterado y rotar SÍ
+      //   lo resuelve (genera una contraseña nueva y la vuelve a cifrar).
+      let dek: SymmetricKey;
       try {
-        // Primero el descifrado: si falla, la causa no es la contraseña de la base sino la
-        // clave maestra o un registro alterado, y rotar no lo resuelve (hallazgo QA Y-02).
-        this.decryptPassword(row);
+        dek = unwrapKey(this.masterKeys, row.dek_wrapped, dekContext(row.id));
       } catch (error) {
         if (!(error instanceof CryptoError)) throw error;
         result[row.slug] = [
-          `No se pudo descifrar su credencial: la clave maestra (MASTER_KEY_FILE) no corresponde a esta instalación o el registro de control fue alterado. "rotate-password" no lo resuelve; revise la clave maestra y su respaldo. (${error.message})`,
+          `No se pudo abrir la clave de cifrado de la organización: la clave maestra (MASTER_KEY_FILE) no corresponde a esta instalación o el registro de control fue alterado. "rotate-password" no lo resuelve; revise la clave maestra y su respaldo. (${error.message})`,
+        ];
+        continue;
+      }
+      try {
+        open([dek], row.db_password_sealed, passwordContext(row.id));
+      } catch (error) {
+        if (!(error instanceof CryptoError)) throw error;
+        result[row.slug] = [
+          `La contraseña cifrada guardada en la base de control no se puede descifrar (registro alterado o dañado). Ejecute: auditor-admin tenant rotate-password --slug ${row.slug} (${error.message})`,
         ];
         continue;
       }

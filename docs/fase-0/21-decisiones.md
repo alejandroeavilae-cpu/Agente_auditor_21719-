@@ -134,7 +134,7 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 
 ### 5.3 Decisiones de diseño de 2B confirmadas por el responsable (29-10-2026)
 
-Respuestas del responsable a las preguntas de `docs/fase-2/2b-diseno.md` §8. Las demás propuestas de ese documento siguen marcadas `[PROPUESTA]` hasta que se apruebe el diseño completo.
+Respuestas del responsable a las preguntas de `docs/fase-2/2b-diseno.md` §8, dadas mediante un cuestionario de opción múltiple en la sesión de trabajo del 29-10-2026, después de las 14:07 (hora de Chile). [PENDIENTE: no se registró la hora exacta de la respuesta] Las demás propuestas de ese documento siguen marcadas `[PROPUESTA]` hasta que se apruebe el diseño completo.
 
 | ID | Decisión | Razón |
 |---|---|---|

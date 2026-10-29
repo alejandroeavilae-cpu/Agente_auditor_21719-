@@ -23,5 +23,23 @@
 
 - `pnpm run verify`: código 0. Pruebas: web 4, crypto 15, audit-log 44, api 15, persistence 23 más 1 omitida (la de integración, sin motores).
 - Integración: **3 ejecuciones seguidas con 46 aprobadas, 0 fallidas y 0 omitidas** (postgresql=23). Informes en `docs/fase-2/evidencia-2b/hallazgos-2a-1.json` a `-3.json`.
-- CI: [PENDIENTE].
-- QA: [PENDIENTE].
+- CI de `c696bf9` (mismo código que `e169e90`): **69 aprobadas, 0 fallidas y 0 omitidas** (postgresql=23, sqlserver=23), verificado por QA. En `e169e90` y `b67f602`, la integración y la prueba de humo quedaron canceladas porque llegó un push más nuevo.
+- **QA independiente (29-10-2026): X-01, X-02, Y-02 e Y-03 aprobados**, sin regresiones en 2A. QA abrió tres hallazgos nuevos, todos Bajos: Z-01, Z-02 y Z-03 (§2).
+
+## 2. Hallazgos de la verificación QA del 29-10-2026
+
+| ID | Hallazgo | Corrección | Prueba |
+|---|---|---|---|
+| Z-01 | `cleanupProvisioning` solo revisaba tablas de `public` por nombre. Podía borrar una base con datos ajenos en otro esquema, en vistas materializadas, secuencias, funciones, tipos u objetos grandes | `Provisioner.foreignObjects` revisa todo el catálogo: en PostgreSQL `pg_class` (todo tipo), esquemas, `pg_proc`, tipos y `pg_largeobject_metadata`; en SQL Server `sys.objects`, tipos de usuario y esquemas. Solo se admiten las tablas de la plataforma en `public`/`dbo` y sus índices o restricciones | `X-01` ampliada. PostgreSQL: tabla `otro.audit_log`, vista materializada, secuencia, función, tipo enumerado y objeto grande. SQL Server: tabla y secuencia ajenas en `dbo`, y `otro.audit_log` |
+| Z-02 | El mensaje de Y-02 decía que `rotate-password` no resolvía un registro alterado, pero sí lo resuelve | `tenant check` separa los dos casos. Si no abre la DEK, la clave maestra no corresponde y rotar no sirve. Si la DEK abre pero la contraseña guardada no, rotar sí lo resuelve | `Z-02` (sobre cifrado de otra organización → `check` recomienda rotar → rotar lo resuelve) |
+| Z-03 | El diseño de 2B mantenía como `[PROPUESTA]` puntos ya decididos (D-75, D-76, D-78) | Etiquetas corregidas. Se citan D-18 y `09-seguridad.md` §10.3. Se agregaron las cabeceras de seguridad y los errores sin trazas internas (§10.4), que faltaban | — |
+
+**Evidencia local (29-10-2026):**
+- `pnpm run verify`: código 0.
+- Integración con PostgreSQL: **3 ejecuciones seguidas con 47 aprobadas, 0 fallidas y 0 omitidas** (postgresql=24). Informes en `docs/fase-2/evidencia-2b/z-1.json` a `-3.json`.
+- **Incidente:** las primeras ejecuciones fallaron por dos errores de la propia prueba.
+  - Un operador SQL ambiguo (`text || "char"`).
+  - La cuenta de aprovisionamiento no puede crear objetos grandes (`template1` endurecido).
+
+  Se corrigieron antes de commitear. Las bases y los roles que dejaron esas ejecuciones fallidas se eliminaron a mano.
+- CI y QA: [PENDIENTE].

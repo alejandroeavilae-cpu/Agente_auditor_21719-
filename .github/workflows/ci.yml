@@ -121,7 +121,7 @@ jobs:
           TEST_MSSQL_TLS: trust-server-certificate
           # Mínimo de pruebas aprobadas POR MOTOR (hallazgo QA B-13): si el archivo de
           # integración no se ejecutara, o un motor se omitiera, el job falla.
-          MIN_TESTS_PER_ENGINE: "23"
+          MIN_TESTS_PER_ENGINE: "24"
         run: |
           pnpm exec vitest run --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-integracion.json
           node ../../scripts/check-integration-report.mjs vitest-integracion.json

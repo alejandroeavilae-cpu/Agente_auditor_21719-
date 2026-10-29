@@ -307,16 +307,67 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
 
     const target = connect<unknown>(server, created, 1);
     await sql`CREATE TABLE datos_ajenos (n int)`.execute(target);
-    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/tablas ajenas/);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/objetos ajenos/);
     const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
     expect(await real.databaseExists(serverDb, created)).toBe(true);
     await sql`DROP TABLE datos_ajenos`.execute(target);
+    // Z-01: tampoco con objetos ajenos fuera de public ni de otros tipos.
+    const variants: [string, string][] =
+      engine === 'postgresql'
+        ? [
+            ['CREATE SCHEMA otro; CREATE TABLE otro.audit_log (n int)', 'DROP SCHEMA otro CASCADE'],
+            ['CREATE MATERIALIZED VIEW vm AS SELECT 1 AS n', 'DROP MATERIALIZED VIEW vm'],
+            ['CREATE SEQUENCE sec', 'DROP SEQUENCE sec'],
+            ["CREATE FUNCTION f() RETURNS int LANGUAGE sql AS 'SELECT 1'", 'DROP FUNCTION f()'],
+            ["CREATE TYPE estado AS ENUM ('a')", 'DROP TYPE estado'],
+          ]
+        : [
+            ['CREATE TABLE dbo.vista_base (n int)', 'DROP TABLE dbo.vista_base'],
+            ['CREATE SEQUENCE dbo.sec START WITH 1', 'DROP SEQUENCE dbo.sec'],
+          ];
+    for (const [create, drop] of variants) {
+      for (const stmt of create.split('; ')) await sql.raw(stmt).execute(target);
+      await expect(manager.cleanupProvisioning(slug), create).rejects.toThrow(/objetos ajenos/);
+      await sql.raw(drop).execute(target);
+    }
+    if (engine === 'postgresql') {
+      // Objeto grande: la cuenta de aprovisionamiento no puede crearlo (template1 endurecido),
+      // así que lo crea el superusuario de pruebas.
+      const asSuper = connect<unknown>(superServer, created, 1);
+      await sql`SELECT lo_from_bytea(424242, 'x'::bytea)`.execute(asSuper);
+      await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/objetos ajenos/);
+      await sql`SELECT lo_unlink(424242)`.execute(asSuper);
+      await asSuper.destroy();
+    }
+    if (engine === 'sqlserver') {
+      await sql.raw('CREATE SCHEMA otro').execute(target);
+      await sql.raw('CREATE TABLE otro.audit_log (n int)').execute(target);
+      await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/objetos ajenos/);
+      await sql.raw('DROP TABLE otro.audit_log').execute(target);
+      await sql.raw('DROP SCHEMA otro').execute(target);
+    }
     await target.destroy();
     // Sin tablas ajenas, la limpieza procede.
     await manager.cleanupProvisioning(slug);
     expect(await real.databaseExists(serverDb, created)).toBe(false);
     await serverDb.destroy();
     expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
+  });
+
+  it('Z-02: si se altera la contraseña cifrada guardada, tenant check recomienda rotar y rotar lo resuelve', async () => {
+    const control = connect<ControlDatabase>(server, controlDatabase, 1);
+    const rowB = await control.selectFrom('tenants').selectAll().where('slug', '=', slugB).executeTakeFirstOrThrow();
+    const rowA = await control.selectFrom('tenants').selectAll().where('slug', '=', slugA).executeTakeFirstOrThrow();
+    // Sobre de otra organización: formato válido, pero no se descifra con la DEK de B.
+    await control.updateTable('tenants').set({ db_password_sealed: rowA.db_password_sealed }).where('slug', '=', slugB).execute();
+    await control.destroy();
+    await manager.closeTenant(slugB);
+    const check = await manager.checkTenants();
+    expect(check[slugB]?.join(' ')).toMatch(/rotate-password --slug/);
+    expect(check[slugB]?.join(' ')).not.toMatch(/no lo resuelve/);
+    await manager.rotatePassword(slugB, 'operador:pruebas');
+    expect((await manager.checkTenants())[slugB]).toEqual([]);
+    expect(rowB.id).toBeDefined();
   });
 
   it('Y-02: con una clave maestra que no corresponde, tenant check lo dice y no recomienda rotar', async () => {

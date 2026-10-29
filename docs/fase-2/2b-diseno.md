@@ -19,7 +19,7 @@
 | **Usuario de una organización** | En la **base de la organización** (aislada, 2A) | Usar la plataforma: auditar, revisar y leer informes, según su rol |
 | **Administrador técnico de la instalación** (el "operador de plataforma" de la especificación) | No es un usuario web: es quien tiene acceso al servidor y usa `auditor-admin` | Crear organizaciones y el **primer administrador** de cada una. No ve contenido de las organizaciones (C-09) |
 
-**`[PROPUESTA]` En la v1 el operador de plataforma no tiene cuenta web.** Con la instalación local (D-74), quien administra el servidor ya tiene acceso físico. Una cuenta web adicional solo agregaría superficie de ataque. Si se retoma la Modalidad B, se diseñará en ese momento.
+**`[DECISIÓN D-76]` En la v1 el operador de plataforma no tiene cuenta web.** Con la instalación local (D-74), quien administra el servidor ya tiene acceso físico. Una cuenta web adicional solo agregaría superficie de ataque. Si se retoma la Modalidad B, se diseñará en ese momento.
 
 ## 2. Roles (RBAC)
 
@@ -42,7 +42,7 @@ Son los **7 roles base** de `06-modelo-de-datos.md` §7.5. El operador de plataf
 ## 3. Inicio de sesión
 
 1. El usuario entra con **organización + correo + contraseña**.
-   - **`[PROPUESTA]` La organización se indica de forma explícita.** No existe una lista global de correos que revele en qué organización está cada persona.
+   - **`[DECISIÓN D-75]` La organización se indica de forma explícita.** No existe una lista global de correos que revele en qué organización está cada persona.
    - Si la instalación tiene una sola organización, se configura como predeterminada y el usuario no la escribe.
 2. **Contraseña:**
    - Se guarda con **argon2id**, usando la función incorporada en Node.js 24 (`crypto.argon2`). Así no se agrega ninguna dependencia [VERIFICADO: disponible en Node 24.22.1 local, sin advertencia de función experimental; `PENDIENTE` confirmar su nivel de estabilidad en la documentación oficial].
@@ -50,7 +50,7 @@ Son los **7 roles base** de `06-modelo-de-datos.md` §7.5. El operador de plataf
    - Política: **mínimo 12 caracteres** y sin máximo bajo (128). Sin reglas de composición forzada. Se rechazan las contraseñas comunes usando una lista incluida en el paquete, sin consultas externas [`PENDIENTE`: elegir la lista y verificar que su licencia sea compatible].
 3. **MFA TOTP:**
    - Códigos de 6 dígitos cada 30 s (RFC 6238), implementado con `node:crypto`, sin dependencia nueva.
-   - **Obligatorio** para Administrador, Responsable de auditoría y Revisor jurídico (D-18). Opcional para los demás.
+   - **Obligatorio** para Administrador, Responsable de auditoría y Revisor jurídico; opcional para los demás. D-18 exige MFA en los "roles con privilegios"; la lista concreta está en `09-seguridad.md` §10.3. Confirmado por el responsable en D-77.
    - El secreto TOTP se guarda **cifrado con la DEK de la organización** (2A).
    - Se entregan **10 códigos de recuperación** de un solo uso, guardados como hash.
    - Un mismo código TOTP no se acepta dos veces.
@@ -64,6 +64,14 @@ Son los **7 roles base** de `06-modelo-de-datos.md` §7.5. El operador de plataf
    - Cerrar sesión, cambiar la contraseña o desactivar al usuario revoca sus sesiones.
 6. **Acciones de alto riesgo:** exigen volver a ingresar el código MFA dentro de los últimos 5 min `[PROPUESTA]`. Por ejemplo: cambiar roles, desactivar MFA de otro usuario o exportar la bitácora.
 7. **CSRF:** además de `SameSite=Strict`, las peticiones que modifican algo llevan un token anti-CSRF.
+8. **Cabeceras y errores** (`09-seguridad.md` §10.4): todas las respuestas de la API incluyen:
+   - CSP estricta sin `unsafe-inline`;
+   - `frame-ancestors 'none'`;
+   - `X-Content-Type-Options: nosniff`;
+   - `Referrer-Policy: no-referrer`;
+   - `Cache-Control: no-store` en respuestas autenticadas.
+
+   Los errores devuelven un código y un mensaje genérico, sin trazas internas.
 
 ## 4. Primer administrador de cada organización
 
@@ -83,7 +91,7 @@ La plataforma también trata datos personales: los de sus propios usuarios (O-01
   - cambios de contraseña, MFA y roles;
   - invitaciones y desactivaciones.
 - **Qué NO se registra nunca:** contraseñas, códigos MFA ni tokens.
-- **`[PROPUESTA]` Dirección IP:** se guarda en el registro de accesos con retención configurable (valor inicial: 90 días [SUPUESTO: valor operativo, no es una recomendación legal; `PENDIENTE` de revisión jurídica]). En la bitácora inmutable solo queda un identificador de la IP con clave HMAC, porque esa bitácora no permite borrar entradas.
+- **`[DECISIÓN D-78]` Dirección IP:** se guarda en el registro de accesos con retención configurable (valor inicial: 90 días [SUPUESTO: valor operativo, no es una recomendación legal; `PENDIENTE` de revisión jurídica]). En la bitácora inmutable solo queda un identificador de la IP con clave HMAC, porque esa bitácora no permite borrar entradas.
 - **Navegador:** se guarda la familia (p. ej. "Firefox"), sin huella digital del navegador (A-04).
 - **Aviso de nuevo dispositivo o IP:** queda **registrado**. No se envía correo en la v1.
 
@@ -124,6 +132,7 @@ Son los primeros endpoints autenticados.
   - se revoca al cerrar sesión, al cambiar la contraseña y al desactivar al usuario;
   - una sesión anterior no sirve después de autenticarse de nuevo (fijación de sesión).
 - **CSRF:** una petición sin token se rechaza.
+- **Cabeceras y errores:** las cabeceras de §3.8 están en todas las respuestas, y un error interno no expone trazas al cliente.
 - **Permisos:**
   - matriz de cada rol frente a cada endpoint (denegar por defecto);
   - un endpoint sin permiso declarado hace fallar la prueba.

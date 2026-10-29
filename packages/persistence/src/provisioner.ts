@@ -27,6 +27,11 @@ export interface Provisioner {
   restrictLogin(serverDb: Kysely<unknown>, login: string): Promise<void>;
   /** Bases cuyo nombre sigue el patrón de la plataforma (para detectar huérfanas). */
   listPlatformDatabases(serverDb: Kysely<unknown>): Promise<string[]>;
+  /**
+   * Objetos de la base que NO son de la plataforma (vacío si solo hay objetos propios).
+   * Revisa todo el catálogo, no solo tablas de `public` (hallazgo QA Z-01).
+   */
+  foreignObjects(adminTenantDb: Kysely<unknown>, allowedTables: readonly string[]): Promise<string[]>;
   /** Configuraciones de sesión que el usuario tiene fijadas en el motor (vacío si ninguna). */
   loginSettings(serverDb: Kysely<unknown>, login: string): Promise<string[]>;
   /** Cantidad de sesiones abiertas del usuario. */
@@ -84,6 +89,36 @@ const postgres: Provisioner = {
   async listPlatformDatabases(serverDb) {
     const r = await sql<{ n: string }>`SELECT datname AS n FROM pg_database WHERE datname ~ '^auditor_t_[0-9a-f]{12}$' ORDER BY 1`.execute(serverDb);
     return r.rows.map((x) => x.n);
+  },
+  async foreignObjects(db, allowedTables) {
+    const allowed = sql`ARRAY[${sql.join(allowedTables.map((t) => sql`${t}`))}]::text[]`;
+    const r = await sql<{ o: string }>`
+      SELECT n.nspname || '.' || c.relname || ' (relkind ' || c.relkind::text || ')' AS o
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+         AND n.nspname NOT LIKE 'pg_temp%' AND n.nspname NOT LIKE 'pg_toast_temp%'
+         AND NOT (n.nspname = 'public' AND (
+               (c.relkind IN ('r', 'p') AND c.relname = ANY(${allowed}))
+            OR (c.relkind = 'i' AND EXISTS (
+                  SELECT 1 FROM pg_index i JOIN pg_class t ON t.oid = i.indrelid
+                   WHERE i.indexrelid = c.oid AND t.relnamespace = n.oid AND t.relname = ANY(${allowed})))))
+      UNION ALL
+      SELECT 'esquema ' || nspname FROM pg_namespace
+       WHERE nspname NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')
+         AND nspname NOT LIKE 'pg_temp%' AND nspname NOT LIKE 'pg_toast_temp%'
+      UNION ALL
+      SELECT 'función ' || n.nspname || '.' || p.proname
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      UNION ALL
+      SELECT 'tipo ' || n.nspname || '.' || t.typname
+        FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+         AND n.nspname NOT LIKE 'pg_temp%' AND n.nspname NOT LIKE 'pg_toast_temp%'
+         AND t.typrelid = 0 AND t.typelem = 0
+      UNION ALL
+      SELECT 'objeto grande ' || oid::text FROM pg_largeobject_metadata`.execute(db);
+    return r.rows.map((x) => x.o);
   },
   async loginSettings(serverDb, login) {
     const r = await sql<{ s: string }>`SELECT unnest(s.setconfig) AS s FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole WHERE r.rolname = ${login}`.execute(serverDb);
@@ -182,6 +217,22 @@ const sqlserver: Provisioner = {
   async listPlatformDatabases(serverDb) {
     const r = await sql<{ n: string }>`SELECT name AS n FROM sys.databases WHERE name LIKE 'auditor[_]t[_]%' ORDER BY name`.execute(serverDb);
     return r.rows.map((x) => x.n).filter((n) => /^auditor_t_[0-9a-f]{12}$/.test(n));
+  },
+  async foreignObjects(db, allowedTables) {
+    const allowed = sql.join(allowedTables.map((t) => sql`${t}`));
+    const r = await sql<{ o: string }>`
+      SELECT s.name + '.' + o.name + ' (' + o.type_desc + ')' AS o
+        FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id
+       WHERE o.is_ms_shipped = 0
+         AND NOT (s.name = 'dbo' AND (
+               (o.type = 'U' AND o.name IN (${allowed}))
+            OR (o.type IN ('PK', 'UQ', 'D', 'F', 'C') AND OBJECT_SCHEMA_NAME(o.parent_object_id) = 'dbo'
+                AND OBJECT_NAME(o.parent_object_id) IN (${allowed}))))
+      UNION ALL
+      SELECT 'tipo ' + name FROM sys.types WHERE is_user_defined = 1
+      UNION ALL
+      SELECT 'esquema ' + name FROM sys.schemas WHERE schema_id BETWEEN 5 AND 16383`.execute(db);
+    return r.rows.map((x) => x.o);
   },
   loginSettings() {
     // SQL Server no tiene parámetros de sesión por login equivalentes a los de PostgreSQL;
