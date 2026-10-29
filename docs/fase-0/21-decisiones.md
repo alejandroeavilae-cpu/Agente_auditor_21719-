@@ -132,3 +132,14 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 | D-73 | **[DECISIÓN del responsable, 28-10-2026 11:15]** Quien usa la plataforma es **la propia institución**, sobre su infraestructura. Los datos no salen de ella | Confirma la Modalidad A (instalación institucional local) como uso principal. El aislamiento multiempresa de 2A sigue siendo útil, por ejemplo para áreas o entidades separadas dentro de la misma institución, o para la Modalidad B. Ver D-74 |
 | D-74 | **[DECISIÓN del responsable, 28-10-2026 11:19]** La v1 se concentra en la **Modalidad A** (una institución, instalación local). Las Modalidades B (multiempresa) y C (híbrida) se **postergan** a versiones posteriores | No se deshace nada: el aislamiento por organización de 2A se mantiene (sirve para separar áreas o entidades dentro de la institución y deja preparada la Modalidad B). Las fases que dependen solo de B o C (panel central, agente remoto de la Modalidad C) se replanifican al revisar el plan por fases Aplicado en `15-plan-por-fases.md` el 29-10-2026 |
 
+### 5.3 Decisiones de diseño de 2B confirmadas por el responsable (29-10-2026)
+
+Respuestas del responsable a las preguntas de `docs/fase-2/2b-diseno.md` §8. Las demás propuestas de ese documento siguen marcadas `[PROPUESTA]` hasta que se apruebe el diseño completo.
+
+| ID | Decisión | Razón |
+|---|---|---|
+| D-75 | **[DECISIÓN del responsable]** El inicio de sesión pide **organización + correo + contraseña**. Si hay una sola organización, se configura como predeterminada | No existe un índice global de correos que revele en qué organización está cada persona |
+| D-76 | **[DECISIÓN del responsable]** El operador de plataforma **no tiene cuenta web en la v1**: opera solo con `auditor-admin` en el servidor | Con la Modalidad A (D-74), quien administra el servidor ya tiene acceso físico; una cuenta web muy privilegiada solo suma superficie de ataque |
+| D-77 | **[DECISIÓN del responsable]** MFA TOTP **obligatorio** para Administrador, Responsable de auditoría y Revisor jurídico; **opcional** para el resto | Confirma D-18 |
+| D-78 | **[DECISIÓN del responsable]** La IP se guarda en el registro de accesos con **retención configurable (90 días por defecto)**. En la bitácora inmutable solo queda un identificador con HMAC | Permite investigar accesos sospechosos sin dejar la IP en un registro que no se puede borrar. [PENDIENTE: revisión jurídica del plazo de 90 días (P-01)] |
+

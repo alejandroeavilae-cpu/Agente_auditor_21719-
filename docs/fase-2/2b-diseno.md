@@ -131,7 +131,9 @@ Son los primeros endpoints autenticados.
 - **Primer administrador:** el enlace de activación es de un solo uso, vence y obliga a configurar MFA.
 - **Bitácora:** los eventos de acceso quedan registrados y verificables con `auditor-log verify`.
 
-## 8. Decisiones que se piden al responsable
+## 8. Decisiones del responsable
+
+Respondidas el 29-10-2026 con la opción recomendada en las cuatro preguntas. Quedaron registradas como **D-75 a D-78**.
 
 | # | Pregunta | Recomendación |
 |---|---|---|
