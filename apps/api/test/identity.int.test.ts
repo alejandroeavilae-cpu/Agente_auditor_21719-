@@ -8,9 +8,10 @@ import { generateKey } from '@auditor-21719/crypto';
 import { totpAt } from '@auditor-21719/identity';
 import { LOCK_THRESHOLD as LOCK_AT } from '../src/identity/identity.service.js';
 import { connect, provisionerFor, serverAdminDatabase, TenantManager, type DbServerConfig, type TenantDatabase } from '@auditor-21719/persistence';
+import { Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { sql } from 'kysely';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/bootstrap.js';
 import { loadConfig } from '../src/config/app-config.js';
 import type { IdentityConfig } from '../src/identity/identity-config.js';
@@ -404,10 +405,17 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     const b1 = (await handle.db.selectFrom('app_user').select('id').where('email', '=', 'admin-b@ejemplo.cl').executeTakeFirstOrThrow()).id;
     // B1 desactiva a B2 mientras B2 le quita a B1 el rol de administrador: cada cambio por
     // separado es válido (queda el otro), pero juntos dejarían 0 administradores.
+    // Se capturan los errores internos del servidor para diagnosticarlos en CI.
+    const logged: string[] = [];
+    const spy = vi.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => {
+      logged.push(String(m));
+    });
     const [r1, r2] = await Promise.all([
       c1.request('POST', `/api/v1/users/${second.userId}/deactivate`),
       c2.request('PATCH', `/api/v1/users/${b1}/roles`, { roles: ['reader'] }),
     ]);
+    spy.mockRestore();
+    expect(logged, `errores internos: ${logged.join(' | ')}`).toEqual([]);
     expect([r1.status, r2.status].filter((x) => x === 204)).toHaveLength(1);
     expect(['last_admin', 'conflict', 'unauthenticated']).toContain([r1, r2].find((r) => r.status !== 204)?.body.error);
     const admins = await handle.db

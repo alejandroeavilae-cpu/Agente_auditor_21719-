@@ -64,11 +64,20 @@ const CSRF_FORMAT = /^[0-9a-f]{64}$/;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Errores de serialización o interbloqueo: otra transacción concurrente ganó. */
-function isSerializationConflict(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const e = error as { code?: unknown; number?: unknown };
-  return e.code === '40001' || e.code === '40P01' || e.number === 1205 || e.number === 3960;
+/**
+ * Errores de serialización o interbloqueo: otra transacción concurrente ganó.
+ * - PostgreSQL: SQLSTATE 40001 (serialization_failure) y 40P01 (deadlock_detected).
+ * - SQL Server: 1205 (interbloqueo), 3960 (conflicto de instantánea) y, si el motor ya
+ *   revirtió la transacción por el interbloqueo, el ROLLBACK posterior falla con 3903.
+ * Se revisa también la causa encadenada (`cause`), que algunos controladores usan.
+ */
+function isSerializationConflict(error: unknown, depth = 0): boolean {
+  if (typeof error !== 'object' || error === null || depth > 3) return false;
+  const e = error as { code?: unknown; number?: unknown; message?: unknown; cause?: unknown };
+  if (e.code === '40001' || e.code === '40P01') return true;
+  if (e.number === 1205 || e.number === 3960 || e.number === 3903) return true;
+  if (typeof e.message === 'string' && /deadlock|could not serialize|interbloque/i.test(e.message)) return true;
+  return isSerializationConflict(e.cause, depth + 1);
 }
 
 /** Acceso a las organizaciones (la API usa un `TenantManager` con cuenta de solo lectura). */
