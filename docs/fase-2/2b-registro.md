@@ -130,7 +130,7 @@ QA atacó la API como lo haría un adversario.
 | 2B-02 | **Media** | Tras `tenant rotate-password`, la API seguía con la credencial vieja (500) | `openTenant` reabre la conexión si cambió la credencial cifrada | `2B-02` |
 | 2B-03 | Baja | Carrera en "último administrador" | Comprobación y cambio en una transacción **SERIALIZABLE**; un conflicto responde 409 | `2B-03`: desactivación y quita de rol simultáneas → queda exactamente 1 administrador |
 | 2B-04 | Baja | El tiempo revelaba si existe la organización (≈4 ms) | Duración mínima de 300 ms para fallos de inicio de sesión y de activación (D-82) | [PENDIENTE: medición por QA] |
-| 2B-05 | Baja | Con `TRUST_PROXY=true` y acceso directo a la API, `X-Forwarded-For` se falsifica | En Compose la API no publica puertos: solo Caddy la alcanza. Paso 13 nuevo en la prueba de humo, que verifica que la IP falsa no queda registrada | [PENDIENTE: CI] |
+| 2B-05 | Baja | Con `TRUST_PROXY=true` y acceso directo a la API, `X-Forwarded-For` se falsifica | En Compose la API no publica puertos: solo Caddy la alcanza. Paso 13 nuevo en la prueba de humo, que verifica que la IP falsa no queda registrada | Prueba de humo en CI (`bff8f64`): aprobada |
 | 2B-06 | Baja | Un cuerpo de más de 100 KB respondía 500 | El filtro responde 413 `payload_too_large` | `2B-06` |
 | 2B-07 | Baja | `/auth/me` en `mfa_pending` mostraba el correo y los roles | Antes de completar la MFA solo se informan la etapa y la organización | `2B-01` (parte `/me`) |
 | 2B-08 | Baja | Cada intento fallido agregaba una entrada inborrable a la bitácora | Los fallos van solo al registro de accesos; a la bitácora van los bloqueos (`auth.account.locked`) | Prueba de bitácora ajustada |
@@ -142,4 +142,15 @@ QA atacó la API como lo haría un adversario.
 
 **Evidencia local (29-10-2026):**
 - Integración de identidad por HTTP: **3 ejecuciones seguidas con 20 de 20 aprobadas** (postgresql=20). Informes en `evidencia-2b/identidad-qa1-*.json`.
-- CI y QA: [PENDIENTE].
+
+**CI:**
+- **`fd5393e`:** falló la prueba `2B-03` en **SQL Server**. Una de las dos peticiones simultáneas respondió `internal` (500) en vez de 409. Causa probable: el error de interbloqueo de SQL Server (1205), o el ROLLBACK posterior (3903), no se reconocía como conflicto. [SUPUESTO: los logs de CI no son accesibles; ver la corrección]
+  - **Corrección (`bff8f64`):** se amplió el reconocimiento a 1205, 3960 y 3903, al mensaje "deadlock" y a la causa encadenada.
+  - **Diagnóstico agregado:** la prueba ahora captura los errores internos del servidor y falla mostrándolos si aparece alguno.
+- **`bff8f64`:** 7 de 7 jobs en verde.
+  - Identidad: "**40 aprobadas, 0 fallidas, 0 omitidas · postgresql=20, sqlserver=20**" (job 123663296767).
+  - 2A: 71 aprobadas.
+  - Prueba de humo (job 123663297319), incluido el paso 13: la IP enviada en `X-Forwarded-For` a través de Caddy no queda registrada.
+  - Advertencia: esa carrera no es determinista. Una sola ejecución en verde no demuestra que el caso de SQL Server esté cubierto en todas las intercalaciones posibles [PENDIENTE: verificación QA].
+
+QA: [PENDIENTE].
