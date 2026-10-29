@@ -63,7 +63,7 @@ Residual aceptado [DECISIÓN]: los comentarios, los triggers con funciones del c
 | Matriz de 6 roles web y 8 permisos; MFA obligatoria en 3 roles; 3 combinaciones prohibidas | `packages/identity/src/rbac.ts` | Probado |
 | Tablas de identidad en la base de cada organización (migración `0002_identity`); permisos del usuario de la organización sobre ellas; la bitácora sigue solo SELECT/INSERT | `packages/persistence/src/schema.ts`, `provisioner.ts` | Probado en PostgreSQL y SQL Server (CI) |
 | Cifrado y HMAC con la DEK de cada organización (`TenantHandle.crypto`) | `tenant-manager.ts` | Probado |
-| Servicio de identidad: inicio de sesión en dos pasos, bloqueo progresivo, sesiones (30 min / 12 h), CSRF, reautenticación (5 min), activación (24 h), gestión de usuarios con "último administrador" | `apps/api/src/identity/identity.service.ts` | Probado por HTTP |
+| Servicio de identidad: inicio de sesión en dos pasos, bloqueo progresivo, sesiones (30 min / 12 h), CSRF, reautenticación (5 min), activación (24 h), gestión de usuarios con "último administrador" | `apps/api/src/identity/identity.service.ts` | Probado por HTTP. **Corrección:** en la primera versión, el bloqueo progresivo y "último administrador" se probaron solo en secuencia y fallaban con peticiones simultáneas (QA 2B-01, 2B-03); ver §4 |
 | Guardia global que **deniega por defecto**, límite de tasa, filtro de errores sin trazas, cabeceras CSP/no-store | `guard.ts`, `errors.ts`, `bootstrap.ts` | Probado |
 | Endpoints `/api/v1/auth/*` y `/api/v1/users/*` (sin pantallas) | `auth.controller.ts`, `users.controller.ts` | Probado |
 | CLI `user invite-admin`; `init` concede lectura a la cuenta de la API | `apps/api/src/admin/cli.ts` | Ejecutado a mano contra PostgreSQL local (ver abajo) |
@@ -117,4 +117,29 @@ Residual aceptado [DECISIÓN]: los comentarios, los triggers con funciones del c
 | `0de6ac2` | **Gitleaks:** marcó como "generic-api-key" tres contraseñas **sintéticas** literales de la prueba | Ahora se generan al azar en cada ejecución. Los tres hallazgos del commit histórico se registraron en `.gitleaksignore`, con justificación |
 | `4b78dd5` | **Prueba de humo:** PostgreSQL 18 concatena los booleanos como `false`/`true`, no como `f`/`t` | Se comparan como enteros |
 
-QA: [PENDIENTE].
+## 4. Primera revisión QA de 2B (29-10-2026, sobre `340b822`): NO APROBADA
+
+QA atacó la API como lo haría un adversario.
+
+- **Lo que resistió:** aislamiento entre organizaciones, CSRF, fijación y revocación de sesiones, RBAC, reuso de TOTP y de códigos de recuperación, carreras de activación, entradas malformadas, bitácora y permisos de `auditor_api`. Tampoco hubo regresiones de 2A.
+- **Hallazgos:** 1 Alto, 1 Medio y 8 Bajos.
+
+| ID | Sev. | Hallazgo | Corrección | Prueba |
+|---|---|---|---|---|
+| 2B-01 | **Alta** | El bloqueo progresivo se eludía con peticiones en paralelo (incrementos perdidos), y en la MFA bastaba con volver a iniciar sesión cada 4 intentos | Contadores separados de contraseña y MFA (columna `mfa_failed_attempts`), incremento atómico **antes** de verificar, un intento por ventana reclamado de forma condicional; acertar la contraseña no reinicia el contador de MFA (D-82) | `2B-01`: 30 contraseñas en paralelo → contador 30 y bloqueo; ciclos de contraseña + 4 códigos → bloqueo; 20 códigos en paralelo → bloqueo |
+| 2B-02 | **Media** | Tras `tenant rotate-password`, la API seguía con la credencial vieja (500) | `openTenant` reabre la conexión si cambió la credencial cifrada | `2B-02` |
+| 2B-03 | Baja | Carrera en "último administrador" | Comprobación y cambio en una transacción **SERIALIZABLE**; un conflicto responde 409 | `2B-03`: desactivación y quita de rol simultáneas → queda exactamente 1 administrador |
+| 2B-04 | Baja | El tiempo revelaba si existe la organización (≈4 ms) | Duración mínima de 300 ms para fallos de inicio de sesión y de activación (D-82) | [PENDIENTE: medición por QA] |
+| 2B-05 | Baja | Con `TRUST_PROXY=true` y acceso directo a la API, `X-Forwarded-For` se falsifica | En Compose la API no publica puertos: solo Caddy la alcanza. Paso 13 nuevo en la prueba de humo, que verifica que la IP falsa no queda registrada | [PENDIENTE: CI] |
+| 2B-06 | Baja | Un cuerpo de más de 100 KB respondía 500 | El filtro responde 413 `payload_too_large` | `2B-06` |
+| 2B-07 | Baja | `/auth/me` en `mfa_pending` mostraba el correo y los roles | Antes de completar la MFA solo se informan la etapa y la organización | `2B-01` (parte `/me`) |
+| 2B-08 | Baja | Cada intento fallido agregaba una entrada inborrable a la bitácora | Los fallos van solo al registro de accesos; a la bitácora van los bloqueos (`auth.account.locked`) | Prueba de bitácora ajustada |
+| 2B-09 | Baja (docs) | D-80 describía el riesgo de forma incompleta | D-80 reescrita; riesgo nuevo **R-33** (Modalidad A) | — |
+| 2B-10 | Baja (docs) | El registro daba el bloqueo por "Probado" sin concurrencia | Corregido en §3 | — |
+| Obs. | — | `GET /me` rotaba el token anti-CSRF | El token se deriva de la sesión (HMAC) y es estable (D-82) | Pruebas de CSRF existentes |
+
+**Cambio de esquema:** se agregó la columna `mfa_failed_attempts` a la migración `0002_identity`. Esa migración no se ha publicado (la rama no está fusionada), por lo que se editó en vez de crear otra.
+
+**Evidencia local (29-10-2026):**
+- Integración de identidad por HTTP: **3 ejecuciones seguidas con 20 de 20 aprobadas** (postgresql=20). Informes en `evidencia-2b/identidad-qa1-*.json`.
+- CI y QA: [PENDIENTE].

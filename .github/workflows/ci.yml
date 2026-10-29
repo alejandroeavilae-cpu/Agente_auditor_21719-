@@ -140,7 +140,7 @@ jobs:
           TEST_MSSQL_PASSWORD: ${{ env.MSSQL_TEST_PASSWORD }}
           TEST_MSSQL_TLS: trust-server-certificate
           SUITE_PREFIX: identidad en
-          MIN_TESTS_PER_ENGINE: "16"
+          MIN_TESTS_PER_ENGINE: "20"
         run: |
           pnpm exec vitest run test/identity.int.test.ts --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-identidad.json
           node ../../scripts/check-integration-report.mjs vitest-identidad.json

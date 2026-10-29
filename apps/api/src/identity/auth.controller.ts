@@ -102,17 +102,21 @@ export class AuthController {
     return sessionBody(issued);
   }
 
-  /** Datos del usuario actual y un token anti-CSRF nuevo (p. ej. al recargar la página). */
+  /**
+   * Estado de la sesión y su token anti-CSRF (p. ej. al recargar la página). Antes de
+   * completar la MFA solo se informa la etapa: quien únicamente conoce la contraseña no ve
+   * datos del usuario ni sus roles (QA 2B-07).
+   */
   @Get('me')
   @Authenticated({ stages: ['mfa_pending', 'mfa_enroll', 'full'] })
-  async me(@Req() req: IdentityRequest): Promise<object> {
+  me(@Req() req: IdentityRequest): object {
     const ctx = sessionOf(req);
+    const base = { organization: { slug: ctx.tenant.info.slug, name: ctx.tenant.info.name }, stage: ctx.session.stage, csrfToken: this.identity.service.csrfToken(ctx) };
+    if (ctx.session.stage !== 'full') return base;
     return {
-      organization: { slug: ctx.tenant.info.slug, name: ctx.tenant.info.name },
+      ...base,
       user: { id: ctx.user.id, email: ctx.user.email, displayName: ctx.user.display_name, mfaEnabled: ctx.user.mfa_secret_sealed !== null },
       roles: ctx.roles.map((r) => ({ id: r, label: ROLE_LABELS[r] })),
-      stage: ctx.session.stage,
-      csrfToken: await this.identity.service.refreshCsrf(ctx),
     };
   }
 }

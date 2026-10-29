@@ -84,7 +84,7 @@ const TENANT_TABLE_COLUMNS: Record<string, readonly string[]> = {
   organization: ['created_at', 'id', 'name', 'slug'],
   audit_log: ['action', 'actor', 'chain_id', 'data', 'hash', 'object', 'prev_hash', 'seq', 'ts'],
   app_user: [
-    'created_at', 'display_name', 'email', 'failed_attempts', 'id', 'locked_until', 'mfa_last_step', 'mfa_pending_secret_sealed',
+    'created_at', 'display_name', 'email', 'failed_attempts', 'id', 'locked_until', 'mfa_failed_attempts', 'mfa_last_step', 'mfa_pending_secret_sealed',
     'mfa_secret_sealed', 'password_changed_at', 'password_hash', 'status', 'updated_at',
   ],
   user_role: ['role', 'user_id'],
@@ -123,6 +123,8 @@ export class TenantManager {
   private serverDb: Kysely<unknown> | undefined;
   private controlDb: Kysely<ControlDatabase> | undefined;
   private readonly openHandles = new Map<string, TenantHandle>();
+  /** Credencial cifrada con la que se abrió cada conexión: si cambia (rotación), se reabre. */
+  private readonly openedWith = new Map<string, string>();
 
   constructor(
     protected readonly config: PlatformDbConfig,
@@ -509,9 +511,13 @@ export class TenantManager {
       throw new Error(`La organización "${slug}" no está activa (estado: ${row.status}).`);
     }
     const cached = this.openHandles.get(slug);
-    if (cached !== undefined) return cached;
+    // Si otro proceso rotó la contraseña (`tenant rotate-password`), la conexión guardada
+    // quedaría con la credencial vieja y fallaría: se cierra y se abre de nuevo (QA 2B-02).
+    if (cached !== undefined && this.openedWith.get(slug) === row.db_password_sealed) return cached;
+    if (cached !== undefined) await this.closeTenant(slug);
     const handle = await this.openRow(row);
     this.openHandles.set(slug, handle);
+    this.openedWith.set(slug, row.db_password_sealed);
     return handle;
   }
 
@@ -559,6 +565,7 @@ export class TenantManager {
   /** Cierra la conexión abierta de una organización en este proceso. */
   async closeTenant(slug: string): Promise<void> {
     const handle = this.openHandles.get(slug);
+    this.openedWith.delete(slug);
     if (handle !== undefined) {
       this.openHandles.delete(slug);
       await handle.db.destroy();

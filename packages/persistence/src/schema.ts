@@ -77,7 +77,10 @@ export interface AppUserTable {
   mfa_pending_secret_sealed: string | null;
   /** Último paso TOTP aceptado (evita reusar un código). */
   mfa_last_step: number | string | null;
+  /** Fallos consecutivos de contraseña. */
   failed_attempts: number;
+  /** Fallos consecutivos de MFA: contador aparte, no se pone en 0 al acertar la contraseña (QA 2B-01). */
+  mfa_failed_attempts: number;
   locked_until: string | null;
   password_changed_at: string | null;
   created_at: string;
@@ -224,6 +227,7 @@ export function tenantMigrations(engine: DbEngine): Record<string, Migration> {
           .addColumn('mfa_pending_secret_sealed', str(engine, 400))
           .addColumn('mfa_last_step', 'bigint')
           .addColumn('failed_attempts', 'integer', (c) => c.notNull().defaultTo(0))
+          .addColumn('mfa_failed_attempts', 'integer', (c) => c.notNull().defaultTo(0))
           .addColumn('locked_until', ascii(24))
           .addColumn('password_changed_at', ascii(24))
           .addColumn('created_at', ascii(24), (c) => c.notNull())

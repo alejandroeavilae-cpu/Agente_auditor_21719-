@@ -22,7 +22,8 @@ import {
   type PasswordIssue,
   type Role,
 } from '@auditor-21719/identity';
-import { assertTenantSlug, type AppUserTable, type SessionStage, type TenantHandle, type UserSessionTable } from '@auditor-21719/persistence';
+import { assertTenantSlug, type AppUserTable, type SessionStage, type TenantDatabase, type TenantHandle, type UserSessionTable } from '@auditor-21719/persistence';
+import type { Transaction } from 'kysely';
 import { ApiError, INVALID_CREDENTIALS, UNAUTHENTICATED } from './errors.js';
 
 /**
@@ -30,8 +31,16 @@ import { ApiError, INVALID_CREDENTIALS, UNAUTHENTICATED } from './errors.js';
  * desde la CLI y probarla directamente.
  *
  * Valores de D-79: inactividad 30 min, máximo 12 h, reautenticación MFA válida 5 min,
- * activación válida 24 h. Bloqueo progresivo [DECISIÓN de implementación]: desde el 5.º
- * fallo consecutivo, espera de 30 s que se duplica en cada fallo, hasta 15 min.
+ * activación válida 24 h.
+ *
+ * Bloqueo progresivo [DECISIÓN de implementación, corregido por QA 2B-01]:
+ * - contadores SEPARADOS para contraseña y MFA, incrementados de forma atómica en la base
+ *   ANTES de verificar (un intento cuenta aunque se envíe en paralelo con otros);
+ * - desde el 5.º fallo consecutivo, la cuenta queda bloqueada 30 s, que se duplican con
+ *   cada fallo, hasta 15 min; durante el bloqueo no se verifica nada;
+ * - al vencer el bloqueo se admite UN solo intento (quien lo reclama con una actualización
+ *   condicional); si falla, se bloquea de nuevo con más espera;
+ * - acertar la contraseña no reinicia el contador de MFA.
  */
 export const IDLE_MS = 30 * 60_000;
 export const ABSOLUTE_MS = 12 * 60 * 60_000;
@@ -41,6 +50,26 @@ export const ACTIVATION_MS = 24 * 60 * 60_000;
 export const LOCK_THRESHOLD = 5;
 const LOCK_BASE_MS = 30_000;
 const LOCK_MAX_MS = 15 * 60_000;
+/**
+ * Duración mínima de una respuesta de autenticación fallida [DECISIÓN, QA 2B-04]: iguala
+ * el tiempo entre "la organización no existe", "el usuario no existe" y "contraseña
+ * incorrecta", que de otro modo difieren por el trabajo en la base.
+ */
+export const MIN_FAILURE_MS = 300;
+
+type Counter = 'failed_attempts' | 'mfa_failed_attempts';
+
+/** Formato del token anti-CSRF (HMAC-SHA256 en hexadecimal). */
+const CSRF_FORMAT = /^[0-9a-f]{64}$/;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Errores de serialización o interbloqueo: otra transacción concurrente ganó. */
+function isSerializationConflict(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const e = error as { code?: unknown; number?: unknown };
+  return e.code === '40001' || e.code === '40P01' || e.number === 1205 || e.number === 3960;
+}
 
 /** Acceso a las organizaciones (la API usa un `TenantManager` con cuenta de solo lectura). */
 export interface TenantDirectory {
@@ -134,7 +163,19 @@ export class IdentityService {
   async record(
     tenant: TenantHandle,
     event: string,
-    params: { actor: Actor | null; subjectUserId?: string | null; data?: Record<string, JsonValue>; meta?: RequestMeta | null; accessLog?: boolean },
+    params: {
+      actor: Actor | null;
+      subjectUserId?: string | null;
+      data?: Record<string, JsonValue>;
+      meta?: RequestMeta | null;
+      accessLog?: boolean;
+      /**
+       * `false` = solo registro de accesos. Los intentos fallidos van solo ahí (con
+       * retención), para que un atacante no haga crecer sin límite la bitácora inmutable
+       * (QA 2B-08); a la bitácora van los bloqueos y los éxitos.
+       */
+      audit?: boolean;
+    },
   ): Promise<void> {
     const meta = params.meta ?? null;
     const actor = params.actor === null ? 'anonimo' : 'userId' in params.actor ? `user:${params.actor.userId}` : params.actor.label;
@@ -142,7 +183,9 @@ export class IdentityService {
     if (meta?.ip != null) data.ipHmac = tenant.crypto.hmac('ip', meta.ip);
     const ua = userAgentFamily(meta?.userAgent ?? null);
     if (ua !== null) data.ua = ua;
-    await tenant.audit.append({ actor, action: event, object: params.subjectUserId != null ? `user/${params.subjectUserId}` : 'auth', data });
+    if (params.audit ?? true) {
+      await tenant.audit.append({ actor, action: event, object: params.subjectUserId != null ? `user/${params.subjectUserId}` : 'auth', data });
+    }
     if (params.accessLog ?? meta !== null) {
       const now = this.now();
       await tenant.db
@@ -156,9 +199,18 @@ export class IdentityService {
 
   // ---------- Sesiones ----------
 
+  /**
+   * Token anti-CSRF derivado de la sesión con una clave de la organización: es estable
+   * durante la sesión (no hay que rotarlo en cada lectura y no invalida otras pestañas) y
+   * no se guarda en claro.
+   */
+  private csrfFor(tenant: TenantHandle, sessionIdHash: string): string {
+    return tenant.crypto.hmac('csrf', sessionIdHash);
+  }
+
   private async issueSession(tenant: TenantHandle, userId: string, stage: SessionStage, mfaVerifiedAt: string | null): Promise<IssuedSession> {
     const token = newToken();
-    const csrfToken = newToken();
+    const csrfToken = this.csrfFor(tenant, hashToken(token));
     const now = this.now();
     const expires = new Date(now.getTime() + (stage === 'full' ? ABSOLUTE_MS : PRE_MFA_MS));
     await tenant.db
@@ -225,7 +277,7 @@ export class IdentityService {
 
   /** Comprueba el token anti-CSRF de una petición con efectos. */
   verifyCsrf(ctx: SessionContext, header: string | undefined): void {
-    if (header === undefined || !TOKEN_FORMAT.test(header) || hashToken(header) !== ctx.session.csrf_hash) {
+    if (header === undefined || !CSRF_FORMAT.test(header) || hashToken(header) !== ctx.session.csrf_hash) {
       throw new ApiError(403, 'csrf', 'Falta o no es válido el token anti-CSRF.');
     }
   }
@@ -238,11 +290,9 @@ export class IdentityService {
     }
   }
 
-  /** Emite un nuevo token anti-CSRF para la sesión (p. ej. al recargar la página). */
-  async refreshCsrf(ctx: SessionContext): Promise<string> {
-    const csrfToken = newToken();
-    await ctx.tenant.db.updateTable('user_session').set({ csrf_hash: hashToken(csrfToken) }).where('id_hash', '=', ctx.session.id_hash).execute();
-    return csrfToken;
+  /** Token anti-CSRF de la sesión actual (p. ej. al recargar la página). No lo rota. */
+  csrfToken(ctx: SessionContext): string {
+    return this.csrfFor(ctx.tenant, ctx.session.id_hash);
   }
 
   private async rolesOf(tenant: TenantHandle, userId: string): Promise<Role[]> {
@@ -252,15 +302,49 @@ export class IdentityService {
 
   // ---------- Inicio de sesión ----------
 
-  private async registerFailure(tenant: TenantHandle, user: AppUserTable): Promise<void> {
-    const attempts = user.failed_attempts + 1;
-    const lockedUntil =
-      attempts >= LOCK_THRESHOLD ? iso(new Date(this.now().getTime() + Math.min(LOCK_MAX_MS, LOCK_BASE_MS * 2 ** (attempts - LOCK_THRESHOLD)))) : user.locked_until;
-    await tenant.db.updateTable('app_user').set({ failed_attempts: attempts, locked_until: lockedUntil }).where('id', '=', user.id).execute();
+  /**
+   * Reserva un intento ANTES de verificar (QA 2B-01). Devuelve si se permite verificar y
+   * si este intento acaba de activar un bloqueo.
+   */
+  private async beginAttempt(tenant: TenantHandle, userId: string, counter: Counter): Promise<{ allowed: boolean; lockedNow: boolean }> {
+    const now = this.now();
+    const row = await tenant.db.transaction().execute(async (trx) => {
+      // Incremento atómico en la base: peticiones simultáneas no pierden cuentas.
+      if (counter === 'failed_attempts') {
+        await trx.updateTable('app_user').set((eb) => ({ failed_attempts: eb('failed_attempts', '+', 1) })).where('id', '=', userId).execute();
+      } else {
+        await trx.updateTable('app_user').set((eb) => ({ mfa_failed_attempts: eb('mfa_failed_attempts', '+', 1) })).where('id', '=', userId).execute();
+      }
+      return trx.selectFrom('app_user').select(['failed_attempts', 'mfa_failed_attempts', 'locked_until']).where('id', '=', userId).executeTakeFirstOrThrow();
+    });
+    if (row.locked_until !== null && new Date(row.locked_until).getTime() > now.getTime()) return { allowed: false, lockedNow: false };
+    const n = row[counter];
+    if (n < LOCK_THRESHOLD) return { allowed: true, lockedNow: false };
+    // Desde el umbral, se bloquea y solo el intento que logra fijar el bloqueo se verifica.
+    const until = iso(new Date(now.getTime() + Math.min(LOCK_MAX_MS, LOCK_BASE_MS * 2 ** (n - LOCK_THRESHOLD))));
+    const claimed = await tenant.db
+      .updateTable('app_user')
+      .set({ locked_until: until })
+      .where('id', '=', userId)
+      .where((eb) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', iso(now))]))
+      .executeTakeFirst();
+    const won = Number(claimed.numUpdatedRows) === 1;
+    return { allowed: won, lockedNow: won };
   }
 
-  private isLocked(user: AppUserTable): boolean {
-    return user.locked_until !== null && new Date(user.locked_until).getTime() > this.now().getTime();
+  /** Intento exitoso: reinicia los contadores indicados y levanta el bloqueo. */
+  private async attemptSucceeded(tenant: TenantHandle, userId: string, counters: readonly Counter[]): Promise<void> {
+    await tenant.db
+      .updateTable('app_user')
+      .set({ locked_until: null, ...(counters.includes('failed_attempts') ? { failed_attempts: 0 } : {}), ...(counters.includes('mfa_failed_attempts') ? { mfa_failed_attempts: 0 } : {}) })
+      .where('id', '=', userId)
+      .execute();
+  }
+
+  /** Espera hasta completar la duración mínima de una respuesta fallida (QA 2B-04). */
+  private async padFailure(startedAt: number): Promise<void> {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < MIN_FAILURE_MS) await sleep(MIN_FAILURE_MS - elapsed);
   }
 
   /**
@@ -268,34 +352,42 @@ export class IdentityService {
    * mismo y tarda lo mismo (se calcula un hash aunque el usuario no exista).
    */
   async login(input: { organization?: string | undefined; email: string; password: string }, meta: RequestMeta): Promise<IssuedSession> {
+    const startedAt = Date.now();
+    const fail = async (): Promise<never> => {
+      await this.padFailure(startedAt);
+      throw INVALID_CREDENTIALS();
+    };
     const tenant = await this.openTenantOrNull(this.resolveOrganization(input.organization));
     if (tenant === null) {
       await verifyAgainstDummy(input.password);
-      throw INVALID_CREDENTIALS();
+      return fail();
     }
     const email = normalizeEmail(input.email);
     const user = await tenant.db.selectFrom('app_user').selectAll().where('email', '=', email).executeTakeFirst();
     if (user?.status !== 'active' || user.password_hash === null) {
       await verifyAgainstDummy(input.password);
-      await this.record(tenant, 'auth.login.failed', { actor: null, data: { reason: 'unknown_or_inactive', emailHmac: tenant.crypto.hmac('email', email) }, meta });
-      throw INVALID_CREDENTIALS();
+      await this.record(tenant, 'auth.login.failed', { actor: null, data: { reason: 'unknown_or_inactive', emailHmac: tenant.crypto.hmac('email', email) }, meta, audit: false });
+      return fail();
     }
-    if (this.isLocked(user)) {
+    const attempt = await this.beginAttempt(tenant, user.id, 'failed_attempts');
+    if (attempt.lockedNow) {
+      await this.record(tenant, 'auth.account.locked', { actor: null, subjectUserId: user.id, data: { counter: 'password' }, meta });
+    }
+    if (!attempt.allowed) {
       await verifyAgainstDummy(input.password);
-      await this.record(tenant, 'auth.login.failed', { actor: null, subjectUserId: user.id, data: { reason: 'locked' }, meta });
-      throw INVALID_CREDENTIALS();
+      await this.record(tenant, 'auth.login.blocked', { actor: null, subjectUserId: user.id, meta, audit: false });
+      return fail();
     }
     const result = await verifyPassword(input.password, user.password_hash);
     if (!result.ok) {
-      await this.registerFailure(tenant, user);
-      await this.record(tenant, 'auth.login.failed', { actor: null, subjectUserId: user.id, data: { reason: 'password' }, meta });
-      throw INVALID_CREDENTIALS();
+      await this.record(tenant, 'auth.login.failed', { actor: null, subjectUserId: user.id, data: { reason: 'password' }, meta, audit: false });
+      return fail();
     }
-    await tenant.db
-      .updateTable('app_user')
-      .set({ failed_attempts: 0, locked_until: null, ...(result.needsRehash ? { password_hash: await hashPassword(input.password) } : {}) })
-      .where('id', '=', user.id)
-      .execute();
+    // Acertar la contraseña NO reinicia el contador de MFA (QA 2B-01).
+    await this.attemptSucceeded(tenant, user.id, ['failed_attempts']);
+    if (result.needsRehash) {
+      await tenant.db.updateTable('app_user').set({ password_hash: await hashPassword(input.password) }).where('id', '=', user.id).execute();
+    }
     const roles = await this.rolesOf(tenant, user.id);
     const stage: SessionStage = user.mfa_secret_sealed !== null ? 'mfa_pending' : requiresMfa(roles) ? 'mfa_enroll' : 'full';
     const issued = await this.issueSession(tenant, user.id, stage, null);
@@ -306,7 +398,13 @@ export class IdentityService {
   /** Segundo paso: código TOTP o código de recuperación. */
   async verifyMfa(ctx: SessionContext, input: { code?: string | undefined; recoveryCode?: string | undefined }, meta: RequestMeta): Promise<IssuedSession> {
     const { tenant, user } = ctx;
-    if (this.isLocked(user)) throw new ApiError(401, 'invalid_code', 'Código incorrecto.');
+    const invalid = (): ApiError => new ApiError(401, 'invalid_code', 'Código incorrecto.');
+    const attempt = await this.beginAttempt(tenant, user.id, 'mfa_failed_attempts');
+    if (attempt.lockedNow) await this.record(tenant, 'auth.account.locked', { actor: { userId: user.id }, subjectUserId: user.id, data: { counter: 'mfa' }, meta });
+    if (!attempt.allowed) {
+      await this.record(tenant, 'auth.mfa.blocked', { actor: { userId: user.id }, subjectUserId: user.id, meta, audit: false });
+      throw invalid();
+    }
     let ok = false;
     let recoveryUsed = false;
     if (input.code !== undefined) {
@@ -324,11 +422,10 @@ export class IdentityService {
       recoveryUsed = ok;
     }
     if (!ok) {
-      await this.registerFailure(tenant, user);
-      await this.record(tenant, 'auth.mfa.failed', { actor: { userId: user.id }, subjectUserId: user.id, meta });
-      throw new ApiError(401, 'invalid_code', 'Código incorrecto.');
+      await this.record(tenant, 'auth.mfa.failed', { actor: { userId: user.id }, subjectUserId: user.id, meta, audit: false });
+      throw invalid();
     }
-    await tenant.db.updateTable('app_user').set({ failed_attempts: 0, locked_until: null }).where('id', '=', user.id).execute();
+    await this.attemptSucceeded(tenant, user.id, ['failed_attempts', 'mfa_failed_attempts']);
     const issued = await this.rotate(ctx, 'full', iso(this.now()));
     await this.record(tenant, recoveryUsed ? 'auth.mfa.recovery_used' : 'auth.login.succeeded', { actor: { userId: user.id }, subjectUserId: user.id, data: { stage: 'full' }, meta });
     return issued;
@@ -393,11 +490,13 @@ export class IdentityService {
 
   /** Reautenticación para acciones de alto riesgo. */
   async reauthenticate(ctx: SessionContext, code: string, meta: RequestMeta): Promise<void> {
-    if (!(await this.checkTotp(ctx, code))) {
-      await this.registerFailure(ctx.tenant, ctx.user);
-      await this.record(ctx.tenant, 'auth.reauth.failed', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta });
+    const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'mfa_failed_attempts');
+    if (attempt.lockedNow) await this.record(ctx.tenant, 'auth.account.locked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, data: { counter: 'mfa' }, meta });
+    if (!attempt.allowed || !(await this.checkTotp(ctx, code))) {
+      await this.record(ctx.tenant, 'auth.reauth.failed', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta, audit: false });
       throw new ApiError(401, 'invalid_code', 'Código incorrecto.');
     }
+    await this.attemptSucceeded(ctx.tenant, ctx.user.id, ['mfa_failed_attempts']);
     await ctx.tenant.db.updateTable('user_session').set({ mfa_verified_at: iso(this.now()) }).where('id_hash', '=', ctx.session.id_hash).execute();
     await this.record(ctx.tenant, 'auth.reauth.succeeded', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta });
   }
@@ -410,11 +509,13 @@ export class IdentityService {
   /** Cambio de contraseña: revoca todas las sesiones y emite una nueva. */
   async changePassword(ctx: SessionContext, current: string, next: string, meta: RequestMeta): Promise<IssuedSession> {
     const stored = ctx.user.password_hash;
-    if (stored === null || !(await verifyPassword(current, stored)).ok) {
-      await this.registerFailure(ctx.tenant, ctx.user);
-      await this.record(ctx.tenant, 'auth.password.change_failed', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta });
+    const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'failed_attempts');
+    if (attempt.lockedNow) await this.record(ctx.tenant, 'auth.account.locked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, data: { counter: 'password' }, meta });
+    if (!attempt.allowed || stored === null || !(await verifyPassword(current, stored)).ok) {
+      await this.record(ctx.tenant, 'auth.password.change_failed', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta, audit: false });
       throw new ApiError(401, 'invalid_credentials', 'La contraseña actual no es correcta.');
     }
+    await this.attemptSucceeded(ctx.tenant, ctx.user.id, ['failed_attempts']);
     const issues = checkPasswordPolicy(next, { email: ctx.user.email });
     if (issues.length > 0) throw weakPassword(issues);
     const now = iso(this.now());
@@ -431,13 +532,17 @@ export class IdentityService {
 
   /** Activación con el enlace de un solo uso: fija la contraseña. */
   async activate(input: { organization?: string | undefined; token: string; password: string }, meta: RequestMeta): Promise<IssuedSession> {
-    const invalid = (): ApiError => new ApiError(400, 'invalid_token', 'El enlace de activación no es válido o expiró.');
+    const startedAt = Date.now();
+    const invalid = async (): Promise<never> => {
+      await this.padFailure(startedAt);
+      throw new ApiError(400, 'invalid_token', 'El enlace de activación no es válido o expiró.');
+    };
     const tenant = await this.openTenantOrNull(this.resolveOrganization(input.organization));
-    if (tenant === null || !TOKEN_FORMAT.test(input.token)) throw invalid();
+    if (tenant === null || !TOKEN_FORMAT.test(input.token)) return invalid();
     const row = await tenant.db.selectFrom('activation_token').selectAll().where('token_hash', '=', hashToken(input.token)).executeTakeFirst();
-    if (row === undefined || row.used_at !== null || new Date(row.expires_at).getTime() <= this.now().getTime()) throw invalid();
+    if (row === undefined || row.used_at !== null || new Date(row.expires_at).getTime() <= this.now().getTime()) return invalid();
     const user = await tenant.db.selectFrom('app_user').selectAll().where('id', '=', row.user_id).executeTakeFirst();
-    if (user?.status !== 'invited') throw invalid();
+    if (user?.status !== 'invited') return invalid();
     const issues = checkPasswordPolicy(input.password, { email: user.email });
     if (issues.length > 0) throw weakPassword(issues);
     const now = iso(this.now());
@@ -449,7 +554,7 @@ export class IdentityService {
       .where('token_hash', '=', row.token_hash)
       .where('used_at', 'is', null)
       .executeTakeFirst();
-    if (Number(consumed.numUpdatedRows) !== 1) throw invalid();
+    if (Number(consumed.numUpdatedRows) !== 1) return invalid();
     await tenant.db.updateTable('app_user').set({ status: 'active', password_hash: hash, password_changed_at: now, updated_at: now }).where('id', '=', user.id).execute();
     const roles = await this.rolesOf(tenant, user.id);
     const stage: SessionStage = requiresMfa(roles) ? 'mfa_enroll' : 'full';
@@ -502,6 +607,7 @@ export class IdentityService {
           mfa_pending_secret_sealed: null,
           mfa_last_step: null,
           failed_attempts: 0,
+          mfa_failed_attempts: 0,
           locked_until: null,
           password_changed_at: null,
           created_at: iso(now),
@@ -522,21 +628,35 @@ export class IdentityService {
   }
 
   /**
-   * Siempre debe quedar al menos un administrador activo con MFA (D-79). Se verifica
-   * excluyendo al usuario afectado por el cambio.
+   * Siempre debe quedar al menos un administrador activo con MFA (D-79). La comprobación y
+   * el cambio van en una transacción SERIALIZABLE: dos cambios simultáneos que juntos
+   * dejarían la organización sin administrador no pueden confirmarse ambos (QA 2B-03).
    */
-  private async assertAnotherAdmin(tenant: TenantHandle, excludingUserId: string): Promise<void> {
-    const admins = await tenant.db
-      .selectFrom('app_user')
-      .innerJoin('user_role', 'user_role.user_id', 'app_user.id')
-      .select('app_user.id')
-      .where('user_role.role', '=', 'org_admin')
-      .where('app_user.status', '=', 'active')
-      .where('app_user.mfa_secret_sealed', 'is not', null)
-      .where('app_user.id', '!=', excludingUserId)
-      .execute();
-    if (admins.length === 0) {
-      throw new ApiError(409, 'last_admin', 'La organización debe conservar al menos un administrador activo con verificación en dos pasos.');
+  private async withAdminGuard(tenant: TenantHandle, userId: string, change: (trx: Transaction<TenantDatabase>) => Promise<void>, removesAdmin: (trx: Transaction<TenantDatabase>) => Promise<boolean>): Promise<void> {
+    try {
+      await tenant.db
+        .transaction()
+        .setIsolationLevel('serializable')
+        .execute(async (trx) => {
+          if (await removesAdmin(trx)) {
+            const admins = await trx
+              .selectFrom('app_user')
+              .innerJoin('user_role', 'user_role.user_id', 'app_user.id')
+              .select('app_user.id')
+              .where('user_role.role', '=', 'org_admin')
+              .where('app_user.status', '=', 'active')
+              .where('app_user.mfa_secret_sealed', 'is not', null)
+              .where('app_user.id', '!=', userId)
+              .execute();
+            if (admins.length === 0) {
+              throw new ApiError(409, 'last_admin', 'La organización debe conservar al menos un administrador activo con verificación en dos pasos.');
+            }
+          }
+          await change(trx);
+        });
+    } catch (error) {
+      if (isSerializationConflict(error)) throw new ApiError(409, 'conflict', 'Otro cambio simultáneo afectó a los administradores. Intente nuevamente.');
+      throw error;
     }
   }
 
@@ -544,12 +664,20 @@ export class IdentityService {
     const problems = validateRoleSet(roles);
     if (problems.length > 0) throw new ApiError(400, 'invalid_roles', problems.join(' '));
     const target = await this.findUser(ctx.tenant, userId);
-    const before = await this.rolesOf(ctx.tenant, userId);
-    if (before.includes('org_admin') && !roles.includes('org_admin')) await this.assertAnotherAdmin(ctx.tenant, userId);
-    await ctx.tenant.db.transaction().execute(async (trx) => {
-      await trx.deleteFrom('user_role').where('user_id', '=', userId).execute();
-      await trx.insertInto('user_role').values(roles.map((role) => ({ user_id: userId, role }))).execute();
-    });
+    let before: Role[] = [];
+    await this.withAdminGuard(
+      ctx.tenant,
+      userId,
+      async (trx) => {
+        await trx.deleteFrom('user_role').where('user_id', '=', userId).execute();
+        await trx.insertInto('user_role').values(roles.map((role) => ({ user_id: userId, role }))).execute();
+      },
+      async (trx) => {
+        const rows = await trx.selectFrom('user_role').select('role').where('user_id', '=', userId).execute();
+        before = rows.map((r) => r.role).filter(isRole);
+        return before.includes('org_admin') && !roles.includes('org_admin');
+      },
+    );
     // Los permisos nuevos rigen desde ya: se cierran las sesiones del usuario afectado.
     await this.revokeAllSessions(ctx.tenant, target.id);
     await this.record(ctx.tenant, 'user.roles.changed', { actor: { userId: ctx.user.id }, subjectUserId: userId, data: { before: [...before].sort(), after: [...roles].sort() }, meta });
@@ -558,8 +686,14 @@ export class IdentityService {
   async deactivate(ctx: SessionContext, userId: string, meta: RequestMeta): Promise<void> {
     const target = await this.findUser(ctx.tenant, userId);
     if (target.status === 'disabled') return;
-    if ((await this.rolesOf(ctx.tenant, userId)).includes('org_admin')) await this.assertAnotherAdmin(ctx.tenant, userId);
-    await ctx.tenant.db.updateTable('app_user').set({ status: 'disabled', updated_at: iso(this.now()) }).where('id', '=', userId).execute();
+    await this.withAdminGuard(
+      ctx.tenant,
+      userId,
+      async (trx) => {
+        await trx.updateTable('app_user').set({ status: 'disabled', updated_at: iso(this.now()) }).where('id', '=', userId).execute();
+      },
+      async (trx) => (await trx.selectFrom('user_role').select('role').where('user_id', '=', userId).where('role', '=', 'org_admin').execute()).length > 0,
+    );
     await this.revokeAllSessions(ctx.tenant, userId);
     await ctx.tenant.db.deleteFrom('activation_token').where('user_id', '=', userId).execute();
     await this.record(ctx.tenant, 'user.deactivated', { actor: { userId: ctx.user.id }, subjectUserId: userId, meta });

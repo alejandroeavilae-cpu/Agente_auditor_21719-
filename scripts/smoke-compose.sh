@@ -105,6 +105,15 @@ USERS="$(curl -s -b "$JAR" "$BASE/api/v1/users")"
 echo "$USERS" | grep -q '"error":"mfa_enrollment_required"' || fail "sin MFA no debe poder listar usuarios ($USERS)"
 rm -f "$JAR"
 
+echo "13. Una X-Forwarded-For enviada por el cliente no falsifica la IP registrada (QA 2B-05)"
+curl -s -o /dev/null -H 'X-Forwarded-For: 203.0.113.77' -H 'content-type: application/json' \
+  -d '{"organization":"muni-ficticia","email":"nadie@muni-ficticia.example","password":"incorrecta-sintetica"}' "$BASE/api/v1/auth/login"
+TDB="$($COMPOSE exec -T postgres psql -U auditor -d auditor_control -tAc "select db_name from tenants where slug = 'muni-ficticia'" | tr -d '\r ')"
+LASTIP="$($COMPOSE exec -T postgres psql -U auditor -d "$TDB" -tAc "select coalesce(ip, '') from access_log order by ts desc limit 1" | tr -d '\r ')"
+echo "última IP registrada: $LASTIP"
+[ -n "$LASTIP" ] || fail "el registro de accesos no guardó la IP"
+[ "$LASTIP" != "203.0.113.77" ] || fail "la IP registrada es la que envió el cliente en X-Forwarded-For"
+
 # El aislamiento entre organizaciones (credenciales de A contra la base de B y la de control)
 # se prueba con las contraseñas reales en packages/persistence/test (job de integración de CI).
 

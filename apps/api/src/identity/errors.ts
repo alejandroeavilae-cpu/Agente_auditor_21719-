@@ -18,6 +18,16 @@ export class ApiError extends Error {
   }
 }
 
+function clientErrorOf(exception: unknown): { status: number; code: string; message: string } | null {
+  if (typeof exception !== 'object' || exception === null) return null;
+  const e = exception as { type?: unknown; status?: unknown };
+  if (e.type === 'entity.too.large') return { status: 413, code: 'payload_too_large', message: 'La solicitud es demasiado grande.' };
+  if (typeof e.type === 'string' && typeof e.status === 'number' && e.status >= 400 && e.status < 500) {
+    return { status: 400, code: 'invalid_request', message: 'La solicitud no tiene el formato esperado.' };
+  }
+  return null;
+}
+
 /** Mensaje único para cualquier fallo de inicio de sesión: no revela qué dato falló. */
 export const INVALID_CREDENTIALS = (): ApiError => new ApiError(401, 'invalid_credentials', 'Organización, correo o contraseña incorrectos.');
 export const UNAUTHENTICATED = (): ApiError => new ApiError(401, 'unauthenticated', 'Debe iniciar sesión.');
@@ -40,6 +50,13 @@ export class ErrorFilter implements ExceptionFilter {
     }
     if (exception instanceof ZodError) {
       res.status(400).json({ error: 'invalid_request', message: 'La solicitud no tiene el formato esperado.', fields: exception.issues.map((i) => i.path.join('.')) });
+      return;
+    }
+    // Errores del lector de cuerpos de Express (cuerpo demasiado grande, JSON inválido,
+    // codificación no soportada): son errores del cliente, no internos (QA 2B-06).
+    const clientError = clientErrorOf(exception);
+    if (clientError !== null) {
+      res.status(clientError.status).json({ error: clientError.code, message: clientError.message });
       return;
     }
     if (exception instanceof HttpException) {
