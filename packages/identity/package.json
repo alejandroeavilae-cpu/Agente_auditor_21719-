@@ -1,0 +1,22 @@
+{
+  "name": "@auditor-21719/identity",
+  "version": "0.1.0",
+  "description": "Identidad: contraseñas argon2id, TOTP (RFC 6238), tokens y matriz de roles y permisos (entrega 2B)",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@zxcvbn-ts/language-common": "4.1.3"
+  }
+}

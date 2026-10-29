@@ -16,7 +16,7 @@ random() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 # modifican (hallazgo QA B-09).
 created() { chmod 644 "$1"; echo "Creado: $(basename "$1")${2:-}"; }
 
-for name in postgres_password provisioner_password; do
+for name in postgres_password provisioner_password api_db_password; do
   if [ ! -f "$DIR/$name" ]; then
     random > "$DIR/$name"
     created "$DIR/$name"

@@ -59,10 +59,88 @@ export interface AuditLogTable {
   hash: string;
 }
 
+export type UserStatus = 'invited' | 'active' | 'disabled';
+export type SessionStage = 'mfa_pending' | 'mfa_enroll' | 'full';
+
+/** Usuario de la organización (entrega 2B). Datos personales de la plataforma (O-01). */
+export interface AppUserTable {
+  id: string;
+  /** Correo normalizado en minúsculas; único dentro de la organización. */
+  email: string;
+  display_name: string;
+  status: UserStatus;
+  /** Hash argon2id (formato PHC); nulo hasta activar la cuenta. */
+  password_hash: string | null;
+  /** Secreto TOTP cifrado con la DEK de la organización; nulo si no tiene MFA. */
+  mfa_secret_sealed: string | null;
+  /** Secreto TOTP en proceso de registro (aún no confirmado). */
+  mfa_pending_secret_sealed: string | null;
+  /** Último paso TOTP aceptado (evita reusar un código). */
+  mfa_last_step: number | string | null;
+  failed_attempts: number;
+  locked_until: string | null;
+  password_changed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserRoleTable {
+  user_id: string;
+  role: string;
+}
+
+export interface RecoveryCodeTable {
+  /** SHA-256 del código normalizado. */
+  code_hash: string;
+  user_id: string;
+  used_at: string | null;
+}
+
+export interface UserSessionTable {
+  /** SHA-256 del token de sesión: el token en sí nunca se guarda. */
+  id_hash: string;
+  user_id: string;
+  stage: SessionStage;
+  csrf_hash: string;
+  created_at: string;
+  last_seen_at: string;
+  /** Vencimiento absoluto (12 h desde la creación, D-79). */
+  expires_at: string;
+  /** Última verificación MFA (para acciones de alto riesgo, ventana de 5 min). */
+  mfa_verified_at: string | null;
+}
+
+export interface ActivationTokenTable {
+  token_hash: string;
+  user_id: string;
+  expires_at: string;
+  used_at: string | null;
+  created_at: string;
+}
+
+/** Registro de accesos con IP (D-78): retención configurable, se purga. */
+export interface AccessLogTable {
+  id: string;
+  ts: string;
+  user_id: string | null;
+  event: string;
+  ip: string | null;
+  ua_family: string | null;
+}
+
 export interface TenantDatabase {
   organization: OrganizationTable;
   audit_log: AuditLogTable;
+  app_user: AppUserTable;
+  user_role: UserRoleTable;
+  recovery_code: RecoveryCodeTable;
+  user_session: UserSessionTable;
+  activation_token: ActivationTokenTable;
+  access_log: AccessLogTable;
 }
+
+/** Tablas de identidad a las que el usuario de aplicación accede con lectura y escritura. */
+export const IDENTITY_TABLES = ['app_user', 'user_role', 'recovery_code', 'user_session', 'activation_token', 'access_log'] as const;
 
 // ---------- Tipos de columna portables ----------
 
@@ -131,6 +209,69 @@ export function tenantMigrations(engine: DbEngine): Record<string, Migration> {
           .addColumn('prev_hash', ascii(64), (c) => c.notNull())
           .addColumn('hash', ascii(64), (c) => c.notNull())
           .execute();
+      },
+    },
+    '0002_identity': {
+      async up(db: Kysely<unknown>) {
+        await db.schema
+          .createTable('app_user')
+          .addColumn('id', ascii(36), (c) => c.primaryKey())
+          .addColumn('email', str(engine, 254), (c) => c.notNull().unique())
+          .addColumn('display_name', str(engine, 200), (c) => c.notNull())
+          .addColumn('status', str(engine, 20), (c) => c.notNull())
+          .addColumn('password_hash', str(engine, 200))
+          .addColumn('mfa_secret_sealed', str(engine, 400))
+          .addColumn('mfa_pending_secret_sealed', str(engine, 400))
+          .addColumn('mfa_last_step', 'bigint')
+          .addColumn('failed_attempts', 'integer', (c) => c.notNull().defaultTo(0))
+          .addColumn('locked_until', ascii(24))
+          .addColumn('password_changed_at', ascii(24))
+          .addColumn('created_at', ascii(24), (c) => c.notNull())
+          .addColumn('updated_at', ascii(24), (c) => c.notNull())
+          .execute();
+        await db.schema
+          .createTable('user_role')
+          .addColumn('user_id', ascii(36), (c) => c.notNull())
+          .addColumn('role', str(engine, 40), (c) => c.notNull())
+          .addPrimaryKeyConstraint('user_role_pk', ['user_id', 'role'])
+          .execute();
+        await db.schema
+          .createTable('recovery_code')
+          .addColumn('code_hash', ascii(64), (c) => c.primaryKey())
+          .addColumn('user_id', ascii(36), (c) => c.notNull())
+          .addColumn('used_at', ascii(24))
+          .execute();
+        await db.schema.createIndex('recovery_code_user').on('recovery_code').column('user_id').execute();
+        await db.schema
+          .createTable('user_session')
+          .addColumn('id_hash', ascii(64), (c) => c.primaryKey())
+          .addColumn('user_id', ascii(36), (c) => c.notNull())
+          .addColumn('stage', str(engine, 20), (c) => c.notNull())
+          .addColumn('csrf_hash', ascii(64), (c) => c.notNull())
+          .addColumn('created_at', ascii(24), (c) => c.notNull())
+          .addColumn('last_seen_at', ascii(24), (c) => c.notNull())
+          .addColumn('expires_at', ascii(24), (c) => c.notNull())
+          .addColumn('mfa_verified_at', ascii(24))
+          .execute();
+        await db.schema.createIndex('user_session_user').on('user_session').column('user_id').execute();
+        await db.schema
+          .createTable('activation_token')
+          .addColumn('token_hash', ascii(64), (c) => c.primaryKey())
+          .addColumn('user_id', ascii(36), (c) => c.notNull())
+          .addColumn('expires_at', ascii(24), (c) => c.notNull())
+          .addColumn('used_at', ascii(24))
+          .addColumn('created_at', ascii(24), (c) => c.notNull())
+          .execute();
+        await db.schema
+          .createTable('access_log')
+          .addColumn('id', ascii(36), (c) => c.primaryKey())
+          .addColumn('ts', ascii(24), (c) => c.notNull())
+          .addColumn('user_id', ascii(36))
+          .addColumn('event', str(engine, 60), (c) => c.notNull())
+          .addColumn('ip', str(engine, 45))
+          .addColumn('ua_family', str(engine, 40))
+          .execute();
+        await db.schema.createIndex('access_log_ts').on('access_log').column('ts').execute();
       },
     },
   };

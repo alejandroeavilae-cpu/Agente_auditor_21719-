@@ -2,7 +2,7 @@
 
 - **Aprobación de inicio:** Alejandro Ávila, 29-10-2026 14:07 (hora de Chile), después de aprobar el cierre de 2A (fusión del PR #3, 29-10-2026 13:32).
 - **Rama:** `fase-2b`.
-- **Estado:** en curso.
+- **Estado:** diseño aprobado (D-79, 29-10-2026 14:46). Implementado y probado localmente con PostgreSQL. Pendiente: CI con ambos motores, QA independiente y aprobación humana del cierre.
 - **Orden de trabajo:**
   1. Corregir los hallazgos abiertos de 2A.
   2. Diseñar identidad y permisos y **presentar el diseño al responsable antes de implementarlo**.
@@ -52,3 +52,52 @@
 | Z-05 | La misma evasión con `kysely_migration` y `kysely_migration_lock` | Cada tabla de la plataforma debe tener **exactamente** sus columnas, revisadas con la introspección, incluidas las tablas internas de Kysely. Además, `kysely_migration` solo puede registrar migraciones conocidas | `X-01` ampliada: columnas ajenas y migración desconocida. Integración local: 3 ejecuciones, 47/0/0 (`evidencia-2b/z5-*.json`). **Incidente:** la primera versión no detectaba nada, porque la introspección de Kysely omite sus propias tablas por defecto; la prueba lo reveló. CI y QA: [PENDIENTE] |
 
 Residual aceptado [DECISIÓN]: los comentarios, los triggers con funciones del catálogo y las publicaciones no se revisan porque no contienen datos (observación de QA).
+
+## 3. Implementación de identidad y permisos (29-10-2026)
+
+| Entregable | Ubicación | Estado |
+|---|---|---|
+| Contraseñas argon2id (`crypto.argon2` de Node 24), política de 12 a 128 caracteres, rechazo de comunes y del correo | `packages/identity/src/password.ts` | Probado (unitarias) |
+| TOTP (RFC 6238) sin dependencias, con ±1 paso y sin reuso | `packages/identity/src/totp.ts` | Probado con los vectores del RFC |
+| Tokens (sesión, CSRF, activación) guardados solo como hash; 10 códigos de recuperación | `packages/identity/src/tokens.ts` | Probado |
+| Matriz de 6 roles web y 8 permisos; MFA obligatoria en 3 roles; 3 combinaciones prohibidas | `packages/identity/src/rbac.ts` | Probado |
+| Tablas de identidad en la base de cada organización (migración `0002_identity`); permisos del usuario de la organización sobre ellas; la bitácora sigue solo SELECT/INSERT | `packages/persistence/src/schema.ts`, `provisioner.ts` | Probado en PostgreSQL. SQL Server: [PENDIENTE: CI] |
+| Cifrado y HMAC con la DEK de cada organización (`TenantHandle.crypto`) | `tenant-manager.ts` | Probado |
+| Servicio de identidad: inicio de sesión en dos pasos, bloqueo progresivo, sesiones (30 min / 12 h), CSRF, reautenticación (5 min), activación (24 h), gestión de usuarios con "último administrador" | `apps/api/src/identity/identity.service.ts` | Probado por HTTP |
+| Guardia global que **deniega por defecto**, límite de tasa, filtro de errores sin trazas, cabeceras CSP/no-store | `guard.ts`, `errors.ts`, `bootstrap.ts` | Probado |
+| Endpoints `/api/v1/auth/*` y `/api/v1/users/*` (sin pantallas) | `auth.controller.ts`, `users.controller.ts` | Probado |
+| CLI `user invite-admin`; `init` concede lectura a la cuenta de la API | `apps/api/src/admin/cli.ts` | Ejecutado a mano contra PostgreSQL local (ver abajo) |
+| Compose: cuenta `auditor_api` (solo lectura del registro), API con clave maestra (D-80), cookie sin `Secure` en perfil local (D-81) | `deploy/compose`, `scripts/generate-secrets.sh`, `scripts/smoke-compose.sh` paso 12 | [PENDIENTE: CI] |
+
+**Valores verificados contra su fuente durante la implementación** (antes estaban `[PENDIENTE]` en el diseño):
+- **argon2id:** m=19456, t=2, p=1 es una de las configuraciones mínimas de OWASP [VERIFICADO: OWASP Password Storage Cheat Sheet, 29-10-2026].
+- **`crypto.argon2`:** se agregó en Node v24.7.0 [VERIFICADO: notas de la versión 24.7.0]. Su nivel de estabilidad sigue `[PENDIENTE]`: no figura en las notas de la versión ni en la traducción de nodejs.cn, y la documentación oficial no se pudo consultar (robots).
+- **Lista de contraseñas comunes:** `@zxcvbn-ts/language-common` 4.1.3, licencia MIT, 49 233 entradas [VERIFICADO: npm y LICENSE.txt]. Su dependencia `@zxcvbn-ts/dictionary-compression` 3.0.1 también es MIT [VERIFICADO: npm]. La política de licencias del repositorio pasó: 314 paquetes permitidos.
+- **Vectores TOTP:** semillas según la errata 2866 del RFC 6238 [VERIFICADO: rfc-editor.org]. Valores esperados [FUENTE SECUNDARIA: otplib], y coinciden con el cálculo propio.
+
+**Decisiones de implementación nuevas:**
+- **D-80:** cuenta de la API de solo lectura más la clave maestra en la API. Cambia la postura de A-02 y lo documento como riesgo R-27.
+- **D-81:** cookie sin `Secure` en el perfil local sin HTTPS.
+- **Valores marcados `[DECISIÓN]` en el código:**
+  - bloqueo progresivo desde el 5.º fallo, con espera de 30 s que se duplica hasta 15 min;
+  - límites de tasa: 20 intentos sensibles cada 5 min por IP, y 600 peticiones por minuto por IP;
+  - TOTP con SHA-1 y 6 dígitos, por compatibilidad con las apps autenticadoras;
+  - pantalla previa a la MFA válida 10 min.
+
+**Evidencia local (29-10-2026, Node 24.22.1, PostgreSQL 18.4):**
+- `pnpm run verify`: código 0. Pruebas: web 4, crypto 15, audit-log 44, identity 19, persistence 23 más 1 omitida, api 22 más 1 omitida (las omitidas son las de integración, sin motor). Licencias: 314 permitidas.
+- Integración de identidad por HTTP (`apps/api/test/identity.int.test.ts`): **16 de 16 aprobadas, en 3 ejecuciones**. Al terminar, el servidor quedó sin restos.
+- Integración de 2A con las tablas nuevas: 47 aprobadas, 0 fallidas, 0 omitidas.
+- **Recorrido manual con el binario compilado:**
+  - script de inicialización de Compose;
+  - `init` con `DB_API_READER_USER`;
+  - `tenant create` y `user invite-admin`;
+  - API arrancada con la cuenta `auditor_api`.
+
+  Resultados: `/auth/me` sin sesión → 401; inicio de sesión inválido → mensaje genérico; activación → `mfa_enroll` con cookie `HttpOnly`; `/users` → `mfa_enrollment_required`; cabeceras CSP y `no-store` presentes.
+
+**Errores encontrados al probar y corregidos antes de publicar:**
+- La contraseña de prueba del administrador contenía la parte local del correo ("admin"), y la política la rechazó correctamente.
+- Una ejecución con Node 22 falló porque `crypto.argon2` no existe en esa versión. El proyecto exige Node 24 (`engines`).
+
+CI y QA: [PENDIENTE].

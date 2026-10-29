@@ -2,6 +2,7 @@
 
 import { sql, type Kysely } from 'kysely';
 import type { DbEngine } from './config.js';
+import { IDENTITY_TABLES } from './schema.js';
 
 /**
  * Operaciones de aprovisionamiento que difieren entre motores.
@@ -42,6 +43,11 @@ export interface Provisioner {
   prepareTenantDatabase(adminTenantDb: Kysely<unknown>, login: string): Promise<void>;
   /** Privilegios mínimos del usuario de aplicación, tras las migraciones. */
   grantAppPrivileges(adminTenantDb: Kysely<unknown>, login: string): Promise<void>;
+  /**
+   * Permite a la cuenta de la API leer el registro de organizaciones (solo SELECT sobre
+   * `tenants`), para abrir la base de cada organización con sus credenciales (D-80).
+   */
+  grantControlRead(serverDb: Kysely<unknown>, controlDb: Kysely<unknown>, controlDbName: string, login: string): Promise<void>;
   dropDatabase(serverDb: Kysely<unknown>, dbName: string): Promise<void>;
   dropLogin(serverDb: Kysely<unknown>, login: string): Promise<void>;
   /** Habilita o deshabilita el inicio de sesión del usuario (suspensión aplicada por el motor). */
@@ -138,6 +144,16 @@ const postgres: Provisioner = {
   async grantAppPrivileges(adminTenantDb, login) {
     await sql`GRANT SELECT, INSERT ON audit_log TO ${sql.id(login)}`.execute(adminTenantDb);
     await sql`GRANT SELECT ON organization TO ${sql.id(login)}`.execute(adminTenantDb);
+    // Identidad (2B): el usuario de la organización administra sus propios usuarios y
+    // sesiones. La bitácora sigue siendo solo SELECT e INSERT.
+    for (const table of IDENTITY_TABLES) {
+      await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON ${sql.id(table)} TO ${sql.id(login)}`.execute(adminTenantDb);
+    }
+  },
+  async grantControlRead(serverDb, controlDb, controlDbName, login) {
+    await sql`GRANT CONNECT ON DATABASE ${sql.id(controlDbName)} TO ${sql.id(login)}`.execute(serverDb);
+    await sql`GRANT USAGE ON SCHEMA public TO ${sql.id(login)}`.execute(controlDb);
+    await sql`GRANT SELECT ON tenants TO ${sql.id(login)}`.execute(controlDb);
   },
   async dropDatabase(serverDb, dbName) {
     await sql`DROP DATABASE IF EXISTS ${sql.id(dbName)} WITH (FORCE)`.execute(serverDb);
@@ -256,6 +272,13 @@ const sqlserver: Provisioner = {
   async grantAppPrivileges(adminTenantDb, login) {
     await sql`GRANT SELECT, INSERT ON dbo.audit_log TO ${sql.id(login)}`.execute(adminTenantDb);
     await sql`GRANT SELECT ON dbo.organization TO ${sql.id(login)}`.execute(adminTenantDb);
+    for (const table of IDENTITY_TABLES) {
+      await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON ${sql.id('dbo', table)} TO ${sql.id(login)}`.execute(adminTenantDb);
+    }
+  },
+  async grantControlRead(_serverDb, controlDb, _controlDbName, login) {
+    await sql`IF DATABASE_PRINCIPAL_ID(${login}) IS NULL EXEC(N'CREATE USER ' + QUOTENAME(${login}) + N' FOR LOGIN ' + QUOTENAME(${login}))`.execute(controlDb);
+    await sql`GRANT SELECT ON dbo.tenants TO ${sql.id(login)}`.execute(controlDb);
   },
   async dropDatabase(serverDb, dbName) {
     await sql`IF DB_ID(${dbName}) IS NOT NULL BEGIN ALTER DATABASE ${sql.id(dbName)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE ${sql.id(dbName)}; END`.execute(serverDb);

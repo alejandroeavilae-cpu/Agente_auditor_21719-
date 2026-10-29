@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { randomUUID } from 'node:crypto';
+import { createHmac, hkdfSync, randomUUID } from 'node:crypto';
 import { CryptoError, generateDbPassword, generateKey, open, seal, unwrapKey, wrapKey, type SymmetricKey } from '@auditor-21719/crypto';
 import { sql, type Kysely } from 'kysely';
 import { AuditLogRepository } from './audit-log-repository.js';
@@ -21,11 +21,41 @@ export interface TenantInfo {
   createdAt: string;
 }
 
+/**
+ * Cifrado con la DEK de una organización, sin exponer la clave (2B). Los contextos se
+ * prefijan con el identificador de la organización: un dato cifrado para una organización
+ * no se descifra en otra.
+ */
+export interface TenantCrypto {
+  seal(purpose: string, data: Buffer): string;
+  open(purpose: string, sealed: string): Buffer;
+  /** HMAC-SHA256 (hex) con una clave derivada de la DEK para `purpose` (p. ej. IP, D-78). */
+  hmac(purpose: string, data: string): string;
+}
+
 /** Acceso a la base de una organización con SUS credenciales de aplicación. */
 export interface TenantHandle {
   info: TenantInfo;
   db: Kysely<TenantDatabase>;
   audit: AuditLogRepository;
+  crypto: TenantCrypto;
+}
+
+function tenantCrypto(tenantId: string, dek: SymmetricKey): TenantCrypto {
+  const ctx = (purpose: string): string => `tenant:${tenantId}:app:${purpose}`;
+  const hmacKeys = new Map<string, Buffer>();
+  return {
+    seal: (purpose, data) => seal(dek, data, ctx(purpose)),
+    open: (purpose, sealed) => open([dek], sealed, ctx(purpose)),
+    hmac: (purpose, data) => {
+      let key = hmacKeys.get(purpose);
+      if (key === undefined) {
+        key = Buffer.from(hkdfSync('sha256', dek.material, Buffer.alloc(0), `hmac|${ctx(purpose)}`, 32));
+        hmacKeys.set(purpose, key);
+      }
+      return createHmac('sha256', key).update(data, 'utf8').digest('hex');
+    },
+  };
 }
 
 /** Resultado de una operación que puede completarse con advertencias. */
@@ -53,6 +83,15 @@ const nowIso = (): string => new Date().toISOString();
 const TENANT_TABLE_COLUMNS: Record<string, readonly string[]> = {
   organization: ['created_at', 'id', 'name', 'slug'],
   audit_log: ['action', 'actor', 'chain_id', 'data', 'hash', 'object', 'prev_hash', 'seq', 'ts'],
+  app_user: [
+    'created_at', 'display_name', 'email', 'failed_attempts', 'id', 'locked_until', 'mfa_last_step', 'mfa_pending_secret_sealed',
+    'mfa_secret_sealed', 'password_changed_at', 'password_hash', 'status', 'updated_at',
+  ],
+  user_role: ['role', 'user_id'],
+  recovery_code: ['code_hash', 'used_at', 'user_id'],
+  user_session: ['created_at', 'csrf_hash', 'expires_at', 'id_hash', 'last_seen_at', 'mfa_verified_at', 'stage', 'user_id'],
+  activation_token: ['created_at', 'expires_at', 'token_hash', 'used_at', 'user_id'],
+  access_log: ['event', 'id', 'ip', 'ts', 'ua_family', 'user_id'],
   kysely_migration: ['name', 'timestamp'],
   kysely_migration_lock: ['id', 'is_locked'],
 };
@@ -112,13 +151,18 @@ export class TenantManager {
    * Crea la base de control si no existe, aplica sus migraciones y la protege.
    * Es idempotente. Devuelve migraciones aplicadas y avisos de endurecimiento del servidor.
    */
-  async initControl(): Promise<{ applied: string[]; warnings: string[] }> {
+  async initControl(options: { apiReader?: string } = {}): Promise<{ applied: string[]; warnings: string[] }> {
     const name = this.config.controlDatabase;
     if (!(await this.provisioner.databaseExists(this.server(), name))) {
       await this.provisioner.createDatabase(this.server(), name);
     }
     await this.provisioner.protectControlDatabase(this.server(), this.control() as Kysely<unknown>, name);
     const { applied } = await migrateToLatest(this.control() as Kysely<unknown>, controlMigrations(this.admin.engine));
+    // Cuenta de la API: solo lectura del registro de organizaciones (D-80). La crea quien
+    // administra el motor (docs/fase-2/servidor-de-base-de-datos.md).
+    if (options.apiReader !== undefined) {
+      await this.provisioner.grantControlRead(this.server(), this.control() as Kysely<unknown>, name, options.apiReader);
+    }
     const warnings = await this.provisioner.hardeningWarnings(this.server());
     const rows = await this.control().selectFrom('tenants').select(['slug', 'status', 'db_name']).execute();
     for (const row of rows.filter((r) => r.status === 'provisioning')) {
@@ -217,7 +261,7 @@ export class TenantManager {
       }
 
       // Comprobación con el usuario propio y primera entrada de bitácora.
-      const handle = await this.openWithCredentials({ id, slug, name: cleanName, status: 'provisioning', dbName, createdAt }, login, password);
+      const handle = await this.openWithCredentials({ id, slug, name: cleanName, status: 'provisioning', dbName, createdAt }, login, password, dek);
       try {
         await handle.audit.append({ actor, action: 'tenant.created', object: `organization/${slug}`, data: { name: cleanName, engine: this.admin.engine } });
       } finally {
@@ -456,10 +500,16 @@ export class TenantManager {
    */
   async openTenant(slug: string): Promise<TenantHandle> {
     assertTenantSlug(slug);
+    // El estado se consulta SIEMPRE (una lectura de la base de control): un proceso de larga
+    // duración como la API no debe seguir usando una organización suspendida por otro
+    // proceso (CLI) solo porque tenía su conexión abierta.
+    const row = await this.findRow(slug);
+    if (row.status !== 'active') {
+      await this.closeTenant(slug);
+      throw new Error(`La organización "${slug}" no está activa (estado: ${row.status}).`);
+    }
     const cached = this.openHandles.get(slug);
     if (cached !== undefined) return cached;
-    const row = await this.findRow(slug);
-    if (row.status !== 'active') throw new Error(`La organización "${slug}" no está activa (estado: ${row.status}).`);
     const handle = await this.openRow(row);
     this.openHandles.set(slug, handle);
     return handle;
@@ -564,10 +614,12 @@ export class TenantManager {
   }
 
   private async openRow(row: TenantsTable): Promise<TenantHandle> {
-    return this.openWithCredentials(toInfo(row), row.db_user, this.decryptPassword(row));
+    const dek = unwrapKey(this.masterKeys, row.dek_wrapped, dekContext(row.id));
+    const password = open([dek], row.db_password_sealed, passwordContext(row.id)).toString('utf8');
+    return this.openWithCredentials(toInfo(row), row.db_user, password, dek);
   }
 
-  private async openWithCredentials(info: TenantInfo, user: string, password: string): Promise<TenantHandle> {
+  private async openWithCredentials(info: TenantInfo, user: string, password: string, dek: SymmetricKey): Promise<TenantHandle> {
     const db = connect<TenantDatabase>({ ...this.admin, user, password }, info.dbName);
     try {
       // Defensa contra enrutamiento erróneo: la base debe declararse como esta organización.
@@ -579,7 +631,7 @@ export class TenantManager {
       await db.destroy();
       throw error;
     }
-    return { info, db, audit: new AuditLogRepository(db, this.admin.engine, info.slug) };
+    return { info, db, audit: new AuditLogRepository(db, this.admin.engine, info.slug), crypto: tenantCrypto(info.id, dek) };
   }
 }
 

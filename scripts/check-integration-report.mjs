@@ -3,7 +3,8 @@
 // Valida el informe JSON de Vitest del job de integración (hallazgo QA B-13):
 //  - ninguna prueba fallida ni omitida;
 //  - cada motor exigido (REQUIRE_DB_ENGINES) tiene al menos MIN_TESTS_PER_ENGINE pruebas
-//    aprobadas, contadas por el bloque "organizaciones en <motor>".
+//    aprobadas, contadas por el bloque "<SUITE_PREFIX> <motor>" (por defecto
+//    "organizaciones en"; la suite de identidad usa "identidad en").
 // Uso: node scripts/check-integration-report.mjs <informe.json>
 
 import { readFileSync } from 'node:fs';
@@ -16,6 +17,7 @@ if (!file) {
 const report = JSON.parse(readFileSync(file, 'utf8'));
 const engines = (process.env.REQUIRE_DB_ENGINES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const min = Number(process.env.MIN_TESTS_PER_ENGINE ?? '1');
+const prefix = process.env.SUITE_PREFIX ?? 'organizaciones en';
 // Valores no numéricos nunca deben convertirse en "aprobado" (hallazgo QA N-05).
 if (!Number.isInteger(min) || min < 1) {
   console.log(`::error title=integración::MIN_TESTS_PER_ENGINE inválido: ${process.env.MIN_TESTS_PER_ENGINE}`);
@@ -39,7 +41,7 @@ for (const suite of report.testResults ?? []) {
   for (const t of suite.assertionResults ?? []) {
     if (t.status !== 'passed') continue;
     for (const e of engines) {
-      if ((t.ancestorTitles ?? []).includes(`organizaciones en ${e}`)) passedByEngine[e] += 1;
+      if ((t.ancestorTitles ?? []).includes(`${prefix} ${e}`)) passedByEngine[e] += 1;
     }
   }
 }
