@@ -330,6 +330,11 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
       await expect(manager.cleanupProvisioning(slug), create).rejects.toThrow(/objetos ajenos/);
       await sql.raw(drop).execute(target);
     }
+    // Z-04: tabla con nombre de la plataforma pero con datos ajenos.
+    await sql.raw('CREATE TABLE audit_log (secreto varchar(50))').execute(target);
+    await sql.raw("INSERT INTO audit_log (secreto) VALUES ('dato-sintetico-ajeno')").execute(target);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/datos en audit_log/);
+    await sql.raw('DROP TABLE audit_log').execute(target);
     if (engine === 'postgresql') {
       // Objeto grande: la cuenta de aprovisionamiento no puede crearlo (template1 endurecido),
       // así que lo crea el superusuario de pruebas.

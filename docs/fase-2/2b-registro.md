@@ -44,4 +44,10 @@
   Se corrigieron antes de commitear. Las bases y los roles que dejaron esas ejecuciones fallidas se eliminaron a mano.
 - **Incidente en CI:** el run de `e3f70ff` falló en SQL Server por un conflicto de intercalación (error 451) en la consulta de `foreignObjects`; esa consulta no se puede probar localmente. Se corrigió forzando `COLLATE DATABASE_DEFAULT` y armando el texto en JavaScript. También se cierran las sesiones antes de borrar el login de pruebas.
 - CI de `94cb0d9`: los 7 jobs en verde; integración **71 aprobadas, 0 fallidas, 0 omitidas** (postgresql=24, sqlserver=24), job 123617274392.
-- QA: [PENDIENTE].
+- **QA (29-10-2026, sobre `94cb0d9`): Z-01, Z-02 y Z-03 aprobados.** QA probó más de 15 variantes de contenido ajeno y 11 altas interrumpidas que se limpiaron bien. Abrió un hallazgo nuevo, Z-04 (Bajo).
+
+| ID | Hallazgo | Corrección | Prueba |
+|---|---|---|---|
+| Z-04 | Una tabla `public.audit_log` creada por terceros, con otras columnas y datos, se borraba igual | Si la base no declara pertenecer a la organización (fila `organization` con su id), `audit_log` debe estar vacía; si tiene filas, se rechaza. El caso legítimo (alta cortada antes de escribir la bitácora) deja `audit_log` vacía | `X-01` ampliada. Integración local: **3 ejecuciones, 47/0/0** (`evidencia-2b/z4-*.json`). CI y QA: [PENDIENTE] |
+
+Residual aceptado [DECISIÓN]: los comentarios, los triggers con funciones del catálogo y las publicaciones no se revisan porque no contienen datos (observación de QA).

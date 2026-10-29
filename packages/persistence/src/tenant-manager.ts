@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { CryptoError, generateDbPassword, generateKey, open, seal, unwrapKey, wrapKey, type SymmetricKey } from '@auditor-21719/crypto';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { AuditLogRepository } from './audit-log-repository.js';
 import type { DbServerConfig, PlatformDbConfig } from './config.js';
 import { connect, serverAdminDatabase } from './connection.js';
@@ -277,10 +277,21 @@ export class TenantManager {
         throw new Error(`La base ${row.db_name} contiene objetos ajenos a la plataforma (${shown}); no se elimina. Revísela manualmente.`);
       }
       const tables = (await db.introspection.getTables()).map((t) => t.name);
+      let declaresThis = false;
       if (tables.includes('organization')) {
         const orgs = await db.selectFrom('organization').select('id').execute();
         if (orgs.some((o) => o.id !== row.id)) {
           throw new Error(`La base ${row.db_name} pertenece a otra organización; no se elimina. Revísela manualmente.`);
+        }
+        declaresThis = orgs.length > 0;
+      }
+      // Si la base no declara ser de esta organización, solo puede ser un alta interrumpida
+      // ANTES de escribir la bitácora: entonces `audit_log` está vacía. Con filas, se trata
+      // como ajena aunque la tabla tenga el nombre de la plataforma (hallazgo QA Z-04).
+      if (!declaresThis && tables.includes('audit_log')) {
+        const r = await sql<{ n: number | string }>`SELECT COUNT(*) AS n FROM ${sql.table('audit_log')}`.execute(db);
+        if (Number(r.rows[0]?.n ?? 0) > 0) {
+          throw new Error(`La base ${row.db_name} tiene datos en audit_log pero no declara pertenecer a esta organización; no se elimina. Revísela manualmente.`);
         }
       }
     } catch (error) {
