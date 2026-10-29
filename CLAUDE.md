@@ -6,11 +6,11 @@ Este archivo rige a cualquier agente de IA (orquestador o especializado) que con
 
 **Fase 0 aprobada** (25-10-2026). **Fase 1 aprobada y cerrada** (26-10-2026, PR #1). **Fase 2 aprobada por el responsable el 26-10-2026 23:37 (hora de Chile), en tres entregas con aprobación humana separada:**
 
-- **2A — Base de datos y organizaciones: APROBADA POR QA (28-10-2026), PENDIENTE DE APROBACIÓN HUMANA** (rama `fase-2a`, PR #3). Alcance: BD de control, una BD por organización con usuario propio, cifrado de sobre de credenciales, bitácora persistida en BD, CLI de administración, CI con PostgreSQL y SQL Server.
-- 2B — Identidad y permisos: NO iniciada (requiere aprobación del cierre de 2A).
+- **2A — Base de datos y organizaciones: APROBADA Y CERRADA** (29-10-2026 13:32, fusión del PR #3 por el responsable). Alcance: BD de control, una BD por organización con usuario propio, cifrado de sobre de credenciales, bitácora persistida en BD, CLI de administración, CI con PostgreSQL y SQL Server.
+- **2B — Identidad y permisos: EN CURSO** (aprobada por el responsable el 29-10-2026 14:07, rama `fase-2b`). Primero: hallazgos abiertos de 2A y **diseño para aprobación antes de implementar**. Alcance: usuarios de la plataforma, contraseñas argon2id, MFA TOTP, sesiones, roles y permisos (RBAC), operador de plataforma. Sin pantallas de gestión (2C).
 - 2C — Pantallas y pruebas de aislamiento: NO iniciada.
 
-No implementar funcionalidades de 2B, 2C ni fases posteriores (usuarios, autenticación, pantallas de gestión, conectores, etc.) hasta su aprobación. En 2A no se exponen endpoints HTTP nuevos: sin autenticación serían inseguros.
+No implementar funcionalidades de 2C ni de fases posteriores (pantallas de gestión, conectores, etc.) hasta su aprobación. La v1 se concentra en la Modalidad A, instalación institucional local (D-74).
 
 ## Reglas no negociables
 
