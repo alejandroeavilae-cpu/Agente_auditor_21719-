@@ -43,4 +43,5 @@
 
   Se corrigieron antes de commitear. Las bases y los roles que dejaron esas ejecuciones fallidas se eliminaron a mano.
 - **Incidente en CI:** el run de `e3f70ff` falló en SQL Server por un conflicto de intercalación (error 451) en la consulta de `foreignObjects`; esa consulta no se puede probar localmente. Se corrigió forzando `COLLATE DATABASE_DEFAULT` y armando el texto en JavaScript. También se cierran las sesiones antes de borrar el login de pruebas.
-- CI y QA: [PENDIENTE].
+- CI de `94cb0d9`: los 7 jobs en verde; integración **71 aprobadas, 0 fallidas, 0 omitidas** (postgresql=24, sqlserver=24), job 123617274392.
+- QA: [PENDIENTE].
