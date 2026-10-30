@@ -715,12 +715,20 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
       errors.push(String(m));
     });
     try {
+      // Diagnóstico (CI de SQL Server): cuánto tarda en fallar. Antes de fijar
+      // `propagateCreateError`, el pool de tedious reintentaba la conexión 30 s.
+      const t0 = Date.now();
       const me = await c.request('GET', '/api/v1/auth/me');
+      const meMs = Date.now() - t0;
+      console.info(`[${engine}] /me tras suspender: ${String(me.status)} en ${String(meMs)} ms`);
+      expect(meMs, 'la API debe fallar rápido, sin quedar colgada').toBeLessThan(10_000);
       expect(me.status).toBe(503);
       expect(me.body.error).toBe('unavailable');
       expect(Object.keys(me.body).sort()).toEqual(['error', 'message']);
       expect(JSON.stringify(me.body)).not.toMatch(/admin-b|auditor_t_|password|role/i);
+      const t1 = Date.now();
       const login = await clientB().request('POST', '/api/v1/auth/login', { email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
+      console.info(`[${engine}] login tras suspender: ${String(login.status)} en ${String(Date.now() - t1)} ms`);
       expect(login.status).toBe(503);
       expect(login.headers.getSetCookie()).toEqual([]);
     } finally {
@@ -729,8 +737,12 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(errors.length).toBeGreaterThan(0);
     // Al reactivar, la API se recupera sola (las sesiones viven en la base).
     await provisioner.setStatus(slugB, 'active', 'operador:pruebas');
-    expect((await c.request('GET', '/api/v1/auth/me')).status).toBe(200);
-  });
+    const t2 = Date.now();
+    const back = await c.request('GET', '/api/v1/auth/me');
+    console.info(`[${engine}] /me tras reactivar: ${String(back.status)} en ${String(Date.now() - t2)} ms`);
+    expect(back.status).toBe(200);
+    // Plazo propio: suspender espera hasta 5 s a que se cierren las sesiones (waitForNoSessions).
+  }, 90_000);
 });
 
 /** Directorio de secretos propio (700), como `deploy/compose/secrets/api`. */
