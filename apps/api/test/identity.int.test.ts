@@ -1,22 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Pruebas de integración de identidad (2B) contra motores reales, a través de HTTP.
+// Pruebas de integración de identidad (2B y 2C-1) contra motores reales, a través de HTTP.
 // Solo datos sintéticos. Cada ejecución crea sus cuentas, base de control y organizaciones.
+//
+// Desde 2C-1 cada API atiende UNA organización (D-84, D-75 ajustada) y no tiene la clave
+// maestra (D-87): recibe los secretos que escribe `auditor-admin api-secrets write`. Por
+// eso hay una API para la organización A y otra para la B.
 
 import { randomBytes } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseJsonlLines, toJsonl, verifyChainItems } from '@auditor-21719/audit-log';
-import { generateKey } from '@auditor-21719/crypto';
+import { encodeKeyForFile, generateKey } from '@auditor-21719/crypto';
 import { totpAt } from '@auditor-21719/identity';
-import { LOCK_THRESHOLD as LOCK_AT } from '../src/identity/identity.service.js';
-import { connect, provisionerFor, serverAdminDatabase, TenantManager, type DbServerConfig, type TenantDatabase } from '@auditor-21719/persistence';
+import { ACCOUNT_ORIGIN, connect, OrganizationDirectory, provisionerFor, serverAdminDatabase, TenantManager, type DbServerConfig, type TenantDatabase } from '@auditor-21719/persistence';
 import { Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { API_SECRET_FILES, writeApiSecrets } from '../src/admin/api-secrets.js';
+import { main as adminCli } from '../src/admin/cli.js';
 import { createApp } from '../src/bootstrap.js';
 import { loadConfig } from '../src/config/app-config.js';
-import type { IdentityConfig } from '../src/identity/identity-config.js';
-import { IdentityService } from '../src/identity/identity.service.js';
-import { base32Decode, Client, createAccounts, engineConfigs, runId } from './db-helpers.js';
+import { loadIdentityConfig, type IdentityConfig } from '../src/identity/identity-config.js';
+import { IdentityService, LOCK_THRESHOLD as LOCK_AT, MIN_FAILURE_MS } from '../src/identity/identity.service.js';
+import { base32Decode, Client, createAccounts, engineConfigs, issuedSessionTokens, runId } from './db-helpers.js';
 
 const engines = engineConfigs();
 
@@ -32,6 +40,16 @@ const PASSWORD_AUDITOR = `sintetica-${randomBytes(9).toString('hex')}`;
 /** Contraseña común conocida (debe rechazarse) y una incorrecta, ambas sintéticas. */
 const COMMON_PASSWORD = ['1qaz', '2wsx', '3edc'].join('');
 const WRONG_PASSWORD = `incorrecta-${randomBytes(6).toString('hex')}`;
+const GENERIC_FAILURE = { error: 'invalid_credentials', message: 'Correo o contraseña incorrectos.' };
+
+/** API levantada para una organización, con sus secretos en un directorio temporal. */
+interface RunningApi {
+  app: NestExpressApplication;
+  base: string;
+  directory: OrganizationDirectory;
+  service: IdentityService;
+  config: IdentityConfig;
+}
 
 describe.each(engines)('identidad en $engine', ({ engine, server: superServer }) => {
   const id = runId();
@@ -39,21 +57,25 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   const slugA = `org-${id}-a`;
   const slugB = `org-${id}-b`;
   const master = generateKey();
-  // Reloj controlable: solo afecta a la lógica de sesiones (vencimientos, TOTP).
+  // Reloj controlable: solo afecta a la lógica de sesiones (vencimientos, TOTP, bloqueos).
   let offsetMs = 0;
   const now = (): Date => new Date(Date.now() + offsetMs);
   const sec = (): number => Math.floor(now().getTime() / 1000);
 
   let provisioner: TenantManager;
-  let apiManager: TenantManager;
-  let service: IdentityService;
-  let app: NestExpressApplication;
-  let base: string;
   let provisionerServer: DbServerConfig;
+  let apiA: RunningApi;
+  let apiB: RunningApi;
+  const workDir = mkdtempSync(join(tmpdir(), `auditor-2c1-${id}-`));
+  const secretsDirA = join(workDir, 'api-a');
+  const secretsDirB = join(workDir, 'api-b');
   const cookieName = 'auditor_session';
-  const client = (): Client => new Client(base, cookieName);
+  const client = (origin?: string): Client => new Client(apiA.base, cookieName, origin);
+  const clientB = (): Client => new Client(apiB.base, cookieName);
   /** Secretos TOTP de los usuarios creados en la prueba. */
   const secrets = new Map<string, Buffer>();
+  /** Contraseñas de base y DEK entregadas a las API (no deben aparecer en la base). */
+  const apiSecretValues: string[] = [];
   let adminId = '';
   /** Código TOTP del siguiente paso no usado (evita el rechazo por reuso). */
   const nextCode = (email: string): string => {
@@ -67,7 +89,86 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   /** Pasos de limpieza registrados a medida que se crean recursos. */
   const cleanup: (() => Promise<void>)[] = [];
 
+  /** Variables de la CLI con la cuenta de aprovisionamiento y la clave maestra de la prueba. */
+  function cliEnv(): Record<string, string> {
+    const passwordFile = join(workDir, 'provisioner_password');
+    writeFileSync(passwordFile, `${provisionerServer.password}\n`, { mode: 0o600 });
+    const masterFile = join(workDir, 'master.key');
+    writeFileSync(masterFile, encodeKeyForFile(master), { mode: 0o600 });
+    return {
+      DB_ENGINE: engine,
+      DB_HOST: provisionerServer.host,
+      DB_PORT: String(provisionerServer.port),
+      DB_TLS: provisionerServer.tls,
+      DB_ADMIN_USER: provisionerServer.user,
+      DB_ADMIN_PASSWORD_FILE: passwordFile,
+      DB_CONTROL_DATABASE: controlDatabase,
+      MASTER_KEY_FILE: masterFile,
+      MASTER_KEY_CHECK_PERMISSIONS: 'true',
+    };
+  }
+
+  /** Ejecuta `auditor-admin` con su entorno, sin ensuciar la salida de la prueba. */
+  async function runCli(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+    const env = cliEnv();
+    const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, env);
+    const out: string[] = [];
+    const err: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((m: unknown) => void out.push(String(m)));
+    const error = vi.spyOn(console, 'error').mockImplementation((m: unknown) => void err.push(String(m)));
+    try {
+      return { code: await adminCli(argv), out: out.join('\n'), err: err.join('\n') };
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) Reflect.deleteProperty(process.env, k);
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  /** Configuración de la API leída de los archivos de secretos, como en producción. */
+  function apiConfig(slug: string, dir: string, extra: Record<string, string> = {}): IdentityConfig {
+    const config = loadIdentityConfig({
+      DB_ENGINE: engine,
+      DB_HOST: superServer.host,
+      DB_PORT: String(superServer.port),
+      DB_TLS: superServer.tls,
+      ORGANIZATION_FILE: join(dir, API_SECRET_FILES.organization),
+      ORGANIZATION_DB_PASSWORD_FILE: join(dir, API_SECRET_FILES.dbPassword),
+      ORGANIZATION_DEK_FILE: join(dir, API_SECRET_FILES.dek),
+      ORGANIZATION_SLUG: slug,
+      COOKIE_SECURE: 'false',
+      // Las pruebas simulan orígenes distintos con X-Forwarded-For (un salto de proxy).
+      TRUST_PROXY: 'true',
+      SENSITIVE_RATE_LIMIT: '100000',
+      ...extra,
+    });
+    if (config === undefined) throw new Error('configuración vacía');
+    apiSecretValues.push(config.dbPassword, encodeKeyForFile(config.dek).trim());
+    return config;
+  }
+
+  async function startApi(config: IdentityConfig): Promise<RunningApi> {
+    const directory = new OrganizationDirectory(config.server, config.organization, config.dbPassword, config.dek);
+    const service = new IdentityService(directory, { accessLogRetentionDays: 90, attackAlertThreshold: config.attackAlertThreshold, now });
+    const app = await createApp(loadConfig({}), { service, config });
+    await app.listen(0, '127.0.0.1');
+    const running = { app, base: await app.getUrl(), directory, service, config };
+    cleanup.push(async () => {
+      await app.close();
+      await directory.close();
+    });
+    return running;
+  }
+
   beforeAll(async () => {
+    cleanup.push(() => {
+      rmSync(workDir, { recursive: true, force: true });
+      return Promise.resolve();
+    });
     const accounts = await createAccounts(superServer, id);
     cleanup.push(accounts.drop);
     provisionerServer = accounts.provisioner;
@@ -90,26 +191,16 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
         await serverDb.destroy();
       }
     });
-    await provisioner.initControl({ apiReader: accounts.api.user });
+    await provisioner.initControl();
     await provisioner.createTenant(slugA, 'Organización Sintética A', 'operador:pruebas');
     await provisioner.createTenant(slugB, 'Organización Sintética B', 'operador:pruebas');
-    apiManager = new TenantManager({ admin: accounts.api, controlDatabase }, [master]);
-    cleanup.push(() => apiManager.close());
-    service = new IdentityService(apiManager, { accessLogRetentionDays: 90, now });
-    const config: IdentityConfig = {
-      db: { admin: accounts.api, controlDatabase },
-      masterKeyFile: '/no-usado',
-      checkMasterKeyPermissions: true,
-      defaultOrganization: undefined,
-      cookieSecure: false,
-      accessLogRetentionDays: 90,
-      trustProxy: false,
-      sensitiveRateLimit: 100_000,
-    };
-    app = await createApp(loadConfig({}), { service, config });
-    cleanup.push(() => app.close());
-    await app.listen(0, '127.0.0.1');
-    base = await app.getUrl();
+    // A: secretos escritos con la CLI real; B: con la función que usa la CLI.
+    for (const dir of [secretsDirA, secretsDirB]) mkdirPrivate(dir);
+    const written = await runCli(['api-secrets', 'write', '--tenant', slugA, '--out', secretsDirA]);
+    expect(written, written.err).toMatchObject({ code: 0 });
+    writeApiSecrets(secretsDirB, await provisioner.apiSecrets(slugB, 'operador:pruebas'));
+    apiA = await startApi(apiConfig(slugA, secretsDirA));
+    apiB = await startApi(apiConfig(slugB, secretsDirB));
   });
 
   afterAll(async () => {
@@ -117,18 +208,60 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     for (const step of cleanup.reverse()) await step().catch(() => undefined);
   });
 
+  /** Activa una cuenta invitada y configura su MFA (obligatoria para todos, D-86). */
+  async function activateWithMfa(token: string, email: string, password: string, c: Client = client()): Promise<Client> {
+    const act = await c.request('POST', '/api/v1/auth/activate', { token, password });
+    expect(act.body.stage).toBe('mfa_enroll');
+    const enroll = await c.request('POST', '/api/v1/auth/mfa/enroll', {});
+    secrets.set(email, base32Decode(enroll.body.secret as string));
+    const confirm = await c.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode(email) });
+    expect(confirm.body.stage).toBe('full');
+    return c;
+  }
+
+  /** Inicio de sesión completo (contraseña + TOTP). */
+  async function fullLogin(email: string, password: string, c: Client = client()): Promise<Client> {
+    const login = await c.request('POST', '/api/v1/auth/login', { email, password });
+    expect(login.body.stage).toBe('mfa_pending');
+    const r = await c.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode(email) });
+    expect(r.body.stage).toBe('full');
+    return c;
+  }
+
+  const loggedAdmin = (): Promise<Client> => fullLogin('admin@ejemplo.cl', PASSWORD_ADMIN);
+
+  /** Contadores del par cuenta + origen de un usuario. */
+  async function throttleRows(userId: string): Promise<{ origin_hmac: string; kind: string; failed_attempts: number; locked_until: string | null }[]> {
+    const handle = await apiA.directory.open();
+    return handle.db.selectFrom('login_throttle').select(['origin_hmac', 'kind', 'failed_attempts', 'locked_until']).where('user_id', '=', userId).orderBy('kind').orderBy('origin_hmac').execute();
+  }
+
+  it('la API recibe solo los secretos de su organización, con permisos 0600 (D-87)', () => {
+    for (const name of Object.values(API_SECRET_FILES)) {
+      expect((statSync(join(secretsDirA, name)).mode & 0o777).toString(8), name).toBe('600');
+    }
+    expect(apiA.config.organization.slug).toBe(slugA);
+    expect(apiA.config.dbPassword).not.toBe(apiB.config.dbPassword);
+    // La API no tiene clave maestra: su configuración no la incluye.
+    expect(JSON.stringify(Object.keys(apiA.config))).not.toMatch(/master/i);
+  });
+
   it('el primer administrador (CLI) se activa, queda obligado a configurar MFA y la configura', async () => {
-    const handle = await provisioner.openTenant(slugA);
-    const invited = await service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'Admin@Ejemplo.cl', displayName: 'Admin Sintético', roles: ['org_admin'] }, null);
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'Admin@Ejemplo.cl', displayName: 'Admin Sintético', roles: ['org_admin'] }, null);
     adminId = invited.userId;
     const c = client();
+    // D-75 ajustada: el campo `organization` ya no existe y se rechaza como cualquier campo no declarado.
+    expect((await c.request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: PASSWORD_ADMIN })).body.error).toBe('invalid_request');
     // Contraseña débil: rechazada sin consumir el token.
-    expect((await c.request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: COMMON_PASSWORD })).body.error).toBe('weak_password');
-    const act = await c.request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: PASSWORD_ADMIN });
+    expect((await c.request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: COMMON_PASSWORD })).body.error).toBe('weak_password');
+    const act = await c.request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD_ADMIN });
     expect(act.status).toBe(200);
     expect(act.body.stage).toBe('mfa_enroll');
+    // La cookie contiene solo el token (sin el prefijo `<slug>.`).
+    expect(c.cookie).toMatch(/^[A-Za-z0-9_-]{43}$/);
     // El token es de un solo uso.
-    expect((await client().request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: PASSWORD_ADMIN })).body.error).toBe('invalid_token');
+    expect((await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD_ADMIN })).body.error).toBe('invalid_token');
     // Sin MFA no puede usar nada más.
     expect((await c.request('GET', '/api/v1/users')).body.error).toBe('mfa_enrollment_required');
     const enroll = await c.request('POST', '/api/v1/auth/mfa/enroll', {});
@@ -144,16 +277,18 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(me.body).toMatchObject({ organization: { slug: slugA }, user: { email: 'admin@ejemplo.cl', mfaEnabled: true }, stage: 'full' });
   });
 
-  it('inicio de sesión en dos pasos; los fallos responden igual sin revelar qué dato falló', async () => {
-    const generic = { error: 'invalid_credentials', message: 'Organización, correo o contraseña incorrectos.' };
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'admin@ejemplo.cl', password: WRONG_PASSWORD })).body).toEqual(generic);
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'nadie@ejemplo.cl', password: PASSWORD_ADMIN })).body).toEqual(generic);
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: 'no-existe', email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN })).body).toEqual(generic);
-    // La cuenta existe solo en A: en B no inicia sesión (aislamiento).
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugB, email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN })).body).toEqual(generic);
+  it('D-75 ajustada: inicio de sesión con correo y contraseña; los fallos responden igual y tardan al menos 300 ms', async () => {
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'admin@ejemplo.cl', password: WRONG_PASSWORD })).body).toEqual(GENERIC_FAILURE);
+    const started = Date.now();
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'nadie@ejemplo.cl', password: PASSWORD_ADMIN })).body).toEqual(GENERIC_FAILURE);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(MIN_FAILURE_MS);
+    // El campo `organization` se rechaza aunque los datos sean correctos.
+    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN })).body.error).toBe('invalid_request');
+    // La cuenta existe solo en A: la API de B no la conoce (cada instalación, una organización).
+    expect((await clientB().request('POST', '/api/v1/auth/login', { email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN })).body).toEqual(GENERIC_FAILURE);
 
     const c = client();
-    const login = await c.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'ADMIN@ejemplo.cl', password: PASSWORD_ADMIN });
+    const login = await c.request('POST', '/api/v1/auth/login', { email: 'ADMIN@ejemplo.cl', password: PASSWORD_ADMIN });
     expect(login.body.stage).toBe('mfa_pending');
     expect((await c.request('GET', '/api/v1/users')).body.error).toBe('mfa_required');
     const code = nextCode('admin@ejemplo.cl');
@@ -163,7 +298,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
 
     // El mismo código no se acepta dos veces (reuso).
     const other = client();
-    await other.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN });
+    await other.request('POST', '/api/v1/auth/login', { email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN });
     expect((await other.request('POST', '/api/v1/auth/mfa/verify', { code })).body.error).toBe('invalid_code');
   });
 
@@ -173,15 +308,6 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     c.csrf = 'A'.repeat(43);
     expect((await c.request('POST', '/api/v1/auth/logout')).body.error).toBe('csrf');
   });
-
-  /** Inicia sesión completa como administrador. */
-  async function loggedAdmin(): Promise<Client> {
-    const c = client();
-    await c.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN });
-    const r = await c.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode('admin@ejemplo.cl') });
-    expect(r.body.stage).toBe('full');
-    return c;
-  }
 
   let auditorId = '';
   let auditorToken = '';
@@ -201,23 +327,46 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect((await c.request('POST', '/api/v1/users/invitations', body)).body.error).toBe('email_exists');
   });
 
-  it('un rol sin MFA obligatoria entra directo; RBAC deniega lo que su rol no permite', async () => {
+  it('D-86: un rol sin privilegios también debe configurar la MFA; luego RBAC deniega lo que su rol no permite', async () => {
     const a = client();
-    const act = await a.request('POST', '/api/v1/auth/activate', { organization: slugA, token: auditorToken, password: PASSWORD_AUDITOR });
-    expect(act.body.stage).toBe('full');
+    const act = await a.request('POST', '/api/v1/auth/activate', { token: auditorToken, password: PASSWORD_AUDITOR });
+    expect(act.body.stage).toBe('mfa_enroll');
+    expect((await a.request('GET', '/api/v1/auth/me')).body.stage).toBe('mfa_enroll');
+    expect((await a.request('GET', '/api/v1/users')).body.error).toBe('mfa_enrollment_required');
+    const enroll = await a.request('POST', '/api/v1/auth/mfa/enroll', {});
+    secrets.set('auditora@ejemplo.cl', base32Decode(enroll.body.secret as string));
+    expect((await a.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode('auditora@ejemplo.cl') })).body.stage).toBe('full');
     expect((await a.request('GET', '/api/v1/users')).body.error).toBe('forbidden');
     expect((await a.request('PATCH', `/api/v1/users/${auditorId}/roles`, { roles: ['org_admin'] })).body.error).toBe('forbidden');
     expect((await a.request('GET', '/api/v1/auth/me')).body.roles).toEqual([{ id: 'auditor', label: 'Auditor' }]);
+    // Y en el siguiente inicio de sesión debe pasar por la MFA.
+    const again = client();
+    expect((await again.request('POST', '/api/v1/auth/login', { email: 'auditora@ejemplo.cl', password: PASSWORD_AUDITOR })).body.stage).toBe('mfa_pending');
   });
 
-  it('aislamiento: una sesión de A con el identificador de B no sirve en B', async () => {
+  it('2C1-06: un usuario sin roles reconocidos también queda obligado a configurar la MFA', async () => {
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'sin-roles@ejemplo.cl', displayName: 'Sin Roles Sintético', roles: ['reader'] }, null);
+    // Sus roles se reemplazan por uno que la plataforma no reconoce (p. ej. datos alterados).
+    await handle.db.deleteFrom('user_role').where('user_id', '=', invited.userId).execute();
+    await handle.db.insertInto('user_role').values({ user_id: invited.userId, role: 'rol-desconocido' }).execute();
+    const c = client();
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    expect((await c.request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD })).body.stage).toBe('mfa_enroll');
+    expect((await c.request('GET', '/api/v1/users')).body.error).toBe('mfa_enrollment_required');
+    // Sin ninguna fila de rol, igual.
+    await handle.db.deleteFrom('user_role').where('user_id', '=', invited.userId).execute();
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'sin-roles@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
+  });
+
+  it('una sesión de A no sirve en la API de B, ni con el formato antiguo `<slug>.<token>`', async () => {
     const c = await loggedAdmin();
-    const [, token] = (c.cookie ?? '').split('.');
-    const forged = client();
-    forged.cookie = `${slugB}.${token ?? ''}`;
+    const forged = clientB();
+    forged.cookie = c.cookie;
     expect((await forged.request('GET', '/api/v1/auth/me')).status).toBe(401);
-    forged.cookie = `../${slugA}.${token ?? ''}`;
-    expect((await forged.request('GET', '/api/v1/auth/me')).status).toBe(401);
+    const old = client();
+    old.cookie = `${slugA}.${c.cookie ?? ''}`;
+    expect((await old.request('GET', '/api/v1/auth/me')).status).toBe(401);
   });
 
   it('sesión: vence por inactividad (30 min) y por máximo absoluto (12 h)', async () => {
@@ -237,17 +386,16 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     throw new Error('la sesión no venció a las 12 h');
   });
 
-  it('bloqueo progresivo tras 5 fallos; se libera al pasar la espera', async () => {
-    for (let i = 0; i < 5; i++) await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'auditora@ejemplo.cl', password: `incorrecta-${String(i)}-xx` });
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'auditora@ejemplo.cl', password: PASSWORD_AUDITOR })).body.error).toBe('invalid_credentials');
+  it('bloqueo progresivo tras 5 fallos desde un origen; se libera al pasar la espera', async () => {
+    for (let i = 0; i < 5; i++) await client().request('POST', '/api/v1/auth/login', { email: 'auditora@ejemplo.cl', password: `incorrecta-${String(i)}-xx` });
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'auditora@ejemplo.cl', password: PASSWORD_AUDITOR })).body.error).toBe('invalid_credentials');
     offsetMs += 31_000;
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'auditora@ejemplo.cl', password: PASSWORD_AUDITOR })).body.stage).toBe('full');
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'auditora@ejemplo.cl', password: PASSWORD_AUDITOR })).body.stage).toBe('mfa_pending');
   });
 
   it('cambiar la contraseña revoca las demás sesiones', async () => {
-    const one = client();
-    const two = client();
-    for (const c of [one, two]) await c.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'auditora@ejemplo.cl', password: PASSWORD_AUDITOR });
+    const one = await fullLogin('auditora@ejemplo.cl', PASSWORD_AUDITOR);
+    const two = await fullLogin('auditora@ejemplo.cl', PASSWORD_AUDITOR);
     expect((await one.request('POST', '/api/v1/auth/password', { currentPassword: PASSWORD_AUDITOR, newPassword: 'corta' })).body.error).toBe('weak_password');
     const changed = await one.request('POST', '/api/v1/auth/password', { currentPassword: PASSWORD_AUDITOR, newPassword: `${PASSWORD_AUDITOR}-nueva` });
     expect(changed.status).toBe(200);
@@ -256,8 +404,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   });
 
   it('cambiar roles cierra las sesiones del afectado; no se puede quedar sin administrador', async () => {
-    const auditor = client();
-    await auditor.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'auditora@ejemplo.cl', password: `${PASSWORD_AUDITOR}-nueva` });
+    const auditor = await fullLogin('auditora@ejemplo.cl', `${PASSWORD_AUDITOR}-nueva`);
     const admin = await loggedAdmin();
     expect((await admin.request('PATCH', `/api/v1/users/${auditorId}/roles`, { roles: ['auditor', 'remediation_owner'] })).status).toBe(204);
     expect((await auditor.request('GET', '/api/v1/auth/me')).status).toBe(401);
@@ -268,98 +415,47 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   });
 
   it('desactivar un usuario corta su sesión y le impide entrar', async () => {
-    const auditor = client();
-    await auditor.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'auditora@ejemplo.cl', password: `${PASSWORD_AUDITOR}-nueva` });
+    const auditor = await fullLogin('auditora@ejemplo.cl', `${PASSWORD_AUDITOR}-nueva`);
     const admin = await loggedAdmin();
     expect((await admin.request('POST', `/api/v1/users/${auditorId}/deactivate`)).status).toBe(204);
     expect((await auditor.request('GET', '/api/v1/auth/me')).status).toBe(401);
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'auditora@ejemplo.cl', password: `${PASSWORD_AUDITOR}-nueva` })).body.error).toBe('invalid_credentials');
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'auditora@ejemplo.cl', password: `${PASSWORD_AUDITOR}-nueva` })).body).toEqual(GENERIC_FAILURE);
   });
 
   it('un código de recuperación sirve una sola vez', async () => {
-    // Se generan códigos nuevos re-registrando la MFA de un usuario de prueba en B.
-    const handle = await provisioner.openTenant(slugB);
-    const invited = await service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'admin-b@ejemplo.cl', displayName: 'Admin B', roles: ['org_admin'] }, null);
-    const c = client();
-    await c.request('POST', '/api/v1/auth/activate', { organization: slugB, token: invited.activationToken, password: PASSWORD_ADMIN });
+    // Se generan códigos nuevos con un usuario de prueba en B (su propia API).
+    const handle = await apiB.directory.open();
+    const invited = await apiB.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'admin-b@ejemplo.cl', displayName: 'Admin B', roles: ['org_admin'] }, null);
+    const c = clientB();
+    await c.request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD_ADMIN });
     const enroll = await c.request('POST', '/api/v1/auth/mfa/enroll', {});
     secrets.set('admin-b@ejemplo.cl', base32Decode(enroll.body.secret as string));
     const confirm = await c.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode('admin-b@ejemplo.cl') });
     const [recovery] = confirm.body.recoveryCodes as string[];
-    const first = client();
-    await first.request('POST', '/api/v1/auth/login', { organization: slugB, email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
+    const first = clientB();
+    await first.request('POST', '/api/v1/auth/login', { email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
     expect((await first.request('POST', '/api/v1/auth/mfa/verify', { recoveryCode: (recovery ?? '').toUpperCase() })).body.stage).toBe('full');
-    const second = client();
-    await second.request('POST', '/api/v1/auth/login', { organization: slugB, email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
+    const second = clientB();
+    await second.request('POST', '/api/v1/auth/login', { email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
     expect((await second.request('POST', '/api/v1/auth/mfa/verify', { recoveryCode: recovery })).body.error).toBe('invalid_code');
   });
 
-  it('una organización suspendida rechaza sus sesiones abiertas en la API', async () => {
-    const c = client();
-    await c.request('POST', '/api/v1/auth/login', { organization: slugB, email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
-    await c.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode('admin-b@ejemplo.cl') });
-    expect((await c.request('GET', '/api/v1/auth/me')).status).toBe(200);
-    await provisioner.setStatus(slugB, 'suspended', 'operador:pruebas');
-    expect((await c.request('GET', '/api/v1/auth/me')).status).toBe(401);
-    await provisioner.setStatus(slugB, 'active', 'operador:pruebas');
-  });
-
-  it('bitácora: eventos verificables, con IP solo como HMAC; el registro de accesos guarda la IP', async () => {
-    const entries = await provisioner.exportAuditLog(slugA);
-    const result = verifyChainItems(parseJsonlLines(toJsonl(entries)), slugA);
-    expect(result.issues).toEqual([]);
-    const actions = new Set(entries.map((e) => e.action));
-    for (const a of ['user.invited', 'user.activated', 'auth.mfa.enabled', 'auth.account.locked', 'auth.login.succeeded', 'auth.reauth.succeeded', 'user.roles.changed', 'user.deactivated', 'auth.password.changed']) {
-      expect(actions, a).toContain(a);
-    }
-    // Los intentos fallidos van solo al registro de accesos (QA 2B-08).
-    expect(actions.has('auth.login.failed')).toBe(false);
-    const text = toJsonl(entries);
-    expect(text).not.toContain('127.0.0.1');
-    expect(text).toContain('ipHmac');
-    const handle = await provisioner.openTenant(slugA);
-    const access = await handle.db.selectFrom('access_log').select(['ip', 'event']).execute();
-    expect(access.some((r) => r.ip === '127.0.0.1' || r.ip === '::ffff:127.0.0.1')).toBe(true);
-    expect(access.some((r) => r.event === 'auth.login.failed')).toBe(true);
-  });
-
-  it('valores centinela: ninguna contraseña, código ni token aparece en la base', async () => {
-    const handle = await provisioner.openTenant(slugA);
-    const db = connect<TenantDatabase>(provisionerServer, handle.info.dbName, 1);
-    const dump: string[] = [];
-    for (const table of ['app_user', 'user_session', 'activation_token', 'recovery_code', 'access_log', 'audit_log'] as const) {
-      const rows = await db.selectFrom(table).selectAll().execute();
-      dump.push(JSON.stringify(rows));
-    }
-    await db.destroy();
-    const all = dump.join('\n');
-    for (const secret of [PASSWORD_ADMIN, PASSWORD_AUDITOR, `${PASSWORD_AUDITOR}-nueva`, auditorToken]) {
-      expect(all).not.toContain(secret);
-    }
-    expect(all).not.toContain(secrets.get('admin@ejemplo.cl')?.toString('hex') ?? 'x');
-  });
-
   it('2B-01: el bloqueo resiste intentos en paralelo y no se reinicia al acertar la contraseña', async () => {
-    const handle = await provisioner.openTenant(slugA);
-    const invited = await service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'jefa@ejemplo.cl', displayName: 'Jefa Sintética', roles: ['audit_lead'] }, null);
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'jefa@ejemplo.cl', displayName: 'Jefa Sintética', roles: ['audit_lead'] }, null);
     const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
-    const c = client();
-    await c.request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: PASSWORD });
-    const enroll = await c.request('POST', '/api/v1/auth/mfa/enroll', {});
-    secrets.set('jefa@ejemplo.cl', base32Decode(enroll.body.secret as string));
-    await c.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode('jefa@ejemplo.cl') });
-    const counters = async (): Promise<{ failed_attempts: number; mfa_failed_attempts: number }> =>
-      handle.db.selectFrom('app_user').select(['failed_attempts', 'mfa_failed_attempts']).where('id', '=', invited.userId).executeTakeFirstOrThrow();
+    await activateWithMfa(invited.activationToken, 'jefa@ejemplo.cl', PASSWORD);
+    const counter = async (kind: string): Promise<number> => (await throttleRows(invited.userId)).filter((r) => r.kind === kind).reduce((n, r) => n + r.failed_attempts, 0);
 
-    // 30 contraseñas erróneas en paralelo: ninguna se pierde antes del bloqueo y la cuenta
-    // queda bloqueada (las que llegan con el bloqueo vigente ya no cuentan, QA 2B-11).
-    await Promise.all(Array.from({ length: 30 }, (_, i) => client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'jefa@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` })));
-    expect((await counters()).failed_attempts).toBeGreaterThanOrEqual(LOCK_AT);
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'jefa@ejemplo.cl', password: PASSWORD })).body.error).toBe('invalid_credentials');
+    // 30 contraseñas erróneas en paralelo desde el mismo origen: ninguna se pierde antes del
+    // bloqueo y el par queda bloqueado; las que llegan con el bloqueo vigente no cuentan.
+    await Promise.all(Array.from({ length: 30 }, (_, i) => client().request('POST', '/api/v1/auth/login', { email: 'jefa@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` })));
+    expect(await counter('password')).toBe(LOCK_AT);
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'jefa@ejemplo.cl', password: PASSWORD })).body.error).toBe('invalid_credentials');
     offsetMs += 16 * 60_000; // vence el bloqueo máximo (15 min)
     const ok = client();
-    expect((await ok.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'jefa@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
-    expect((await counters()).failed_attempts).toBe(0);
+    expect((await ok.request('POST', '/api/v1/auth/login', { email: 'jefa@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+    expect(await counter('password')).toBe(0);
     // /me antes de la MFA no revela datos del usuario (QA 2B-07).
     const pending = await ok.request('GET', '/api/v1/auth/me');
     expect(pending.body.stage).toBe('mfa_pending');
@@ -369,64 +465,329 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     // Ciclos de "contraseña correcta + 4 códigos erróneos": el contador de MFA no se reinicia.
     for (let cycle = 0; cycle < 3; cycle++) {
       const s2 = client();
-      await s2.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'jefa@ejemplo.cl', password: PASSWORD });
+      await s2.request('POST', '/api/v1/auth/login', { email: 'jefa@ejemplo.cl', password: PASSWORD });
       for (let i = 0; i < 4; i++) await s2.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' });
     }
-    expect((await counters()).mfa_failed_attempts).toBeGreaterThanOrEqual(LOCK_AT);
+    expect(await counter('mfa')).toBe(LOCK_AT);
+    // Con la MFA de la cuenta bloqueada (D-89), ni el código correcto se acepta.
     const blocked = client();
-    expect((await blocked.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'jefa@ejemplo.cl', password: PASSWORD })).body.error).toBe('invalid_credentials');
+    expect((await blocked.request('POST', '/api/v1/auth/login', { email: 'jefa@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+    // Código del paso actual (no usado): `nextCode` avanzaría el reloj justo los 30 s del bloqueo.
+    const current = totpAt(secrets.get('jefa@ejemplo.cl') ?? Buffer.alloc(0), sec());
+    expect((await blocked.request('POST', '/api/v1/auth/mfa/verify', { code: current })).body.error).toBe('invalid_code');
     offsetMs += 16 * 60_000;
     const after = client();
-    await after.request('POST', '/api/v1/auth/login', { organization: slugA, email: 'jefa@ejemplo.cl', password: PASSWORD });
+    await after.request('POST', '/api/v1/auth/login', { email: 'jefa@ejemplo.cl', password: PASSWORD });
     // 20 códigos erróneos en paralelo: a lo sumo uno se evalúa (el que reclama el turno).
     await Promise.all(Array.from({ length: 20 }, () => after.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })));
     expect((await after.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode('jefa@ejemplo.cl') })).body.error).toBe('invalid_code');
   });
 
   it('2B-11: los intentos durante un bloqueo no lo alargan; un administrador puede desbloquear', async () => {
-    const handle = await provisioner.openTenant(slugA);
-    const invited = await service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'lectora@ejemplo.cl', displayName: 'Lectora Sintética', roles: ['reader'] }, null);
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'lectora@ejemplo.cl', displayName: 'Lectora Sintética', roles: ['reader'] }, null);
     const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
-    await client().request('POST', '/api/v1/auth/activate', { organization: slugA, token: invited.activationToken, password: PASSWORD });
-    const state = async (): Promise<{ failed_attempts: number; locked_until: string | null }> =>
-      handle.db.selectFrom('app_user').select(['failed_attempts', 'locked_until']).where('id', '=', invited.userId).executeTakeFirstOrThrow();
-    // Un "atacante" bloquea la cuenta con 5 intentos.
-    for (let i = 0; i < 5; i++) await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'lectora@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
-    const locked = await state();
-    expect(locked.failed_attempts).toBe(5);
-    expect(locked.locked_until).not.toBeNull();
+    await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD });
+    // Un "atacante" bloquea el par cuenta + origen con 5 intentos.
+    for (let i = 0; i < 5; i++) await client().request('POST', '/api/v1/auth/login', { email: 'lectora@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
+    // Solo los contadores (la marca `lock_logged_pw` de QA 2C1-10 es por cuenta, no por origen).
+    const counters = async (): Promise<Awaited<ReturnType<typeof throttleRows>>> => (await throttleRows(invited.userId)).filter((r) => r.kind === 'password' || r.kind === 'mfa');
+    const locked = await counters();
+    expect(locked).toHaveLength(1);
+    expect(locked[0]).toMatchObject({ kind: 'password', failed_attempts: 5 });
+    expect(locked[0]?.locked_until).not.toBeNull();
     // La dueña y el atacante insisten durante el bloqueo: no se cuenta ni se alarga.
-    for (let i = 0; i < 3; i++) await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'lectora@ejemplo.cl', password: PASSWORD });
-    expect(await state()).toEqual(locked);
+    for (let i = 0; i < 3; i++) await client().request('POST', '/api/v1/auth/login', { email: 'lectora@ejemplo.cl', password: PASSWORD });
+    expect(await counters()).toEqual(locked);
     // El administrador la desbloquea (acción de alto riesgo) y ella entra.
     const admin = await loggedAdmin();
     expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
-    expect(await state()).toEqual({ failed_attempts: 0, locked_until: null });
-    expect((await client().request('POST', '/api/v1/auth/login', { organization: slugA, email: 'lectora@ejemplo.cl', password: PASSWORD })).body.stage).toBe('full');
+    expect(await counters()).toEqual([]);
+    // Sin MFA configurada todavía, su inicio de sesión la lleva a configurarla (D-86).
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'lectora@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
     const actions = (await provisioner.exportAuditLog(slugA)).map((e) => e.action);
     expect(actions).toContain('user.unlocked');
   });
 
-  it('2B-02: tras rotar la contraseña de la organización, la API sigue funcionando sin reiniciar', async () => {
-    const c = await loggedAdmin();
-    expect((await c.request('GET', '/api/v1/auth/me')).status).toBe(200);
-    await provisioner.rotatePassword(slugA, 'operador:pruebas');
-    // El pool anterior aún conserva conexiones abiertas; se fuerza a usar credenciales nuevas.
-    expect((await c.request('GET', '/api/v1/auth/me')).status).toBe(200);
-    expect((await (await loggedAdmin()).request('GET', '/api/v1/users')).status).toBe(200);
+  it('R-34: el atacante desde el origen A bloquea solo A; la víctima entra desde B; el paralelo no lo elude', async () => {
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'victima@ejemplo.cl', displayName: 'Víctima Sintética', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    await activateWithMfa(invited.activationToken, 'victima@ejemplo.cl', PASSWORD, client('203.0.113.20'));
+    const attacker = (): Client => client('198.51.100.7');
+    const victim = (): Client => client('203.0.113.20');
+    const attackerRow = async (): Promise<{ failed_attempts: number; locked_until: string | null } | undefined> => {
+      const origin = handle.crypto.hmac('login-origin', '198.51.100.7');
+      return (await throttleRows(invited.userId)).find((r) => r.origin_hmac === origin && r.kind === 'password');
+    };
+
+    for (let i = 0; i < LOCK_AT; i++) await attacker().request('POST', '/api/v1/auth/login', { email: 'victima@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
+    const locked = await attackerRow();
+    expect(locked?.failed_attempts).toBe(LOCK_AT);
+    expect(locked?.locked_until).not.toBeNull();
+    // Ráfaga en paralelo desde el origen bloqueado: no cuenta ni alarga la espera.
+    await Promise.all(Array.from({ length: 30 }, (_, i) => attacker().request('POST', '/api/v1/auth/login', { email: 'victima@ejemplo.cl', password: `${WRONG_PASSWORD}-p${String(i)}` })));
+    expect(await attackerRow()).toEqual(locked);
+    // Ni con la contraseña correcta entra desde el origen bloqueado.
+    expect((await attacker().request('POST', '/api/v1/auth/login', { email: 'victima@ejemplo.cl', password: PASSWORD })).body).toEqual(GENERIC_FAILURE);
+    // La víctima entra desde su propio origen.
+    await fullLogin('victima@ejemplo.cl', PASSWORD, victim());
+
+    // Al vencer la espera, de una ráfaga en paralelo se evalúa UN solo intento (D-82).
+    offsetMs += 16 * 60_000;
+    await Promise.all(Array.from({ length: 20 }, (_, i) => attacker().request('POST', '/api/v1/auth/login', { email: 'victima@ejemplo.cl', password: `${WRONG_PASSWORD}-q${String(i)}` })));
+    const relocked = await attackerRow();
+    expect(relocked?.failed_attempts).toBe(LOCK_AT + 1);
+    expect(new Date(relocked?.locked_until ?? 0).getTime()).toBeGreaterThan(now().getTime());
+    expect((await victim().request('POST', '/api/v1/auth/login', { email: 'victima@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+
+    // Dos bloqueos del mismo origen en la ventana: la bitácora registra UNO (QA 2C1-10); el
+    // registro de accesos, ambos. Los intentos fallidos van solo al registro de accesos.
+    const locks = (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'auth.account.locked' && e.object === `user/${invited.userId}`);
+    expect(locks).toHaveLength(1);
+    const accessLocks = await handle.db.selectFrom('access_log').select('ip').where('user_id', '=', invited.userId).where('event', '=', 'auth.account.locked').execute();
+    expect(accessLocks).toHaveLength(2);
+    // El desbloqueo (CLI) limpia todos los pares de la cuenta.
+    expect((await runCli(['user', 'unlock', '--tenant', slugA, '--email', 'victima@ejemplo.cl'])).code).toBe(0);
+    expect((await throttleRows(invited.userId)).filter((r) => r.kind === 'password' || r.kind === 'mfa')).toEqual([]);
+    expect((await attacker().request('POST', '/api/v1/auth/login', { email: 'victima@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+  });
+
+  it('R-34: muchos fallos desde orígenes distintos registran UNA alerta de ataque por ventana, sin bloquear la cuenta', async () => {
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'objetivo@ejemplo.cl', displayName: 'Objetivo Sintético', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD });
+    const alerts = async (): Promise<Record<string, unknown>[]> =>
+      (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'account.attack_suspected' && e.object === `user/${invited.userId}`);
+    // 5 orígenes × 4 fallos = 20 (umbral por defecto): ningún origen llega a bloquearse.
+    const wave = async (prefix: string, perOrigin: number, origins: number): Promise<void> => {
+      for (let o = 0; o < origins; o++) {
+        for (let i = 0; i < perOrigin; i++) await client(`${prefix}.${String(o + 1)}`).request('POST', '/api/v1/auth/login', { email: 'objetivo@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
+      }
+    };
+    await wave('198.51.100', 4, 4);
+    expect(await alerts()).toHaveLength(0);
+    await wave('198.51.101', 4, 1);
+    const first = await alerts();
+    expect(first).toHaveLength(1);
+    expect(first[0]?.data).toMatchObject({ failures: 20, origins: 5, windowMinutes: 60, threshold: 20 });
+    // Sin IP en claro en la bitácora.
+    expect(JSON.stringify(first)).not.toMatch(/198\.51\.10[01]/);
+    // Más fallos en la misma ventana no repiten la alerta.
+    await wave('198.51.102', 4, 2);
+    expect(await alerts()).toHaveLength(1);
+    // La cuenta NO se bloquea: la persona entra desde otro origen.
+    expect((await client('203.0.113.30').request('POST', '/api/v1/auth/login', { email: 'objetivo@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
+    // En la ventana siguiente, un ataque nuevo vuelve a alertar.
+    offsetMs += 61 * 60_000;
+    await wave('198.51.103', 4, 5);
+    expect(await alerts()).toHaveLength(2);
+  });
+
+  it('2C1-10: bloquear muchos orígenes deja UN evento de bloqueo por cuenta y ventana en la bitácora; el registro de accesos los anota todos', async () => {
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'muchos-origenes@ejemplo.cl', displayName: 'Cuenta Sintética', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD });
+    const lockFrom = async (origin: string): Promise<void> => {
+      for (let i = 0; i < LOCK_AT; i++) await client(origin).request('POST', '/api/v1/auth/login', { email: 'muchos-origenes@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
+    };
+    const auditLocks = async (): Promise<number> =>
+      (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'auth.account.locked' && e.object === `user/${invited.userId}`).length;
+    const accessLocks = async (): Promise<number> =>
+      (await handle.db.selectFrom('access_log').select('id').where('user_id', '=', invited.userId).where('event', '=', 'auth.account.locked').execute()).length;
+    for (let o = 1; o <= 6; o++) await lockFrom(`192.0.2.${String(o)}`);
+    expect(await accessLocks()).toBe(6);
+    expect(await auditLocks()).toBe(1);
+    // En la ventana siguiente, un bloqueo nuevo vuelve a registrarse una vez.
+    offsetMs += 61 * 60_000;
+    await lockFrom('192.0.2.50');
+    await lockFrom('192.0.2.51');
+    expect(await accessLocks()).toBe(8);
+    expect(await auditLocks()).toBe(2);
+  });
+
+  it('D-89 (QA 2C1-04, QA-05): 5 códigos MFA errados desde orígenes distintos bloquean la MFA de la cuenta; desbloqueo por API y CLI', async () => {
+    const handle = await apiA.directory.open();
+    // Administrador con MFA reciente ANTES de provocar el bloqueo: `nextCode` adelanta el reloj
+    // 30 s, lo mismo que dura el primer bloqueo, y lo haría vencer.
+    const admin = await loggedAdmin();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'mfa-cuenta@ejemplo.cl', displayName: 'MFA por Cuenta', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    const owner = await activateWithMfa(invited.activationToken, 'mfa-cuenta@ejemplo.cl', PASSWORD, client('203.0.113.40'));
+    const mfaRows = async (): Promise<Awaited<ReturnType<typeof throttleRows>>> => (await throttleRows(invited.userId)).filter((r) => r.kind === 'mfa');
+    /** Código del paso vigente, sin adelantar el reloj (no vence el bloqueo). */
+    const currentCode = (): string => totpAt(secrets.get('mfa-cuenta@ejemplo.cl') ?? Buffer.alloc(0), sec());
+    /** Sesión `mfa_pending` desde un origen: el atacante conoce la contraseña. */
+    const pendingFrom = async (origin: string): Promise<Client> => {
+      const c = client(origin);
+      expect((await c.request('POST', '/api/v1/auth/login', { email: 'mfa-cuenta@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+      return c;
+    };
+    const lockFromOrigins = async (prefix: string): Promise<void> => {
+      for (let i = 0; i < LOCK_AT; i++) {
+        const c = await pendingFrom(`${prefix}.${String(i + 1)}`);
+        expect((await c.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })).body.error).toBe('invalid_code');
+      }
+    };
+    const mfaLocks = async (): Promise<{ audit: Record<string, unknown>[]; access: number }> => ({
+      audit: (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'auth.account.locked' && e.object === `user/${invited.userId}`),
+      access: (await handle.db.selectFrom('access_log').select('id').where('user_id', '=', invited.userId).where('event', '=', 'auth.account.locked').execute()).length,
+    });
+
+    // Paso nuevo (no usado) para la dueña: así el rechazo del código correcto se debe solo al
+    // bloqueo y no al reuso del paso, y el mismo código sirve tras desbloquear.
+    offsetMs += 30_000;
+    // Ronda 1: 5 orígenes distintos, un código errado cada uno (QA-05).
+    await lockFromOrigins('198.51.104');
+    const rows = await mfaRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ origin_hmac: ACCOUNT_ORIGIN, failed_attempts: LOCK_AT });
+    expect(new Date(rows[0]?.locked_until ?? 0).getTime()).toBeGreaterThan(now().getTime());
+    // Ningún origen del atacante quedó con un contador propio de MFA.
+    const origins = ['198.51.104.1', '198.51.104.5', '198.51.104.99'].map((ip) => handle.crypto.hmac('login-origin', ip));
+    expect((await throttleRows(invited.userId)).some((r) => r.kind === 'mfa' && origins.includes(r.origin_hmac))).toBe(false);
+    // Desde un origen nuevo, la contraseña sigue dando `mfa_pending` (bloqueo de contraseña
+    // por origen, sin cambios), pero el código CORRECTO se rechaza mientras dure el bloqueo.
+    const fresh = await pendingFrom('198.51.104.99');
+    expect((await fresh.request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.error).toBe('invalid_code');
+    // Lo mismo desde el origen de la dueña, y en su reautenticación (mismo contador de MFA).
+    const ownerPending = await pendingFrom('203.0.113.40');
+    expect((await ownerPending.request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.error).toBe('invalid_code');
+    expect((await owner.request('POST', '/api/v1/auth/reauth', { code: currentCode() })).body.error).toBe('invalid_code');
+    // Los intentos durante el bloqueo no cuentan ni lo alargan (D-83).
+    expect(await mfaRows()).toEqual(rows);
+    const blockedEvents = await handle.db.selectFrom('access_log').select('event').where('user_id', '=', invited.userId).where('event', 'in', ['auth.mfa.blocked', 'auth.reauth.blocked']).execute();
+    expect(blockedEvents.map((r) => r.event).sort()).toEqual(['auth.mfa.blocked', 'auth.mfa.blocked', 'auth.reauth.blocked']);
+    // Bitácora: un bloqueo de MFA con alcance por cuenta (QA 2C1-10: uno por cuenta y ventana).
+    const first = await mfaLocks();
+    expect(first.audit).toHaveLength(1);
+    expect(first.audit[0]?.data).toMatchObject({ counter: 'mfa', scope: 'account' });
+    expect(first.access).toBe(1);
+
+    // Desbloqueo por la API: el MISMO código, antes rechazado, ahora entra desde un origen nuevo.
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
+    expect(await mfaRows()).toEqual([]);
+    const afterApi = await pendingFrom('198.51.104.100');
+    expect((await afterApi.request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.stage).toBe('full');
+
+    // Ronda 2, en la misma ventana de 1 hora: se vuelve a bloquear; desbloqueo por la CLI.
+    offsetMs += 30_000;
+    await lockFromOrigins('198.51.105');
+    expect((await mfaRows())[0]).toMatchObject({ origin_hmac: ACCOUNT_ORIGIN, failed_attempts: LOCK_AT });
+    expect((await (await pendingFrom('198.51.105.99')).request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.error).toBe('invalid_code');
+    const second = await mfaLocks();
+    expect(second.audit).toHaveLength(1);
+    expect(second.access).toBe(2);
+    expect((await runCli(['user', 'unlock', '--tenant', slugA, '--email', 'mfa-cuenta@ejemplo.cl'])).code).toBe(0);
+    expect(await mfaRows()).toEqual([]);
+    expect((await (await pendingFrom('198.51.105.100')).request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.stage).toBe('full');
+  });
+
+  it('D-89 + D-82: una ráfaga de códigos desde muchos orígenes no elude el bloqueo de MFA por cuenta ni lleva la espera al tope; reiniciar la MFA lo levanta', async () => {
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'mfa-rafaga@ejemplo.cl', displayName: 'MFA Ráfaga', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    await activateWithMfa(invited.activationToken, 'mfa-rafaga@ejemplo.cl', PASSWORD, client('203.0.113.41'));
+    const mfaRows = async (): Promise<Awaited<ReturnType<typeof throttleRows>>> => (await throttleRows(invited.userId)).filter((r) => r.kind === 'mfa');
+    const pendingFrom = async (origin: string): Promise<Client> => {
+      const c = client(origin);
+      expect((await c.request('POST', '/api/v1/auth/login', { email: 'mfa-rafaga@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+      return c;
+    };
+    /** Una sesión `mfa_pending` por origen (el inicio de sesión con contraseña no se bloquea). */
+    const sessions = async (prefix: string, n: number): Promise<Client[]> => Promise.all(Array.from({ length: n }, (_, i) => pendingFrom(`${prefix}.${String(i + 1)}`)));
+
+    // 30 códigos errados EN PARALELO desde 30 orígenes: ninguno se pierde antes del umbral, se
+    // evalúan exactamente 5 y la MFA de la cuenta queda bloqueada.
+    const burst = await sessions('198.51.106', 30);
+    const results = await Promise.all(burst.map((c) => c.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })));
+    expect(results.every((r) => r.body.error === 'invalid_code')).toBe(true);
+    const locked = await mfaRows();
+    expect(locked).toHaveLength(1);
+    expect(locked[0]).toMatchObject({ origin_hmac: ACCOUNT_ORIGIN, failed_attempts: LOCK_AT });
+    const verified = await handle.db.selectFrom('access_log').select('id').where('user_id', '=', invited.userId).where('event', '=', 'auth.mfa.failed').execute();
+    expect(verified).toHaveLength(LOCK_AT);
+
+    // Al vencer la espera (30 s), de una ráfaga de 20 códigos desde 20 orígenes cuenta UNO:
+    // el contador pasa a 6 y la espera se duplica (60 s), no salta al tope de 15 min.
+    const later = await sessions('198.51.107', 20);
+    offsetMs += 31_000;
+    await Promise.all(later.map((c) => c.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })));
+    const relocked = await mfaRows();
+    expect(relocked[0]?.failed_attempts).toBe(LOCK_AT + 1);
+    const remaining = new Date(relocked[0]?.locked_until ?? 0).getTime() - now().getTime();
+    expect(remaining).toBeGreaterThan(0);
+    expect(remaining).toBeLessThanOrEqual(60_000);
+
+    // Restablecer la MFA levanta el bloqueo (D-83): la persona vuelve a configurarla.
+    const admin = await loggedAdmin();
+    expect((await admin.request('POST', '/api/v1/auth/reauth', { code: nextCode('admin@ejemplo.cl') })).status).toBe(204);
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`)).status).toBe(204);
+    expect(await mfaRows()).toEqual([]);
+    expect((await client('198.51.107.99').request('POST', '/api/v1/auth/login', { email: 'mfa-rafaga@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
+  });
+
+  it('bitácora: eventos verificables, con IP solo como HMAC; el registro de accesos guarda la IP', async () => {
+    const entries = await provisioner.exportAuditLog(slugA);
+    const result = verifyChainItems(parseJsonlLines(toJsonl(entries)), slugA);
+    expect(result.issues).toEqual([]);
+    const actions = new Set(entries.map((e) => e.action));
+    for (const a of ['tenant.api_secrets_written', 'user.invited', 'user.activated', 'auth.mfa.enabled', 'auth.account.locked', 'auth.login.succeeded', 'auth.reauth.succeeded', 'user.roles.changed', 'user.deactivated', 'auth.password.changed', 'account.attack_suspected']) {
+      expect(actions, a).toContain(a);
+    }
+    // Los intentos fallidos van solo al registro de accesos (QA 2B-08).
+    expect(actions.has('auth.login.failed')).toBe(false);
+    const text = toJsonl(entries);
+    expect(text).not.toContain('127.0.0.1');
+    expect(text).not.toContain('198.51.100.7');
+    expect(text).toContain('ipHmac');
+    const handle = await apiA.directory.open();
+    const access = await handle.db.selectFrom('access_log').select(['ip', 'event']).execute();
+    expect(access.some((r) => r.ip === '127.0.0.1' || r.ip === '::ffff:127.0.0.1')).toBe(true);
+    expect(access.some((r) => r.ip === '198.51.100.7')).toBe(true);
+    expect(access.some((r) => r.event === 'auth.login.failed')).toBe(true);
+    // login_throttle guarda el origen solo como HMAC.
+    const throttle = await handle.db.selectFrom('login_throttle').selectAll().execute();
+    expect(JSON.stringify(throttle)).not.toMatch(/198\.51\.|203\.0\.113|127\.0\.0\.1/);
+  });
+
+  it('cookie de sesión: HttpOnly y SameSite=Strict; con COOKIE_SECURE=true, Secure y prefijo __Host-', async () => {
+    const insecure = await fetch(`${apiA.base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN }) });
+    const plain = insecure.headers.getSetCookie().find((c) => c.startsWith('auditor_session='));
+    expect(plain).toBeDefined();
+    expect(plain).toMatch(/; HttpOnly/);
+    expect(plain).toMatch(/; SameSite=Strict/);
+    expect(plain).toMatch(/; Path=\//);
+    expect(plain).not.toMatch(/; Secure/);
+
+    // Misma organización y servicio, con la configuración por defecto (COOKIE_SECURE=true).
+    const secureApp = await createApp(loadConfig({}), { service: apiA.service, config: { ...apiA.config, cookieSecure: true } });
+    try {
+      await secureApp.listen(0, '127.0.0.1');
+      const res = await fetch(`${await secureApp.getUrl()}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN }) });
+      expect(res.status).toBe(200);
+      const cookies = res.headers.getSetCookie();
+      expect(cookies.some((c) => c.startsWith('auditor_session='))).toBe(false);
+      const secure = cookies.find((c) => c.startsWith('__Host-auditor_session='));
+      expect(secure).toBeDefined();
+      const value = decodeURIComponent((secure ?? '').split(';')[0]?.split('=')[1] ?? '');
+      expect(value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      issuedSessionTokens.add(value);
+      for (const attr of [/; HttpOnly/, /; SameSite=Strict/, /; Secure/, /; Path=\//]) expect(secure).toMatch(attr);
+      // __Host- exige que no haya Domain.
+      expect(secure).not.toMatch(/; Domain=/i);
+    } finally {
+      await secureApp.close();
+    }
   });
 
   it('2B-03: dos cambios simultáneos no dejan la organización sin administrador', async () => {
-    const handle = await provisioner.openTenant(slugB);
-    const second = await service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'admin-b2@ejemplo.cl', displayName: 'Admin B2', roles: ['org_admin'] }, null);
-    const c2 = client();
-    await c2.request('POST', '/api/v1/auth/activate', { organization: slugB, token: second.activationToken, password: PASSWORD_ADMIN });
-    const enroll = await c2.request('POST', '/api/v1/auth/mfa/enroll', {});
-    secrets.set('admin-b2@ejemplo.cl', base32Decode(enroll.body.secret as string));
-    await c2.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode('admin-b2@ejemplo.cl') });
-    const c1 = client();
-    await c1.request('POST', '/api/v1/auth/login', { organization: slugB, email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
-    await c1.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode('admin-b@ejemplo.cl') });
+    const handle = await apiB.directory.open();
+    const second = await apiB.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'admin-b2@ejemplo.cl', displayName: 'Admin B2', roles: ['org_admin'] }, null);
+    const c2 = await activateWithMfa(second.activationToken, 'admin-b2@ejemplo.cl', PASSWORD_ADMIN, clientB());
+    const c1 = await fullLogin('admin-b@ejemplo.cl', PASSWORD_ADMIN, clientB());
     const b1 = (await handle.db.selectFrom('app_user').select('id').where('email', '=', 'admin-b@ejemplo.cl').executeTakeFirstOrThrow()).id;
     // B1 desactiva a B2 mientras B2 le quita a B1 el rol de administrador: cada cambio por
     // separado es válido (queda el otro), pero juntos dejarían 0 administradores.
@@ -435,10 +796,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     const spy = vi.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => {
       logged.push(String(m));
     });
-    const [r1, r2] = await Promise.all([
-      c1.request('POST', `/api/v1/users/${second.userId}/deactivate`),
-      c2.request('PATCH', `/api/v1/users/${b1}/roles`, { roles: ['reader'] }),
-    ]);
+    const [r1, r2] = await Promise.all([c1.request('POST', `/api/v1/users/${second.userId}/deactivate`), c2.request('PATCH', `/api/v1/users/${b1}/roles`, { roles: ['reader'] })]);
     spy.mockRestore();
     expect(logged, `errores internos: ${logged.join(' | ')}`).toEqual([]);
     expect([r1.status, r2.status].filter((x) => x === 204)).toHaveLength(1);
@@ -455,14 +813,119 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   });
 
   it('2B-06: un cuerpo demasiado grande responde 413 sin error interno', async () => {
-    const res = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'x'.repeat(200_000) }) });
+    const res = await fetch(`${apiA.base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'x'.repeat(200_000) }) });
     expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ error: 'payload_too_large', message: 'La solicitud es demasiado grande.' });
   });
 
   it('el usuario de la organización sigue sin poder modificar la bitácora', async () => {
-    const handle = await apiManager.openTenant(slugA);
+    const handle = await apiA.directory.open();
     await expect(sql`UPDATE audit_log SET actor = 'x'`.execute(handle.db)).rejects.toThrow();
     await expect(sql`DELETE FROM audit_log`.execute(handle.db)).rejects.toThrow();
   });
+
+  it('D-87 y 2C1-07: rotate-password cierra las conexiones con la contraseña anterior; la API con la nueva funciona y los MFA siguen abriendo', async () => {
+    const before = apiA.config.dbPassword;
+    // Sesión abierta en la API que todavía usa la contraseña anterior.
+    const oldSession = await loggedAdmin();
+    expect((await oldSession.request('GET', '/api/v1/auth/me')).status).toBe(200);
+    const rotated = await runCli(['tenant', 'rotate-password', '--slug', slugA, '--api-secrets-out', secretsDirA]);
+    expect(rotated, rotated.err).toMatchObject({ code: 0 });
+    const config = apiConfig(slugA, secretsDirA);
+    expect(config.dbPassword).not.toBe(before);
+    // Misma DEK: los secretos MFA cifrados antes se siguen abriendo (D-88).
+    expect(config.dek.id).toBe(apiA.config.dek.id);
+    // QA 2C1-07: la API con la contraseña anterior pierde sus conexiones y no puede abrir
+    // otras: falla de forma segura (503), sin seguir operando.
+    const stale = await oldSession.request('GET', '/api/v1/auth/me');
+    expect(stale.status).toBe(503);
+    expect(stale.body.error).toBe('unavailable');
+    // "Reinicio" de la API: una instancia nueva con los secretos reescritos.
+    const old = apiA;
+    apiA = await startApi(config);
+    await old.app.close();
+    await old.directory.close();
+    const c = await loggedAdmin();
+    expect((await c.request('GET', '/api/v1/users')).status).toBe(200);
+    // La sesión vive en la base: sigue valiendo en la API reiniciada.
+    const resumed = client();
+    resumed.cookie = oldSession.cookie;
+    expect((await resumed.request('GET', '/api/v1/auth/me')).status).toBe(200);
+    // Sin --api-secrets-out, la CLI avisa que la API quedará con la contraseña anterior.
+    const warned = await runCli(['tenant', 'rotate-password', '--slug', slugB]);
+    expect(warned.code).toBe(0);
+    expect(warned.err).toMatch(/api-secrets write/);
+    writeApiSecrets(secretsDirB, await provisioner.apiSecrets(slugB, 'operador:pruebas'));
+    const oldB = apiB;
+    apiB = await startApi(apiConfig(slugB, secretsDirB));
+    await oldB.app.close();
+    await oldB.directory.close();
+  });
+
+  it('D-87: al suspender la organización se cierran sus conexiones y la API falla de forma segura', async () => {
+    const c = await fullLogin('admin-b@ejemplo.cl', PASSWORD_ADMIN, clientB());
+    expect((await c.request('GET', '/api/v1/auth/me')).status).toBe(200);
+    const { warnings } = await provisioner.setStatus(slugB, 'suspended', 'operador:pruebas');
+    // Sin sesiones abiertas del usuario de la organización tras suspender.
+    expect(warnings).toEqual([]);
+    const errors: string[] = [];
+    const spy = vi.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => {
+      errors.push(String(m));
+    });
+    try {
+      // Diagnóstico (CI de SQL Server): cuánto tarda en fallar. Antes de fijar
+      // `propagateCreateError`, el pool de tedious reintentaba la conexión 30 s.
+      const t0 = Date.now();
+      const me = await c.request('GET', '/api/v1/auth/me');
+      const meMs = Date.now() - t0;
+      console.info(`[${engine}] /me tras suspender: ${String(me.status)} en ${String(meMs)} ms`);
+      expect(meMs, 'la API debe fallar rápido, sin quedar colgada').toBeLessThan(10_000);
+      expect(me.status).toBe(503);
+      expect(me.body.error).toBe('unavailable');
+      expect(Object.keys(me.body).sort()).toEqual(['error', 'message']);
+      expect(JSON.stringify(me.body)).not.toMatch(/admin-b|auditor_t_|password|role/i);
+      const t1 = Date.now();
+      const login = await clientB().request('POST', '/api/v1/auth/login', { email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
+      console.info(`[${engine}] login tras suspender: ${String(login.status)} en ${String(Date.now() - t1)} ms`);
+      expect(login.status).toBe(503);
+      expect(login.headers.getSetCookie()).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errors.length).toBeGreaterThan(0);
+    // Al reactivar, la API se recupera sola (las sesiones viven en la base).
+    await provisioner.setStatus(slugB, 'active', 'operador:pruebas');
+    const t2 = Date.now();
+    const back = await c.request('GET', '/api/v1/auth/me');
+    console.info(`[${engine}] /me tras reactivar: ${String(back.status)} en ${String(Date.now() - t2)} ms`);
+    expect(back.status).toBe(200);
+    // Plazo propio: suspender espera hasta 5 s a que se cierren las sesiones (waitForNoSessions).
+  }, 90_000);
+
+  // QA 2C1-09: al FINAL de la suite, para revisar todos los tokens emitidos en ella.
+  it('valores centinela: ninguna contraseña, código, token de sesión ni secreto de la API aparece en las bases', async () => {
+    const dump: string[] = [];
+    for (const api of [apiA, apiB]) {
+      const db = connect<TenantDatabase>(provisionerServer, api.config.organization.dbName, 1);
+      try {
+        for (const table of ['app_user', 'user_session', 'activation_token', 'recovery_code', 'access_log', 'audit_log', 'login_throttle'] as const) {
+          dump.push(JSON.stringify(await db.selectFrom(table).selectAll().execute()));
+        }
+      } finally {
+        await db.destroy();
+      }
+    }
+    const all = dump.join('\n');
+    // Observación QA 2B §7: también los tokens de sesión emitidos (valor de la cookie).
+    expect(issuedSessionTokens.size).toBeGreaterThan(10);
+    for (const secret of [PASSWORD_ADMIN, PASSWORD_AUDITOR, `${PASSWORD_AUDITOR}-nueva`, auditorToken, ...issuedSessionTokens, ...apiSecretValues]) {
+      expect(all).not.toContain(secret);
+    }
+    expect(all).not.toContain(secrets.get('admin@ejemplo.cl')?.toString('hex') ?? 'x');
+  });
 });
+
+/** Directorio de secretos propio (700), como `deploy/compose/secrets/api`. */
+function mkdirPrivate(dir: string): void {
+  mkdirSync(dir, { mode: 0o700 });
+}

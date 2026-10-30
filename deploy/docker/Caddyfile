@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Proxy inverso y servidor de la interfaz web.
 # Perfil local (Fase 1): HTTP en el puerto 8080, publicado solo en 127.0.0.1 por Compose.
-# El perfil institucional con TLS (CA interna, D-37) se define en la Fase 2.
+# El perfil institucional con HTTPS (D-37) está en Caddyfile.institucional (2C-1).
 {
 	# Sin API de administración: nadie puede reconfigurar el proxy en caliente.
 	admin off

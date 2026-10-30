@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { createHmac, hkdfSync, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { CryptoError, generateDbPassword, generateKey, open, seal, unwrapKey, wrapKey, type SymmetricKey } from '@auditor-21719/crypto';
 import { sql, type Kysely } from 'kysely';
 import { AuditLogRepository } from './audit-log-repository.js';
@@ -9,53 +9,19 @@ import { connect, serverAdminDatabase } from './connection.js';
 import { migrateToLatest } from './migrate.js';
 import { assertTenantName, assertTenantSlug, dekContext, newTenantResourceNames, passwordContext } from './naming.js';
 import { provisionerFor, type Provisioner } from './provisioner.js';
-import { controlMigrations, tenantMigrations, type ControlDatabase, type TenantDatabase, type TenantStatus, type TenantsTable } from './schema.js';
+import { controlMigrations, tenantMigrations, type ControlDatabase, type TenantDatabase, type TenantsTable } from './schema.js';
+import { openTenantHandle, type OrganizationDescriptor, type TenantHandle, type TenantInfo } from './tenant-handle.js';
 
-/** Datos públicos de una organización (nunca incluye secretos). */
-export interface TenantInfo {
-  id: string;
-  slug: string;
-  name: string;
-  status: TenantStatus;
-  dbName: string;
-  createdAt: string;
-}
+export type { TenantCrypto, TenantHandle, TenantInfo } from './tenant-handle.js';
 
 /**
- * Cifrado con la DEK de una organización, sin exponer la clave (2B). Los contextos se
- * prefijan con el identificador de la organización: un dato cifrado para una organización
- * no se descifra en otra.
+ * Secretos que la API necesita para operar con su organización sin la clave maestra
+ * (D-87 precisada por D-88). Los escribe `auditor-admin api-secrets write`.
  */
-export interface TenantCrypto {
-  seal(purpose: string, data: Buffer): string;
-  open(purpose: string, sealed: string): Buffer;
-  /** HMAC-SHA256 (hex) con una clave derivada de la DEK para `purpose` (p. ej. IP, D-78). */
-  hmac(purpose: string, data: string): string;
-}
-
-/** Acceso a la base de una organización con SUS credenciales de aplicación. */
-export interface TenantHandle {
-  info: TenantInfo;
-  db: Kysely<TenantDatabase>;
-  audit: AuditLogRepository;
-  crypto: TenantCrypto;
-}
-
-function tenantCrypto(tenantId: string, dek: SymmetricKey): TenantCrypto {
-  const ctx = (purpose: string): string => `tenant:${tenantId}:app:${purpose}`;
-  const hmacKeys = new Map<string, Buffer>();
-  return {
-    seal: (purpose, data) => seal(dek, data, ctx(purpose)),
-    open: (purpose, sealed) => open([dek], sealed, ctx(purpose)),
-    hmac: (purpose, data) => {
-      let key = hmacKeys.get(purpose);
-      if (key === undefined) {
-        key = Buffer.from(hkdfSync('sha256', dek.material, Buffer.alloc(0), `hmac|${ctx(purpose)}`, 32));
-        hmacKeys.set(purpose, key);
-      }
-      return createHmac('sha256', key).update(data, 'utf8').digest('hex');
-    },
-  };
+export interface ApiSecrets {
+  organization: OrganizationDescriptor;
+  dbPassword: string;
+  dek: SymmetricKey;
 }
 
 /** Resultado de una operación que puede completarse con advertencias. */
@@ -92,6 +58,7 @@ const TENANT_TABLE_COLUMNS: Record<string, readonly string[]> = {
   user_session: ['created_at', 'csrf_hash', 'expires_at', 'id_hash', 'last_seen_at', 'mfa_verified_at', 'stage', 'user_id'],
   activation_token: ['created_at', 'expires_at', 'token_hash', 'used_at', 'user_id'],
   access_log: ['event', 'id', 'ip', 'ts', 'ua_family', 'user_id'],
+  login_throttle: ['failed_attempts', 'kind', 'locked_until', 'origin_hmac', 'updated_at', 'user_id'],
   kysely_migration: ['name', 'timestamp'],
   kysely_migration_lock: ['id', 'is_locked'],
 };
@@ -153,18 +120,15 @@ export class TenantManager {
    * Crea la base de control si no existe, aplica sus migraciones y la protege.
    * Es idempotente. Devuelve migraciones aplicadas y avisos de endurecimiento del servidor.
    */
-  async initControl(options: { apiReader?: string } = {}): Promise<{ applied: string[]; warnings: string[] }> {
+  async initControl(): Promise<{ applied: string[]; warnings: string[] }> {
     const name = this.config.controlDatabase;
     if (!(await this.provisioner.databaseExists(this.server(), name))) {
       await this.provisioner.createDatabase(this.server(), name);
     }
     await this.provisioner.protectControlDatabase(this.server(), this.control() as Kysely<unknown>, name);
+    // Desde 2C-1 (D-87) la API ya no lee la base de control: no se concede acceso a ninguna
+    // cuenta de la API. La cuenta `auditor_api` de 2B dejó de existir.
     const { applied } = await migrateToLatest(this.control() as Kysely<unknown>, controlMigrations(this.admin.engine));
-    // Cuenta de la API: solo lectura del registro de organizaciones (D-80). La crea quien
-    // administra el motor (docs/fase-2/servidor-de-base-de-datos.md).
-    if (options.apiReader !== undefined) {
-      await this.provisioner.grantControlRead(this.server(), this.control() as Kysely<unknown>, name, options.apiReader);
-    }
     const warnings = await this.provisioner.hardeningWarnings(this.server());
     const rows = await this.control().selectFrom('tenants').select(['slug', 'status', 'db_name']).execute();
     for (const row of rows.filter((r) => r.status === 'provisioning')) {
@@ -422,19 +386,47 @@ export class TenantManager {
    * sesión que su usuario se haya fijado. Recupera el acceso si el usuario cambió su propia
    * contraseña (hallazgo QA M-02).
    */
-  async rotatePassword(slug: string, actor: string): Promise<void> {
+  async rotatePassword(slug: string, actor: string): Promise<{ secrets: ApiSecrets } & OperationResult> {
     const row = await this.findRow(slug);
     if (row.status === 'provisioning') throw new Error('La organización aún se está creando.');
     const password = generateDbPassword();
     const dek = unwrapKey(this.masterKeys, row.dek_wrapped, dekContext(row.id));
     await this.closeTenant(slug);
     await this.provisioner.resetPassword(this.server(), row.db_user, password, row.db_name);
+    // Cambiar la contraseña no corta las conexiones ya autenticadas (QA 2C1-07): se cierran
+    // con el mismo mecanismo de la suspensión, para que nadie siga operando con la
+    // contraseña anterior (p. ej. una API que no se reinició o quien la haya obtenido).
+    const warnings: string[] = [];
+    const w = await this.provisioner.terminateSessions(this.server(), row.db_user);
+    if (w !== null) warnings.push(w);
+    const open = await this.waitForNoSessions(row.db_user);
+    if (open !== 0) {
+      warnings.push(open < 0 ? 'No se pudo comprobar si quedan sesiones abiertas con la contraseña anterior.' : `Siguen abiertas ${String(open)} sesión(es) con la contraseña anterior: pueden seguir operando hasta que se cierren.`);
+    }
     await this.control()
       .updateTable('tenants')
       .set({ db_password_sealed: seal(dek, Buffer.from(password, 'utf8'), passwordContext(row.id)), updated_at: nowIso() })
       .where('id', '=', row.id)
       .execute();
     await this.appendAsAdmin(row, { actor, action: 'tenant.password_rotated', object: `organization/${slug}`, data: {} });
+    // La API tiene su propia copia de la contraseña (D-87): quien llama debe reescribir sus
+    // secretos (`--api-secrets-out`) y reiniciarla.
+    // Los avisos van aparte de los secretos: quien los imprime no toca el objeto de secretos.
+    return { secrets: { organization: descriptorOf(row, dek), dbPassword: password, dek }, warnings };
+  }
+
+  /**
+   * Secretos de la API para una organización (D-87 precisada por D-88): contraseña de su
+   * base y DEK ya desenvuelta. Solo la CLI, con la clave maestra, puede obtenerlos. El
+   * registro queda en la bitácora de la organización (sin los secretos).
+   */
+  async apiSecrets(slug: string, actor: string): Promise<ApiSecrets> {
+    const row = await this.findRow(slug);
+    if (row.status === 'provisioning') throw new Error('La organización aún se está creando.');
+    const dek = unwrapKey(this.masterKeys, row.dek_wrapped, dekContext(row.id));
+    const dbPassword = open([dek], row.db_password_sealed, passwordContext(row.id)).toString('utf8');
+    await this.appendAsAdmin(row, { actor, action: 'tenant.api_secrets_written', object: `organization/${slug}`, data: {} });
+    return { organization: descriptorOf(row, dek), dbPassword, dek };
   }
 
   /**
@@ -626,20 +618,14 @@ export class TenantManager {
     return this.openWithCredentials(toInfo(row), row.db_user, password, dek);
   }
 
-  private async openWithCredentials(info: TenantInfo, user: string, password: string, dek: SymmetricKey): Promise<TenantHandle> {
-    const db = connect<TenantDatabase>({ ...this.admin, user, password }, info.dbName);
-    try {
-      // Defensa contra enrutamiento erróneo: la base debe declararse como esta organización.
-      const org = await db.selectFrom('organization').select(['id', 'slug']).executeTakeFirst();
-      if (org?.id !== info.id || org.slug !== info.slug) {
-        throw new Error(`La base ${info.dbName} no corresponde a la organización "${info.slug}".`);
-      }
-    } catch (error) {
-      await db.destroy();
-      throw error;
-    }
-    return { info, db, audit: new AuditLogRepository(db, this.admin.engine, info.slug), crypto: tenantCrypto(info.id, dek) };
+  private openWithCredentials(info: TenantInfo, user: string, password: string, dek: SymmetricKey): Promise<TenantHandle> {
+    // Defensa contra enrutamiento erróneo: la base debe declararse como esta organización.
+    return openTenantHandle({ ...this.admin, user, password }, info, dek);
   }
+}
+
+function descriptorOf(r: TenantsTable, dek: SymmetricKey): OrganizationDescriptor {
+  return { id: r.id, slug: r.slug, name: r.name, dbName: r.db_name, dbUser: r.db_user, dekId: dek.id };
 }
 
 function toInfo(r: TenantsTable): TenantInfo {

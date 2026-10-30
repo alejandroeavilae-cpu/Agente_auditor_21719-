@@ -30,10 +30,9 @@ REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
 GRANT CONNECT ON DATABASE postgres TO auditor_provisioner;
 
--- 4. Cuenta de la API (entrega 2B, D-80): solo inicia sesión. `auditor-admin init` (con
---    DB_API_READER_USER=auditor_api) le concede leer el registro de organizaciones.
-CREATE ROLE auditor_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
-  PASSWORD '<OTRA CONTRASEÑA>';
+-- 4. (Desde 2C-1, D-87) La API NO tiene cuenta propia: usa el usuario de su organización,
+--    que crea `auditor-admin tenant create`. Si su servidor tiene la cuenta auditor_api de
+--    2B, elimínela (ver "Actualizar desde 2B" más abajo).
 
 -- 5. Las bases nuevas se copian de template1. Se quitan los objetos grandes ("large
 --    objects"), que serían un canal de escritura fuera de la bitácora.
@@ -64,10 +63,7 @@ ALTER SERVER ROLE dbcreator ADD MEMBER auditor_provisioner;
 ALTER SERVER ROLE securityadmin ADD MEMBER auditor_provisioner;
 -- Cerrar sesiones de una organización suspendida (KILL).
 ALTER SERVER ROLE processadmin ADD MEMBER auditor_provisioner;
--- Cuenta de la API (entrega 2B, D-80): solo login; `auditor-admin init` crea su usuario en la
--- base de control con SELECT sobre dbo.tenants.
-CREATE LOGIN auditor_api WITH PASSWORD = '<OTRA CONTRASEÑA>', CHECK_POLICY = ON;
-DENY VIEW ANY DATABASE TO auditor_api;
+-- Desde 2C-1 (D-87) la API no tiene login propio: usa el de su organización.
 ```
 
 **Advertencia: en SQL Server esta cuenta sigue siendo muy poderosa.** La documentación de Microsoft dice textualmente "Treat the securityadmin role as equivalent to the sysadmin role", y que `dbcreator` "can create, alter, drop, and restore any database" (cualquier base, no solo las de la plataforma). [VERIFICADO: [Server-level roles, Microsoft Learn](https://learn.microsoft.com/en-us/sql/relational-databases/security/authentication-access/server-level-roles), consultado el 28-10-2026]
@@ -94,3 +90,25 @@ Por eso, en SQL Server la separación respecto de `sa` aporta trazabilidad y men
 - **Objetos grandes en bases ya creadas:** el `REVOKE` en `template1` solo afecta a las bases creadas después. `tenant check` revisa cada organización e indica en qué base ejecutar el `REVOKE` (como superusuario).
 - **Bases huérfanas:** si se corta la conexión justo después de crear una base, puede quedar una base `auditor_t_…` sin registro. `auditor-admin init` las lista para eliminarlas. Si el corte ocurre durante el propio `CREATE`, el alta queda en `provisioning` y se limpia con `tenant cleanup-provisioning`.
 - **La cuenta de aprovisionamiento es dueña de las bases de organizaciones** y puede modificar su contenido, incluida la bitácora. Mitigación: verificación de la exportación contra anclajes externos (R-26).
+
+
+## Actualizar desde 2B (cuenta `auditor_api`)
+
+[DECISIÓN 2C-1, D-87] La API ya no lee la base de control ni tiene cuenta propia. Si su servidor se preparó con la versión 2B, quite esa cuenta (como superusuario / `sysadmin`):
+
+- PostgreSQL:
+  ```sql
+  \connect auditor_control
+  REVOKE ALL ON tenants FROM auditor_api;
+  REVOKE USAGE ON SCHEMA public FROM auditor_api;
+  \connect postgres
+  REVOKE CONNECT ON DATABASE auditor_control FROM auditor_api;
+  DROP ROLE auditor_api;
+  ```
+- SQL Server:
+  ```sql
+  USE auditor_control; DROP USER IF EXISTS auditor_api;
+  USE master; DROP LOGIN auditor_api;
+  ```
+
+En el perfil Compose basta con recrear el volumen de PostgreSQL (solo datos ficticios): `docker compose -f deploy/compose/compose.yaml down -v`.

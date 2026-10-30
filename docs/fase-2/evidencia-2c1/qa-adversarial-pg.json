@@ -1,0 +1,185 @@
+{
+  "agente": "QA independiente 2C-1",
+  "commit": "bccb96f409a659aeb6f799fd607cfa702740d3aa",
+  "fecha": "2026-10-30T04:46:45.910Z",
+  "motor": "PostgreSQL 16.15 local",
+  "nota": "Prueba adversarial propia del agente QA (archivo de prueba temporal, no versionado). Datos sintéticos.",
+  "resumen": {
+    "aprobadas": 8,
+    "fallidas": 0,
+    "omitidas": 0
+  },
+  "pruebas": [
+    {
+      "nombre": "QA-01 D-75: campo organization rechazado; mensaje; >=300 ms; cookie solo token; formato antiguo rechazado",
+      "estado": "passed",
+      "ms": 757.7367360000001
+    },
+    {
+      "nombre": "QA-02 D-86: reader sin MFA queda en mfa_enroll y no accede a nada más",
+      "estado": "passed",
+      "ms": 67.99267499999996
+    },
+    {
+      "nombre": "QA-03 R-34: atacante en A bloquea solo A; víctima entra desde B; durante el bloqueo no cuenta; ráfaga al vencer cuenta 1",
+      "estado": "passed",
+      "ms": 2607.2552089999995
+    },
+    {
+      "nombre": "QA-04 XFF: con TRUST_PROXY=true un cliente directo cambia de origen a voluntad; con false no; detrás de un proxy solo cuenta la última entrada",
+      "estado": "passed",
+      "ms": 6450.593318
+    },
+    {
+      "nombre": "QA-05 MFA: con la contraseña conocida, cada origen da 5 intentos de código; el bloqueo de MFA no es por cuenta",
+      "estado": "passed",
+      "ms": 290.1243800000011
+    },
+    {
+      "nombre": "QA-06 alerta de ataque: una vez por ventana, sin IP en la bitácora",
+      "estado": "passed",
+      "ms": 7305.733026999998
+    },
+    {
+      "nombre": "QA-07 D-87: la cuenta de la organización no entra a la base de control; rotate-password con la misma DEK abre la MFA previa",
+      "estado": "passed",
+      "ms": 176.1875719999989
+    },
+    {
+      "nombre": "QA-08 suspensión: 503 sin datos ni cookie; recuperación al reactivar",
+      "estado": "passed",
+      "ms": 115.76427800000238
+    }
+  ],
+  "resultados": {
+    "cliOutput": "Secretos de la API de qa-ee4090 escritos en <tmp> (permisos 0600): organization.json, organization_db_password, organization_dek\nContienen la contraseña de la base y la llave de la organización: no los copie fuera del servidor. Reinicie la API si ya estaba en marcha.",
+    "qa01_failureMs": [
+      304,
+      303
+    ],
+    "qa01_setCookie": [
+      "auditor_session=<token>; Path=/; HttpOnly; SameSite=Strict"
+    ],
+    "qa02": {
+      "users": [
+        403,
+        "mfa_enrollment_required"
+      ],
+      "reauth": [
+        403,
+        "mfa_enrollment_required"
+      ],
+      "password": [
+        403,
+        "mfa_enrollment_required"
+      ]
+    },
+    "qa03": {
+      "duringAttempts": 5,
+      "lock1": "2026-10-30T04:48:19.029Z",
+      "afterAttempts": 6,
+      "nextWaitMs": 59694,
+      "burstStatuses": [
+        401
+      ]
+    },
+    "qa03_unlockCli": [
+      0,
+      ""
+    ],
+    "qa04_trustedSpoof": [
+      [
+        4,
+        null
+      ],
+      [
+        4,
+        null
+      ],
+      [
+        4,
+        null
+      ]
+    ],
+    "qa04_leftSpoof": [
+      [
+        5,
+        true
+      ],
+      [
+        4,
+        false
+      ],
+      [
+        4,
+        false
+      ]
+    ],
+    "qa04_untrusted": [
+      [
+        5,
+        true
+      ]
+    ],
+    "qa05": {
+      "verifiedMfaFailures": 20,
+      "mfaRows": [
+        [
+          5,
+          true
+        ],
+        [
+          5,
+          true
+        ],
+        [
+          5,
+          true
+        ],
+        [
+          5,
+          true
+        ]
+      ],
+      "newOriginStage": "full"
+    },
+    "qa06": {
+      "alerts": 1,
+      "alertData": [
+        "{\"failures\":20,\"origins\":5,\"threshold\":20,\"windowMinutes\":60}"
+      ],
+      "plainIpInAudit": false
+    },
+    "qa07_controlAccess": "permission denied for database \"auditor_ctl_qa_ee4090\"",
+    "qa07": {
+      "sameDek": true,
+      "pwChanged": true,
+      "newApiMfaStage": "full",
+      "oldApiAfterRotate": [
+        200,
+        null,
+        "mfa_pending"
+      ]
+    },
+    "qa08": {
+      "warnings": [],
+      "me": [
+        503,
+        {
+          "error": "unavailable",
+          "message": "El servicio no está disponible en este momento. Intente más tarde o contacte a la administración."
+        },
+        []
+      ],
+      "login": [
+        503,
+        {
+          "error": "unavailable",
+          "message": "El servicio no está disponible en este momento. Intente más tarde o contacte a la administración."
+        },
+        []
+      ]
+    },
+    "qa08_after": 200
+  }
+}

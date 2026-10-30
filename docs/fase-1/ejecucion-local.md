@@ -40,52 +40,72 @@ Hay dos formas de ejecutar el proyecto. Elija **una**:
 
 ## Opción A — Docker Compose
 
+> **Cambio en 2C-1 (D-87):** la API ya **no** recibe la clave maestra. Antes de arrancarla hay que crear la organización y entregarle sus propios secretos. Por eso el orden es: base de datos → organización → secretos de la API → API y web.
+
 1. Asegúrese de que Docker Desktop esté **abierto y en ejecución** (ícono de la ballena sin advertencias).
 2. Genere los secretos locales (contraseñas aleatorias; nunca se suben a Git):
    ```sh
    sh scripts/generate-secrets.sh
    ```
-   Debe ver `Creado: postgres_password`, `Creado: valkey.conf` y `Creado: master.key`.
+   Debe ver `Creado: postgres_password`, `Creado: valkey.conf`, `Creado: master.key` y varias líneas `Creado vacío: ...` (los secretos de la API, que se llenan en el paso 6).
    **Respalde `deploy/compose/secrets/master.key` fuera del equipo**: sin ella no se pueden abrir las bases de las organizaciones.
-3. Construya y levante los servicios (la primera vez tarda varios minutos):
+3. Construya las imágenes y levante **solo** la base de datos y la caché (la primera vez tarda varios minutos):
    ```sh
-   docker compose -f deploy/compose/compose.yaml up -d --build --wait
+   docker compose -f deploy/compose/compose.yaml build
+   docker compose -f deploy/compose/compose.yaml up -d --wait postgres valkey
    ```
-   Termina cuando todos los servicios aparecen como `Healthy` o `Started`.
-4. Abra en el navegador: **http://127.0.0.1:8080**
+4. Prepare la base de control:
+   ```sh
+   docker compose -f deploy/compose/compose.yaml run --rm admin init
+   ```
+5. Cree **la** organización de esta instalación (una sola por instalación, D-84). Identificador en minúsculas, dígitos y guiones:
+   ```sh
+   docker compose -f deploy/compose/compose.yaml run --rm admin tenant create --slug muni-demo --name "Municipalidad Demo"
+   ```
+6. Entregue a la API los secretos de esa organización (datos de la organización, contraseña de su base y su llave). Use el **mismo** identificador del paso 5:
+   ```sh
+   sh scripts/write-api-secrets.sh muni-demo
+   ```
+   Debe terminar con `Secretos de la API listos.` Los archivos quedan en `deploy/compose/secrets/api/` (excluidos de Git). **No los copie fuera del servidor.**
+7. Levante todo:
+   ```sh
+   docker compose -f deploy/compose/compose.yaml up -d --wait
+   ```
+   Termina cuando todos los servicios aparecen como `Healthy` o `Started`. Si la API no arranca, revise `docker compose -f deploy/compose/compose.yaml logs api`: el mensaje indica qué archivo falta.
+8. Abra en el navegador: **http://127.0.0.1:8080**
    Debe ver "Auditor 21719", el estado de la Fase 1 y el enlace "Código fuente de esta versión".
-5. (Opcional) Ejecute las comprobaciones automáticas de seguridad del despliegue **sobre una instalación recién creada** (crea dos organizaciones ficticias; si ya existen, falla):
+9. (Opcional) Ejecute las comprobaciones automáticas **sobre una instalación nueva** con solo la base y la caché levantadas (pasos 2 y 3, sin los pasos 4 a 7). El script crea sus propias organizaciones ficticias y falla si ya existen:
    ```sh
    sh scripts/smoke-compose.sh desarrollo
    ```
    Debe terminar con `Todas las comprobaciones pasaron.`
-6. Para detener todo:
-   ```sh
-   docker compose -f deploy/compose/compose.yaml down
-   ```
-   Para detener **y borrar los datos** (bases de datos de prueba): agregue `-v` al final.
+10. Para detener todo:
+    ```sh
+    docker compose -f deploy/compose/compose.yaml down
+    ```
+    Para detener **y borrar los datos** (bases de datos de prueba): agregue `-v` al final.
+
+> **Uso en la red de la institución:** este perfil solo atiende en `127.0.0.1` y sin HTTPS. Para que otros equipos accedan, use el perfil institucional con HTTPS: `docs/fase-2/instalacion-institucional.md`. **No publique este perfil en la red** (riesgo R-35: las contraseñas viajarían sin cifrar).
 
 ### Administrar organizaciones (entrega 2A)
 
 La administración se hace con el servicio `admin`. No queda corriendo: cada comando lo inicia, lo ejecuta y lo elimina (`run --rm`). Es el **único** contenedor que recibe la contraseña de aprovisionamiento y la clave maestra; la API que atiende la web no las tiene.
 
-Con los servicios levantados (paso 3), en la misma terminal:
+Con los servicios levantados (pasos 1 a 7 de la Opción A), en la misma terminal:
 
-1. Si su volumen de PostgreSQL se creó **antes** de esta versión, bórrelo para que se cree la cuenta de aprovisionamiento. Esto elimina todos los datos locales (que solo deben ser ficticios):
+1. Si su volumen de PostgreSQL se creó **antes** de 2C-1, bórrelo: así desaparece la cuenta `auditor_api`, que ya no se usa. Esto elimina todos los datos locales (que solo deben ser ficticios); luego repita los pasos 2 a 7 de la Opción A:
    ```sh
-   sh scripts/generate-secrets.sh
    docker compose -f deploy/compose/compose.yaml down -v
-   docker compose -f deploy/compose/compose.yaml up -d --build --wait
    ```
-   Si no puede borrar los datos, siga `docs/fase-2/servidor-de-base-de-datos.md`, sección 1.
-2. Prepare la base de control (una vez, y después de cada actualización):
+   Si no puede borrar los datos, siga `docs/fase-2/servidor-de-base-de-datos.md`, sección "Actualizar desde 2B".
+2. Después de cada actualización de la plataforma, migre las bases:
    ```sh
    docker compose -f deploy/compose/compose.yaml run --rm admin init
    ```
    Si aparece una línea que empieza con `Aviso:`, léala: indica un ajuste de seguridad pendiente del servidor.
-3. Cree una organización ficticia (identificador en minúsculas, dígitos y guiones):
+3. (Solo para probar la administración) puede crear otras organizaciones ficticias. La API atiende **solo** la del paso 5 de la Opción A:
    ```sh
-   docker compose -f deploy/compose/compose.yaml run --rm admin tenant create --slug muni-demo --name "Municipalidad Demo"
+   docker compose -f deploy/compose/compose.yaml run --rm admin tenant create --slug empresa-demo --name "Empresa Demo"
    ```
 4. Liste las organizaciones:
    ```sh
@@ -107,16 +127,17 @@ Con los servicios levantados (paso 3), en la misma terminal:
    docker compose -f deploy/compose/compose.yaml run --rm admin tenant suspend --slug muni-demo
    docker compose -f deploy/compose/compose.yaml run --rm admin tenant reactivate --slug muni-demo
    ```
-   La suspensión la aplica el propio motor: el usuario de esa organización ya no puede iniciar sesión, y sus sesiones abiertas se cierran. Si el comando termina con `CON ADVERTENCIAS` (código 1), lea el aviso: por ejemplo, puede quedar una sesión abierta. La reactivación se rechaza si no puede registrarse en la bitácora.
+   La suspensión la aplica el propio motor: el usuario de esa organización ya no puede iniciar sesión, y sus sesiones abiertas se cierran. Mientras tanto la API responde `503` ("El servicio no está disponible") sin mostrar datos; al reactivar se recupera sola. Si el comando termina con `CON ADVERTENCIAS` (código 1), lea el aviso: por ejemplo, puede quedar una sesión abierta. La reactivación se rechaza si no puede registrarse en la bitácora.
 8. Otras operaciones:
 
    | Comando | Para qué sirve |
    |---|---|
    | `tenant check` | Comprueba cada organización activa: que abre con sus credenciales, que su usuario no se fijó parámetros de sesión propios y que no puede crear objetos grandes. Sale con código 1 si encuentra algo |
-   | `tenant rotate-password --slug <id>` | Fija una contraseña nueva para el usuario de la organización (p. ej. si `tenant check` falla porque alguien la cambió) |
+   | `tenant rotate-password --slug <id>` | Fija una contraseña nueva para el usuario de la organización (p. ej. si `tenant check` falla porque alguien la cambió). **Para la organización de la API use en su lugar** `sh scripts/write-api-secrets.sh <id> --rotate` y luego `docker compose -f deploy/compose/compose.yaml up -d --force-recreate --wait api`: la API tiene su propia copia de la contraseña y debe reiniciarse (las sesiones no se pierden) |
+   | `api-secrets write --tenant <id> --out <dir>` | Escribe los secretos de la API (permisos 0600). En Compose se usa a través de `scripts/write-api-secrets.sh` |
    | `tenant cleanup-provisioning --slug <id>` | Limpia un alta que quedó a medias (p. ej. si se cortó la luz durante `tenant create`). `init` avisa cuando hay una |
    | `user invite-admin --tenant <id> --email <correo> --name <nombre>` | Invita al **primer administrador** de una organización (entrega 2B). Imprime un token de activación de un solo uso, válido 24 h |
-   | `user unlock --tenant <id> --email <correo>` | Desbloquea una cuenta bloqueada por intentos fallidos (por ejemplo, si alguien la bloquea a propósito) |
+   | `user unlock --tenant <id> --email <correo>` | Desbloquea una cuenta bloqueada por intentos fallidos, desde **todos** los orígenes (equipos) |
 
 9. Active al primer administrador (entrega 2B; las pantallas llegan en 2C, por ahora se usa la API):
    - Invítelo y copie el token que se imprime (se muestra **una sola vez**):
@@ -125,14 +146,15 @@ Con los servicios levantados (paso 3), en la misma terminal:
      ```
    - Fije la contraseña (mínimo 12 caracteres, que no sea común ni contenga su correo). Reemplace `<TOKEN>`:
      ```sh
-     curl -c cookies.txt -H "content-type: application/json" -d '{"organization":"muni-demo","token":"<TOKEN>","password":"una frase larga y propia"}' http://127.0.0.1:8080/api/v1/auth/activate
+     curl -c cookies.txt -H "content-type: application/json" -d '{"token":"<TOKEN>","password":"una frase larga y propia"}' http://127.0.0.1:8080/api/v1/auth/activate
      ```
-     Debe responder `"stage":"mfa_enroll"`: un administrador **debe** configurar la verificación en dos pasos (app autenticadora) antes de usar la plataforma. Ese paso se hará con la pantalla de 2C.
+     Debe responder `"stage":"mfa_enroll"`: **toda** persona (cualquier rol, D-86) debe configurar la verificación en dos pasos (app autenticadora) antes de usar la plataforma. Ese paso se hará con la pantalla de 2C-2. Desde 2C-1 el inicio de sesión pide solo correo y contraseña: el campo `organization` ya no existe y se rechaza.
    - Borre `cookies.txt` al terminar: contiene su sesión.
 
 **Notas**
 - Solo el puerto 8080 queda abierto y únicamente en su propio equipo (127.0.0.1); nadie más en la red puede acceder.
 - La API, PostgreSQL y Valkey no tienen salida a Internet.
+- La API confía en la cabecera `X-Forwarded-For` de un proxy (`TRUST_PROXY=true`), porque Caddy (servicio `web`) es el **único** proxy delante de ella y la API **no** publica puertos. No publique la API directamente ni agregue otro proxy delante: un cliente podría inventar su IP y eludir el límite de intentos y el bloqueo por equipo (R-34). La API lo advierte en su registro al arrancar (`docker compose -f deploy/compose/compose.yaml logs api`).
 
 ---
 
@@ -193,6 +215,8 @@ Debe terminar con `OK: reescritura detectada por el anclaje externo.` La guía c
 | Síntoma | Causa probable | Solución |
 |---|---|---|
 | `Cannot connect to the Docker daemon` | Docker Desktop cerrado | Ábralo y espere a que termine de iniciar |
+| La API se reinicia una y otra vez; el registro dice `ORGANIZATION_... está vacío` o `No se pudo leer ORGANIZATION_...` | No se entregaron los secretos de la API | Ejecute los pasos 5 y 6 de la Opción A y luego `docker compose -f deploy/compose/compose.yaml up -d --force-recreate --wait api` |
+| La API responde `503` ("El servicio no está disponible") | La organización está suspendida, o se cambió la contraseña de su base sin reescribir los secretos | `tenant reactivate`, o `sh scripts/write-api-secrets.sh <id>` y reinicie la API |
 | `port is already allocated` (8080) | Otro programa usa el puerto | Cierre ese programa o cambie `127.0.0.1:8080:8080` a `127.0.0.1:8081:8080` en `deploy/compose/compose.yaml`; luego use `sh scripts/smoke-compose.sh desarrollo 8081` |
 | `ERR_PNPM_OUTDATED_LOCKFILE` | Cambió `package.json` sin actualizar el lockfile | Ejecute `pnpm install` (sin `--frozen-lockfile`) y versione `pnpm-lock.yaml` |
 | `Unsupported engine` / `ERR_PNPM_UNSUPPORTED_ENGINE` | Node.js distinto de 24 (el proyecto lo exige) | Instale Node.js 24 LTS |

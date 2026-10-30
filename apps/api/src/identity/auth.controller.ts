@@ -7,13 +7,13 @@ import { z } from 'zod';
 import { Authenticated, clearSessionCookie, IDENTITY_SERVICE, Public, requestMeta, sessionOf, setSessionCookie, type IdentityRequest, type IdentityRuntime } from './http.js';
 import type { IssuedSession } from './identity.service.js';
 
-// Esquemas estrictos: se rechazan campos no declarados (`09-seguridad.md` §10.4).
-const organization = z.string().max(30).optional();
-const loginSchema = z.strictObject({ organization, email: z.string().min(3).max(254), password: z.string().min(1).max(1024) });
+// Esquemas estrictos: se rechazan campos no declarados (`09-seguridad.md` §10.4). Desde 2C-1
+// (D-75 ajustada) no existe el campo `organization`: si se envía, la petición se rechaza.
+const loginSchema = z.strictObject({ email: z.string().min(3).max(254), password: z.string().min(1).max(1024) });
 const codeSchema = z.strictObject({ code: z.string().regex(/^\d{6}$/) });
 const mfaVerifySchema = z.union([z.strictObject({ code: z.string().regex(/^\d{6}$/) }), z.strictObject({ recoveryCode: z.string().min(16).max(40) })]);
 const passwordSchema = z.strictObject({ currentPassword: z.string().min(1).max(1024), newPassword: z.string().min(1).max(1024) });
-const activateSchema = z.strictObject({ organization, token: z.string().max(100), password: z.string().min(1).max(1024) });
+const activateSchema = z.strictObject({ token: z.string().max(100), password: z.string().min(1).max(1024) });
 
 /** Respuesta común tras emitir una sesión: la etapa y el token anti-CSRF (nunca el de sesión). */
 function sessionBody(issued: IssuedSession): { stage: string; csrfToken: string } {

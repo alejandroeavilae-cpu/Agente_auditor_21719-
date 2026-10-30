@@ -77,10 +77,15 @@ export interface AppUserTable {
   mfa_pending_secret_sealed: string | null;
   /** Último paso TOTP aceptado (evita reusar un código). */
   mfa_last_step: number | string | null;
-  /** Fallos consecutivos de contraseña. */
+  /**
+   * Contadores de bloqueo POR CUENTA de 2B. Desde 2C-1 el bloqueo es por cuenta + origen
+   * (`login_throttle`, mitigación de R-34) y estas columnas ya no se usan: se conservan
+   * porque la migración 0002 está publicada y no se edita [DECISIÓN].
+   */
   failed_attempts: number;
-  /** Fallos consecutivos de MFA: contador aparte, no se pone en 0 al acertar la contraseña (QA 2B-01). */
+  /** Sin uso desde 2C-1 (ver `failed_attempts`). */
   mfa_failed_attempts: number;
+  /** Sin uso desde 2C-1 (ver `failed_attempts`). */
   locked_until: string | null;
   password_changed_at: string | null;
   created_at: string;
@@ -131,6 +136,45 @@ export interface AccessLogTable {
   ua_family: string | null;
 }
 
+/**
+ * Tipo de contador de `login_throttle`:
+ * - `password`: bloqueo progresivo por cuenta + origen (D-82, D-88, R-34);
+ * - `mfa`: bloqueo progresivo por CUENTA (D-89, QA 2C1-04): una sola fila por cuenta con el
+ *   origen fijo `ACCOUNT_ORIGIN`. Quien ya conoce la contraseña no obtiene 5 códigos más por
+ *   cada IP. Contar por cuenta no recrea R-34 para quien no conoce la contraseña (residual R-38), porque llegar a la MFA exige la contraseña;
+ * - `attack_alert`: fila única por cuenta (origen `ATTACK_ALERT_ORIGIN`) que marca hasta
+ *   cuándo ya se registró `account.attack_suspected`, para registrarlo UNA vez por ventana;
+ * - `lock_logged_pw` y `lock_logged_mfa`: fila única por cuenta (mismo origen fijo) que marca
+ *   hasta cuándo ya se registró `auth.account.locked` en la bitácora inmutable: UNA vez por
+ *   cuenta, contador y ventana, aunque se bloqueen muchos orígenes (QA 2C1-10).
+ */
+export type ThrottleKind = 'password' | 'mfa' | 'attack_alert' | 'lock_logged_pw' | 'lock_logged_mfa';
+
+/**
+ * Bloqueo progresivo (2C-1, mitigación de R-34): de contraseña por cuenta + origen y de MFA
+ * por cuenta (D-89). El origen es el HMAC de la IP con la DEK (propósito `login-origin`) o
+ * `ACCOUNT_ORIGIN` en las filas por cuenta: la IP en claro no se guarda aquí. Las filas se
+ * borran con la retención del registro de accesos (D-78), salvo un bloqueo vigente.
+ */
+export interface LoginThrottleTable {
+  user_id: string;
+  origin_hmac: string;
+  kind: ThrottleKind;
+  failed_attempts: number;
+  locked_until: string | null;
+  updated_at: string;
+}
+
+/**
+ * Origen fijo de las filas por cuenta (`mfa` desde D-89, `attack_alert`, `lock_logged_*`): 64
+ * ceros, mismo largo que un HMAC, sin relleno. Un HMAC-SHA256 real no da 64 ceros en la
+ * práctica, así que no choca con el origen de ninguna IP.
+ */
+export const ACCOUNT_ORIGIN = '0'.repeat(64);
+
+/** Nombre anterior de `ACCOUNT_ORIGIN` (2C-1, antes de D-89). Mismo valor. */
+export const ATTACK_ALERT_ORIGIN = ACCOUNT_ORIGIN;
+
 export interface TenantDatabase {
   organization: OrganizationTable;
   audit_log: AuditLogTable;
@@ -140,10 +184,11 @@ export interface TenantDatabase {
   user_session: UserSessionTable;
   activation_token: ActivationTokenTable;
   access_log: AccessLogTable;
+  login_throttle: LoginThrottleTable;
 }
 
 /** Tablas de identidad a las que el usuario de aplicación accede con lectura y escritura. */
-export const IDENTITY_TABLES = ['app_user', 'user_role', 'recovery_code', 'user_session', 'activation_token', 'access_log'] as const;
+export const IDENTITY_TABLES = ['app_user', 'user_role', 'recovery_code', 'user_session', 'activation_token', 'access_log', 'login_throttle'] as const;
 
 // ---------- Tipos de columna portables ----------
 
@@ -276,6 +321,26 @@ export function tenantMigrations(engine: DbEngine): Record<string, Migration> {
           .addColumn('ua_family', str(engine, 40))
           .execute();
         await db.schema.createIndex('access_log_ts').on('access_log').column('ts').execute();
+      },
+    },
+    // 2C-1: bloqueo por cuenta + origen (mitigación de R-34). Migración nueva: 0002 ya está
+    // publicada y no se edita.
+    '0003_login_throttle': {
+      async up(db: Kysely<unknown>) {
+        await db.schema
+          .createTable('login_throttle')
+          .addColumn('user_id', ascii(36), (c) => c.notNull())
+          .addColumn('origin_hmac', ascii(64), (c) => c.notNull())
+          .addColumn('kind', str(engine, 20), (c) => c.notNull())
+          .addColumn('failed_attempts', 'integer', (c) => c.notNull().defaultTo(0))
+          .addColumn('locked_until', ascii(24))
+          .addColumn('updated_at', ascii(24), (c) => c.notNull())
+          .addPrimaryKeyConstraint('login_throttle_pk', ['user_id', 'origin_hmac', 'kind'])
+          .execute();
+        // Purga por retención (D-78).
+        await db.schema.createIndex('login_throttle_updated').on('login_throttle').column('updated_at').execute();
+        // Detección de ataque distribuido: fallos recientes de una cuenta en el registro de accesos.
+        await db.schema.createIndex('access_log_user_ts').on('access_log').columns(['user_id', 'ts']).execute();
       },
     },
   };

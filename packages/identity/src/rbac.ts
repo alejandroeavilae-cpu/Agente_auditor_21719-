@@ -51,8 +51,13 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   reader: ['reports.read'],
 };
 
-/** Roles con MFA obligatorio (D-77; `09-seguridad.md` §10.3). */
-export const MFA_REQUIRED_ROLES: ReadonlySet<Role> = new Set<Role>(['org_admin', 'audit_lead', 'legal_reviewer']);
+/**
+ * Roles con MFA obligatoria: TODOS (D-86, que modifica D-77). Lo que se ve en la plataforma
+ * (brechas, sistemas con datos personales, riesgos) es sensible para cualquier rol, y con la
+ * MFA obligatoria adivinar una contraseña ya no basta para entrar (defensa principal contra
+ * el ataque distribuido de R-34).
+ */
+export const MFA_REQUIRED_ROLES: ReadonlySet<Role> = new Set<Role>(ROLES);
 
 /**
  * Combinaciones prohibidas por separación de funciones (D-79). Derivadas de §7.5: el
@@ -74,8 +79,13 @@ export function permissionsOf(roles: readonly Role[]): Set<Permission> {
   return new Set(roles.flatMap((r) => ROLE_PERMISSIONS[r]));
 }
 
-export function requiresMfa(roles: readonly Role[]): boolean {
-  return roles.some((r) => MFA_REQUIRED_ROLES.has(r));
+/**
+ * Si un usuario sin MFA configurada debe configurarla antes de usar la plataforma. Desde D-86
+ * es SIEMPRE sí, sean cuales sean sus roles, incluso sin roles reconocidos (QA 2C1-06): un
+ * usuario cuyos roles se perdieron o no se reconocen tampoco puede entrar sin MFA.
+ */
+export function requiresMfa(): boolean {
+  return true;
 }
 
 /**

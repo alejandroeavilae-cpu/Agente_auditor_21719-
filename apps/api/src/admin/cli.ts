@@ -11,6 +11,10 @@
  * Variables de entorno: DB_ENGINE, DB_HOST, DB_PORT, DB_ADMIN_USER, DB_ADMIN_PASSWORD_FILE,
  * DB_CONTROL_DATABASE, DB_TLS, MASTER_KEY_FILE y MASTER_KEY_CHECK_PERMISSIONS.
  *
+ * Desde 2C-1 (D-87) la CLI es, junto con el servicio del operador de 2C-3, el único lugar
+ * con la clave maestra: entrega a la API solo los secretos de su organización
+ * (`api-secrets write`).
+ *
  * Códigos de salida: 0 éxito · 1 error de operación · 2 error de uso.
  */
 
@@ -18,6 +22,7 @@ import { toJsonl } from '@auditor-21719/audit-log';
 import { loadMasterKey } from '@auditor-21719/crypto';
 import { loadPlatformDbConfig, TenantManager } from '@auditor-21719/persistence';
 import { IdentityService } from '../identity/identity.service.js';
+import { API_SECRET_FILES, checkSecretsDir, writeApiSecrets } from './api-secrets.js';
 import { closeSync, constants, openSync, realpathSync, writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -30,13 +35,20 @@ const USAGE = `Uso: auditor-admin <comando>
   tenant suspend --slug <id>               Suspende una organización: el motor bloquea su usuario
   tenant reactivate --slug <id>            Reactiva una organización suspendida
   tenant check                             Comprueba que cada organización activa puede abrirse
-  tenant rotate-password --slug <id>       Cambia la contraseña de base de datos de una organización
+  tenant rotate-password --slug <id> [--api-secrets-out <dir>]
+                                           Cambia la contraseña de base de datos de una organización
+                                           (con --api-secrets-out reescribe los secretos de la API;
+                                           después hay que reiniciar la API)
   tenant cleanup-provisioning --slug <id>  Limpia un alta que quedó incompleta
   user invite-admin --tenant <id> --email <correo> --name <nombre>
                                            Invita al primer administrador de una organización
                                            (imprime un token de activación de un solo uso, 24 h)
   user unlock --tenant <id> --email <correo>
                                            Desbloquea una cuenta bloqueada por intentos fallidos
+  api-secrets write --tenant <id> --out <dir>
+                                           Escribe los secretos que necesita la API (datos de la
+                                           organización, contraseña de su base y su DEK), 0600.
+                                           La API no recibe la clave maestra (D-87)
   audit export --tenant <id> [--out <archivo>]
                                            Exporta la bitácora en JSONL (también de organizaciones suspendidas)
 
@@ -106,11 +118,12 @@ const COMMANDS: Record<string, Record<string, typeof S>> = {
   'tenant suspend': { slug: S },
   'tenant reactivate': { slug: S },
   'tenant check': {},
-  'tenant rotate-password': { slug: S },
+  'tenant rotate-password': { slug: S, 'api-secrets-out': S },
   'tenant cleanup-provisioning': { slug: S },
   'user invite-admin': { tenant: S, email: S, name: S },
   'user unlock': { tenant: S, email: S },
   'audit export': { tenant: S, out: S },
+  'api-secrets write': { tenant: S, out: S },
 };
 
 async function run(argv: string[]): Promise<number> {
@@ -127,14 +140,13 @@ async function run(argv: string[]): Promise<number> {
   for (const name of ['slug', 'name', 'tenant', 'email'] as const) {
     if (name in spec) required(v[name], name);
   }
+  if (key === 'api-secrets write') required(v.out, 'out');
 
   const m = manager();
   try {
     switch (key) {
       case 'init': {
-        // Cuenta de la API con lectura del registro de organizaciones (D-80), si se configuró.
-        const apiReader = process.env.DB_API_READER_USER;
-        const { applied, warnings } = await m.initControl(apiReader !== undefined && apiReader !== '' ? { apiReader } : {});
+        const { applied, warnings } = await m.initControl();
         console.log(`Base de control: ${applied.length === 0 ? 'al día' : `migraciones aplicadas: ${applied.join(', ')}`}`);
         printWarnings(warnings);
         let failed = false;
@@ -181,8 +193,36 @@ async function run(argv: string[]): Promise<number> {
       }
       case 'tenant rotate-password': {
         const slug = required(v.slug, 'slug');
-        await m.rotatePassword(slug, ACTOR);
-        console.log(`Organización ${slug}: contraseña de base de datos cambiada.`);
+        const out = v['api-secrets-out'];
+        // El destino se revisa ANTES de cambiar la contraseña: si no sirve, no se cambia nada.
+        if (out !== undefined) checkSecretsDir(out);
+        const { secrets, warnings } = await m.rotatePassword(slug, ACTOR);
+        console.log(`Organización ${slug}: contraseña de base de datos cambiada; conexiones abiertas con la anterior cerradas.`);
+        // Avisos de cierre de sesiones (solo textos del motor y conteos, sin secretos).
+        const warned = printWarnings(warnings);
+        if (out === undefined) {
+          console.error(`Aviso: la API de ${slug} conserva la contraseña anterior y dejará de conectarse. Ejecute: auditor-admin api-secrets write --tenant ${slug} --out <dir> y reinicie la API.`);
+          return warned ? 1 : 0;
+        }
+        try {
+          writeApiSecrets(out, secrets);
+        } catch (error) {
+          // El aviso no incluye nada del error ni de los secretos; el error del sistema de
+          // archivos (ruta y código) se propaga tal cual y `main` imprime su mensaje.
+          console.error(`Aviso: la contraseña se cambió, pero no se pudieron escribir los secretos de la API en ${out}. Ejecute: auditor-admin api-secrets write --tenant ${slug} --out <dir>`);
+          throw error;
+        }
+        console.log(`Secretos de la API reescritos en ${out}. Reinicie la API para que use la contraseña nueva.`);
+        return warned ? 1 : 0;
+      }
+      case 'api-secrets write': {
+        const tenant = required(v.tenant, 'tenant');
+        const out = required(v.out, 'out');
+        checkSecretsDir(out);
+        writeApiSecrets(out, await m.apiSecrets(tenant, ACTOR));
+        // Solo nombres constantes y datos dados por quien ejecuta: nada derivado de los secretos.
+        console.log(`Secretos de la API de ${tenant} escritos en ${out} (permisos 0600): ${Object.values(API_SECRET_FILES).join(', ')}`);
+        console.log('Contienen la contraseña de la base y la llave de la organización: no los copie fuera del servidor. Reinicie la API si ya estaba en marcha.');
         return 0;
       }
       case 'tenant cleanup-provisioning': {
@@ -194,18 +234,18 @@ async function run(argv: string[]): Promise<number> {
       case 'user invite-admin': {
         const tenant = required(v.tenant, 'tenant');
         const handle = await m.openTenant(tenant);
-        const service = new IdentityService(m, { accessLogRetentionDays: 90 });
+        const service = new IdentityService({ open: () => m.openTenant(tenant) }, { accessLogRetentionDays: 90 });
         const invited = await service.inviteUser(handle, { label: ACTOR }, { email: required(v.email, 'email'), displayName: required(v.name, 'name'), roles: ['org_admin'] }, null);
         console.log(`Administrador invitado en ${tenant}. Vence: ${invited.expiresAt}`);
         console.log('Entregue este token de activación por un canal seguro (se muestra UNA sola vez):');
         console.log(invited.activationToken);
-        console.log('Con él, la persona fija su contraseña (POST /api/v1/auth/activate) y luego debe configurar la verificación en dos pasos.');
+        console.log('Con él, la persona fija su contraseña (POST /api/v1/auth/activate) y luego debe configurar la verificación en dos pasos (obligatoria para todos, D-86).');
         return 0;
       }
       case 'user unlock': {
         const tenant = required(v.tenant, 'tenant');
         const handle = await m.openTenant(tenant);
-        const service = new IdentityService(m, { accessLogRetentionDays: 90 });
+        const service = new IdentityService({ open: () => m.openTenant(tenant) }, { accessLogRetentionDays: 90 });
         await service.unlockUser(handle, { label: ACTOR }, await service.userIdByEmail(handle, required(v.email, 'email')), null);
         console.log(`Cuenta desbloqueada en ${tenant}.`);
         return 0;

@@ -60,7 +60,7 @@ Los 12 criterios de la sección 24, más: WCAG 2.2 AA en pantallas nuevas (desde
 |---|---|
 | 0 | Aprobada (25-10-2026) |
 | 1 | Aprobada y cerrada (26-10-2026, PR #1) |
-| 2 | Aprobada 26-10-2026, en 3 entregas: 2A aprobada y cerrada (29-10-2026, PR #3); 2B en curso (aprobada 29-10-2026); 2C no iniciada |
+| 2 | Aprobada 26-10-2026, en 3 entregas: 2A aprobada y cerrada (29-10-2026, PR #3); 2B aprobada y cerrada (29-10-2026, PR #4); 2C con diseño aprobado (29-10-2026, D-88), en tres partes; 2C-1 en curso. Con D-84 (una sola organización), el criterio de salida "suite de aislamiento" se reemplaza por la matriz de permisos entre roles |
 
 ## Primer paso de la Fase 1 (ejecutado)
 

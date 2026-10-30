@@ -9,3 +9,11 @@
 0de6ac2fa22985295e3e77ff6b91b076e2414e79:apps/api/test/identity.int.test.ts:generic-api-key:26
 0de6ac2fa22985295e3e77ff6b91b076e2414e79:apps/api/test/identity.int.test.ts:generic-api-key:113
 0de6ac2fa22985295e3e77ff6b91b076e2414e79:apps/api/test/identity.int.test.ts:generic-api-key:136
+
+# Commits 5e31731 y 4d307cf (entrega 2C-1): frase de acceso SINTÉTICA literal del
+# administrador de una instalación Compose efímera de prueba (smoke-compose.sh y
+# smoke-institucional.sh). No es credencial de ningún sistema real; la instalación se crea y
+# se borra en cada ejecución de CI. En el commit siguiente se reemplazó por una frase
+# aleatoria generada en cada ejecución.
+5e317318a5f771ac7db96cd3c0a7fab5feb663ee:scripts/smoke-compose.sh:generic-api-key:16
+4d307cfd48d79b9564ceb0d4e752c713b8dd83e0:scripts/smoke-institucional.sh:generic-api-key:18

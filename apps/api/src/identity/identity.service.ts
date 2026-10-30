@@ -22,9 +22,10 @@ import {
   type PasswordIssue,
   type Role,
 } from '@auditor-21719/identity';
-import { assertTenantSlug, type AppUserTable, type SessionStage, type TenantDatabase, type TenantHandle, type UserSessionTable } from '@auditor-21719/persistence';
+import { ACCOUNT_ORIGIN, type AppUserTable, type SessionStage, type TenantDatabase, type TenantHandle, type UserSessionTable } from '@auditor-21719/persistence';
+import { Logger } from '@nestjs/common';
 import type { ExpressionBuilder, Transaction } from 'kysely';
-import { ApiError, INVALID_CREDENTIALS, UNAUTHENTICATED } from './errors.js';
+import { ApiError, INVALID_CREDENTIALS, UNAUTHENTICATED, UNAVAILABLE } from './errors.js';
 
 /**
  * Lógica de identidad (2B), independiente de NestJS para poder usarla desde la API y
@@ -33,14 +34,20 @@ import { ApiError, INVALID_CREDENTIALS, UNAUTHENTICATED } from './errors.js';
  * Valores de D-79: inactividad 30 min, máximo 12 h, reautenticación MFA válida 5 min,
  * activación válida 24 h.
  *
- * Bloqueo progresivo [DECISIÓN de implementación, corregido por QA 2B-01]:
+ * Bloqueo progresivo [DECISIÓN de implementación, D-82 y D-83; por cuenta + origen desde
+ * 2C-1 como mitigación de R-34]:
+ * - el contador es del par **cuenta + origen** (IP como HMAC con la DEK, propósito
+ *   `login-origin`): los fallos desde el equipo de un atacante bloquean solo ese origen y la
+ *   persona sigue entrando desde el suyo;
  * - contadores SEPARADOS para contraseña y MFA, incrementados de forma atómica en la base
  *   ANTES de verificar (un intento cuenta aunque se envíe en paralelo con otros);
- * - desde el 5.º fallo consecutivo, la cuenta queda bloqueada 30 s, que se duplican con
- *   cada fallo, hasta 15 min; durante el bloqueo no se verifica nada;
+ * - desde el 5.º fallo consecutivo, el par queda bloqueado 30 s, que se duplican con cada
+ *   fallo, hasta 15 min; durante el bloqueo no se verifica nada y los intentos no cuentan;
  * - al vencer el bloqueo se admite UN solo intento (quien lo reclama con una actualización
  *   condicional); si falla, se bloquea de nuevo con más espera;
- * - acertar la contraseña no reinicia el contador de MFA.
+ * - acertar la contraseña no reinicia el contador de MFA;
+ * - contra el ataque distribuido (muchos orígenes) la defensa es la MFA obligatoria para
+ *   todos (D-86); además se registra `account.attack_suspected` sin bloquear la cuenta.
  */
 export const IDLE_MS = 30 * 60_000;
 export const ABSOLUTE_MS = 12 * 60 * 60_000;
@@ -57,7 +64,26 @@ const LOCK_MAX_MS = 15 * 60_000;
  */
 export const MIN_FAILURE_MS = 300;
 
-type Counter = 'failed_attempts' | 'mfa_failed_attempts';
+/**
+ * Contador de intentos: `password` se lleva por cuenta + origen (D-88) y `mfa` por cuenta
+ * (D-89, QA 2C1-04). Ver `throttleOrigin`.
+ */
+type Counter = 'password' | 'mfa';
+
+/** Propósito del HMAC del origen en `login_throttle` (distinto del de la bitácora). */
+const ORIGIN_PURPOSE = 'login-origin';
+
+/** Vueltas máximas de comparar y reemplazar al reservar un intento. */
+const CAS_ATTEMPTS = 50;
+
+/** Ventana de la detección de ataque distribuido. */
+const ATTACK_WINDOW_MS = 60 * 60_000;
+
+/**
+ * Fallos VERIFICADOS que cuentan para la detección de ataque distribuido. Los intentos
+ * rechazados por un bloqueo vigente (`*.blocked`) no se verificaron y no cuentan.
+ */
+const VERIFIED_FAILURE_EVENTS = ['auth.login.failed', 'auth.mfa.failed', 'auth.reauth.failed', 'auth.password.change_failed'];
 
 /** Formato del token anti-CSRF (HMAC-SHA256 en hexadecimal). */
 const CSRF_FORMAT = /^[0-9a-f]{64}$/;
@@ -80,9 +106,19 @@ function isSerializationConflict(error: unknown, depth = 0): boolean {
   return isSerializationConflict(e.cause, depth + 1);
 }
 
-/** Acceso a las organizaciones (la API usa un `TenantManager` con cuenta de solo lectura). */
-export interface TenantDirectory {
-  openTenant(slug: string): Promise<TenantHandle>;
+/** El motor rechazó una inserción por clave duplicada (PostgreSQL 23505; SQL Server 2627 y 2601). */
+function isUniqueViolation(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const e = error as { code?: unknown; number?: unknown };
+  return e.code === '23505' || e.number === 2627 || e.number === 2601;
+}
+
+/**
+ * La organización de la instalación (D-84). La API usa `OrganizationDirectory`, que solo
+ * tiene las credenciales de esa organización (D-87); la CLI, el `TenantManager`.
+ */
+export interface OrganizationSource {
+  open(): Promise<TenantHandle>;
 }
 
 /** Datos de la petición que se registran (D-78). */
@@ -134,32 +170,35 @@ export function weakPassword(issues: PasswordIssue[]): ApiError {
 }
 
 export class IdentityService {
+  private readonly logger = new Logger('Identidad');
+
   constructor(
-    private readonly directory: TenantDirectory,
-    private readonly options: { defaultOrganization?: string | undefined; accessLogRetentionDays: number; now?: () => Date },
+    private readonly organization: OrganizationSource,
+    private readonly options: {
+      accessLogRetentionDays: number;
+      /** Fallos en 1 hora desde orígenes distintos que disparan `account.attack_suspected` [ESTIMACIÓN: 20]. */
+      attackAlertThreshold?: number;
+      now?: () => Date;
+    },
   ) {}
 
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
 
-  private resolveOrganization(organization: string | undefined): string | undefined {
-    const slug = organization === undefined || organization === '' ? this.options.defaultOrganization : organization;
-    if (slug === undefined) return undefined;
+  /**
+   * Ejecuta una operación de entrada (inicio de sesión, activación, autenticación de una
+   * petición). Un error que no sea de la API (p. ej. la base de la organización rechaza la
+   * conexión porque la organización fue suspendida) se responde como "servicio no
+   * disponible", sin detalles: falla segura (D-87).
+   */
+  private async entry<T>(fn: () => Promise<T>): Promise<T> {
     try {
-      assertTenantSlug(slug);
-      return slug;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private async openTenantOrNull(slug: string | undefined): Promise<TenantHandle | null> {
-    if (slug === undefined) return null;
-    try {
-      return await this.directory.openTenant(slug);
-    } catch {
-      return null;
+      return await fn();
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      this.logger.error(`Base de la organización no disponible: ${error instanceof Error ? error.message : 'error no identificado'}`);
+      throw UNAVAILABLE();
     }
   }
 
@@ -188,6 +227,7 @@ export class IdentityService {
   ): Promise<void> {
     const meta = params.meta ?? null;
     const actor = params.actor === null ? 'anonimo' : 'userId' in params.actor ? `user:${params.actor.userId}` : params.actor.label;
+    // La IP en claro nunca va a la bitácora: solo su HMAC (D-78).
     const data: Record<string, JsonValue> = { ...(params.data ?? {}) };
     if (meta?.ip != null) data.ipHmac = tenant.crypto.hmac('ip', meta.ip);
     const ua = userAgentFamily(meta?.userAgent ?? null);
@@ -203,6 +243,13 @@ export class IdentityService {
         .execute();
       const cutoff = new Date(now.getTime() - this.options.accessLogRetentionDays * 24 * 60 * 60_000);
       await tenant.db.deleteFrom('access_log').where('ts', '<', iso(cutoff)).execute();
+      // Los contadores por origen son datos de acceso derivados de la IP: misma retención
+      // (D-78). Nunca se borra un bloqueo vigente.
+      await tenant.db
+        .deleteFrom('login_throttle')
+        .where('updated_at', '<', iso(cutoff))
+        .where((eb) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<', iso(now))]))
+        .execute();
     }
   }
 
@@ -235,7 +282,8 @@ export class IdentityService {
         mfa_verified_at: mfaVerifiedAt,
       })
       .execute();
-    return { cookieValue: `${tenant.info.slug}.${token}`, csrfToken, stage };
+    // Desde 2C-1 (D-75 ajustada) la cookie lleva solo el token: la organización es fija.
+    return { cookieValue: token, csrfToken, stage };
   }
 
   /** Reemplaza la sesión por una nueva (evita fijación de sesión al subir de nivel). */
@@ -249,18 +297,15 @@ export class IdentityService {
   }
 
   /**
-   * Resuelve la sesión de una petición. La organización sale del valor de la cookie y se
-   * confirma porque el token existe en la base de ESA organización: un cliente que cambie
-   * el identificador solo consigue un rechazo.
+   * Resuelve la sesión de una petición. La cookie contiene solo el token (D-75 ajustada); se
+   * busca su hash en la base de la organización de la instalación.
    */
   async authenticate(cookieValue: string | undefined, allowedStages: readonly SessionStage[]): Promise<SessionContext> {
-    if (cookieValue === undefined) throw UNAUTHENTICATED();
-    const dot = cookieValue.indexOf('.');
-    const slug = cookieValue.slice(0, dot);
-    const token = cookieValue.slice(dot + 1);
-    if (dot <= 0 || !TOKEN_FORMAT.test(token)) throw UNAUTHENTICATED();
-    const tenant = await this.openTenantOrNull(this.resolveOrganization(slug));
-    if (tenant === null) throw UNAUTHENTICATED();
+    if (cookieValue === undefined || !TOKEN_FORMAT.test(cookieValue)) throw UNAUTHENTICATED();
+    return this.entry(async () => this.resolveSession(await this.organization.open(), cookieValue, allowedStages));
+  }
+
+  private async resolveSession(tenant: TenantHandle, token: string, allowedStages: readonly SessionStage[]): Promise<SessionContext> {
     const session = await tenant.db.selectFrom('user_session').selectAll().where('id_hash', '=', hashToken(token)).executeTakeFirst();
     if (session === undefined) throw UNAUTHENTICATED();
     const now = this.now();
@@ -311,46 +356,167 @@ export class IdentityService {
 
   // ---------- Inicio de sesión ----------
 
-  /**
-   * Reserva un intento ANTES de verificar (QA 2B-01). Devuelve si se permite verificar y
-   * si este intento acaba de activar un bloqueo.
-   */
-  private async beginAttempt(tenant: TenantHandle, userId: string, counter: Counter): Promise<{ allowed: boolean; lockedNow: boolean }> {
-    const now = this.now();
-    const row = await tenant.db.transaction().execute(async (trx) => {
-      // Incremento atómico en la base: peticiones simultáneas no pierden cuentas. Los
-      // intentos que llegan DURANTE un bloqueo vigente no cuentan: así ni el atacante ni la
-      // propia persona alargan la espera mientras la cuenta está bloqueada (QA 2B-11).
-      const notLocked = (eb: ExpressionBuilder<TenantDatabase, 'app_user'>) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', iso(now))]);
-      if (counter === 'failed_attempts') {
-        await trx.updateTable('app_user').set((eb) => ({ failed_attempts: eb('failed_attempts', '+', 1) })).where('id', '=', userId).where(notLocked).execute();
-      } else {
-        await trx.updateTable('app_user').set((eb) => ({ mfa_failed_attempts: eb('mfa_failed_attempts', '+', 1) })).where('id', '=', userId).where(notLocked).execute();
-      }
-      return trx.selectFrom('app_user').select(['failed_attempts', 'mfa_failed_attempts', 'locked_until']).where('id', '=', userId).executeTakeFirstOrThrow();
-    });
-    if (row.locked_until !== null && new Date(row.locked_until).getTime() > now.getTime()) return { allowed: false, lockedNow: false };
-    const n = row[counter];
-    if (n < LOCK_THRESHOLD) return { allowed: true, lockedNow: false };
-    // Desde el umbral, se bloquea y solo el intento que logra fijar el bloqueo se verifica.
-    const until = iso(new Date(now.getTime() + Math.min(LOCK_MAX_MS, LOCK_BASE_MS * 2 ** (n - LOCK_THRESHOLD))));
-    const claimed = await tenant.db
-      .updateTable('app_user')
-      .set({ locked_until: until })
-      .where('id', '=', userId)
-      .where((eb) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', iso(now))]))
-      .executeTakeFirst();
-    const won = Number(claimed.numUpdatedRows) === 1;
-    return { allowed: won, lockedNow: won };
+  /** HMAC del origen de la petición (IP) con la DEK: la IP en claro no se guarda en `login_throttle`. */
+  private originOf(tenant: TenantHandle, meta: RequestMeta | null): string {
+    return tenant.crypto.hmac(ORIGIN_PURPOSE, meta?.ip ?? 'desconocido');
   }
 
-  /** Intento exitoso: reinicia los contadores indicados y levanta el bloqueo. */
-  private async attemptSucceeded(tenant: TenantHandle, userId: string, counters: readonly Counter[]): Promise<void> {
-    await tenant.db
-      .updateTable('app_user')
-      .set({ locked_until: null, ...(counters.includes('failed_attempts') ? { failed_attempts: 0 } : {}), ...(counters.includes('mfa_failed_attempts') ? { mfa_failed_attempts: 0 } : {}) })
-      .where('id', '=', userId)
-      .execute();
+  /**
+   * Clave de origen con que se cuenta un contador:
+   * - contraseña: por cuenta + origen (D-88). Quien no conoce la contraseña solo bloquea su
+   *   propio origen y no puede impedir que la persona entre desde el suyo (R-34);
+   * - MFA: por CUENTA, con el origen fijo `ACCOUNT_ORIGIN` (D-89, QA 2C1-04). Con el conteo
+   *   por origen, quien ya conocía la contraseña tenía 5 códigos por cada IP. Al 5.º código
+   *   errado se bloquea la MFA de la cuenta desde cualquier origen. No recrea R-34 para quien no conoce la contraseña (residual R-38): llegar a
+   *   la verificación MFA exige la contraseña correcta.
+   * La reautenticación usa el mismo contador de MFA, por lo que también es por cuenta.
+   */
+  private throttleOrigin(tenant: TenantHandle, counter: Counter, meta: RequestMeta | null): string {
+    return counter === 'mfa' ? ACCOUNT_ORIGIN : this.originOf(tenant, meta);
+  }
+
+  /**
+   * Reserva un intento ANTES de verificar (QA 2B-01) en la fila del contador: cuenta + origen
+   * para la contraseña, cuenta para la MFA (`throttleOrigin`, D-89). Devuelve si se permite
+   * verificar y si este intento acaba de activar un bloqueo.
+   *
+   * El incremento y el bloqueo se aplican en UNA actualización condicional sobre el valor
+   * leído (comparar y reemplazar): de varias peticiones simultáneas, cada una cuenta solo si
+   * la fila no estaba bloqueada en ese instante. Así:
+   * - en paralelo no se pierde ningún fallo antes del umbral (los perdedores reintentan);
+   * - la que llega al umbral fija el bloqueo y es la única que se verifica;
+   * - al vencer la espera entra UN intento; los demás encuentran el bloqueo nuevo y NO
+   *   cuentan ni lo alargan (QA 2B-11): una ráfaga ya no lleva la espera directo al tope.
+   * Si la contención no se resuelve en `CAS_ATTEMPTS` vueltas, se niega (falla segura).
+   */
+  private async beginAttempt(tenant: TenantHandle, userId: string, counter: Counter, meta: RequestMeta | null): Promise<{ allowed: boolean; lockedNow: boolean }> {
+    const now = this.now();
+    const nowIso = iso(now);
+    const origin = this.throttleOrigin(tenant, counter, meta);
+    const key = (eb: ExpressionBuilder<TenantDatabase, 'login_throttle'>) => eb.and([eb('user_id', '=', userId), eb('origin_hmac', '=', origin), eb('kind', '=', counter)]);
+    for (let round = 0; round < CAS_ATTEMPTS; round++) {
+      const row = await tenant.db.selectFrom('login_throttle').select(['failed_attempts', 'locked_until']).where(key).executeTakeFirst();
+      if (row === undefined) {
+        try {
+          // Primer fallo del par: no alcanza el umbral (LOCK_THRESHOLD > 1).
+          await tenant.db.insertInto('login_throttle').values({ user_id: userId, origin_hmac: origin, kind: counter, failed_attempts: 1, locked_until: null, updated_at: nowIso }).execute();
+          return { allowed: true, lockedNow: false };
+        } catch (error) {
+          // Otra petición simultánea creó la fila: se vuelve a leer.
+          if (!isUniqueViolation(error)) throw error;
+          continue;
+        }
+      }
+      // Bloqueo vigente: no se verifica y el intento no cuenta.
+      if (row.locked_until !== null && row.locked_until > nowIso) return { allowed: false, lockedNow: false };
+      const n = row.failed_attempts + 1;
+      const lockedUntil = n >= LOCK_THRESHOLD ? iso(new Date(now.getTime() + Math.min(LOCK_MAX_MS, LOCK_BASE_MS * 2 ** (n - LOCK_THRESHOLD)))) : null;
+      const swapped = await tenant.db
+        .updateTable('login_throttle')
+        .set({ failed_attempts: n, locked_until: lockedUntil, updated_at: nowIso })
+        .where(key)
+        .where('failed_attempts', '=', row.failed_attempts)
+        .where((eb) => (row.locked_until === null ? eb('locked_until', 'is', null) : eb('locked_until', '=', row.locked_until)))
+        .executeTakeFirst();
+      if (Number(swapped.numUpdatedRows) === 1) return { allowed: true, lockedNow: lockedUntil !== null };
+      // Otra petición cambió la fila entre la lectura y la escritura: se reintenta.
+    }
+    return { allowed: false, lockedNow: false };
+  }
+
+  /**
+   * Intento exitoso: borra los contadores indicados. El de contraseña solo del origen de la
+   * petición (no los de otros orígenes); el de MFA, el de la cuenta (D-89). El éxito exige
+   * haber pasado `beginAttempt`, así que nunca levanta un bloqueo vigente.
+   */
+  private async attemptSucceeded(tenant: TenantHandle, userId: string, counters: readonly Counter[], meta: RequestMeta | null): Promise<void> {
+    for (const counter of counters) {
+      await tenant.db
+        .deleteFrom('login_throttle')
+        .where('user_id', '=', userId)
+        .where('origin_hmac', '=', this.throttleOrigin(tenant, counter, meta))
+        .where('kind', '=', counter)
+        .execute();
+    }
+  }
+
+  /**
+   * Reclama la marca "ya registrado en esta ventana" de una cuenta (fila con el origen fijo
+   * `ACCOUNT_ORIGIN`). Solo una petición la obtiene por ventana, aunque lleguen muchas a
+   * la vez: inserción (clave primaria) o actualización condicional al vencer la anterior.
+   */
+  private async claimOncePerWindow(tenant: TenantHandle, userId: string, kind: 'attack_alert' | 'lock_logged_pw' | 'lock_logged_mfa', now: Date): Promise<boolean> {
+    const until = iso(new Date(now.getTime() + ATTACK_WINDOW_MS));
+    try {
+      await tenant.db.insertInto('login_throttle').values({ user_id: userId, origin_hmac: ACCOUNT_ORIGIN, kind, failed_attempts: 0, locked_until: until, updated_at: iso(now) }).execute();
+      return true;
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+    }
+    const claimed = await tenant.db
+      .updateTable('login_throttle')
+      .set({ locked_until: until, updated_at: iso(now) })
+      .where('user_id', '=', userId)
+      .where('origin_hmac', '=', ACCOUNT_ORIGIN)
+      .where('kind', '=', kind)
+      .where((eb) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', iso(now))]))
+      .executeTakeFirst();
+    return Number(claimed.numUpdatedRows) === 1;
+  }
+
+  /**
+   * Registra un bloqueo (de contraseña por cuenta + origen, o de MFA por cuenta, D-89). El
+   * registro de accesos anota CADA bloqueo (con su IP); la bitácora inmutable, solo UNO por
+   * cuenta, contador y ventana de 1 hora:
+   * un atacante que bloquea muchos orígenes no puede hacer crecer sin límite la bitácora
+   * (QA 2C1-10, misma razón que QA 2B-08).
+   */
+  private async recordLock(tenant: TenantHandle, userId: string, counter: Counter, actor: Actor | null, meta: RequestMeta): Promise<void> {
+    const toAudit = await this.claimOncePerWindow(tenant, userId, counter === 'password' ? 'lock_logged_pw' : 'lock_logged_mfa', this.now());
+    await this.record(tenant, 'auth.account.locked', {
+      actor,
+      subjectUserId: userId,
+      data: { counter, scope: counter === 'mfa' ? 'account' : 'account+origin', ...(toAudit ? { auditWindowMinutes: ATTACK_WINDOW_MS / 60_000 } : {}) },
+      meta,
+      audit: toAudit,
+    });
+  }
+
+  /**
+   * Detección de ataque distribuido (R-34): si la cuenta acumula al menos
+   * `attackAlertThreshold` fallos verificados en 1 hora, desde al menos 2 orígenes
+   * distintos, se registra `account.attack_suspected` en la bitácora UNA vez por ventana
+   * (reclamada con una inserción o actualización condicional). No bloquea la cuenta, para
+   * no recrear R-34. La bitácora no recibe la IP: solo conteos.
+   */
+  private async detectAttack(tenant: TenantHandle, userId: string): Promise<void> {
+    const threshold = this.options.attackAlertThreshold ?? 20;
+    const now = this.now();
+    const stats = await tenant.db
+      .selectFrom('access_log')
+      .select((eb) => [eb.fn.countAll<number | string>().as('failures'), eb.fn.count<number | string>('ip').distinct().as('origins')])
+      .where('user_id', '=', userId)
+      .where('event', 'in', VERIFIED_FAILURE_EVENTS)
+      .where('ts', '>=', iso(new Date(now.getTime() - ATTACK_WINDOW_MS)))
+      .executeTakeFirst();
+    const failures = Number(stats?.failures ?? 0);
+    const origins = Number(stats?.origins ?? 0);
+    if (failures < threshold || origins < 2) return;
+    const won = await this.claimOncePerWindow(tenant, userId, 'attack_alert', now);
+    if (!won) return;
+    await this.record(tenant, 'account.attack_suspected', {
+      actor: { label: 'sistema:deteccion-ataques' },
+      subjectUserId: userId,
+      data: { failures, origins, windowMinutes: ATTACK_WINDOW_MS / 60_000, threshold },
+      meta: null,
+      accessLog: true,
+    });
+  }
+
+  /** Registra un fallo verificado (solo registro de accesos) y revisa si hay un ataque distribuido. */
+  private async recordFailure(tenant: TenantHandle, event: string, params: { actor: Actor | null; userId: string; data?: Record<string, JsonValue>; meta: RequestMeta }): Promise<void> {
+    await this.record(tenant, event, { actor: params.actor, subjectUserId: params.userId, ...(params.data !== undefined ? { data: params.data } : {}), meta: params.meta, audit: false });
+    await this.detectAttack(tenant, params.userId);
   }
 
   /** Espera hasta completar la duración mínima de una respuesta fallida (QA 2B-04). */
@@ -360,20 +526,20 @@ export class IdentityService {
   }
 
   /**
-   * Primer paso: organización + correo + contraseña (D-75). Cualquier fallo responde lo
-   * mismo y tarda lo mismo (se calcula un hash aunque el usuario no exista).
+   * Primer paso: correo + contraseña (D-75 ajustada; la organización es la de la
+   * instalación). Cualquier fallo responde lo mismo y tarda al menos lo mismo (se calcula un
+   * hash aunque el usuario no exista): no revela qué correos tienen cuenta.
    */
-  async login(input: { organization?: string | undefined; email: string; password: string }, meta: RequestMeta): Promise<IssuedSession> {
+  async login(input: { email: string; password: string }, meta: RequestMeta): Promise<IssuedSession> {
+    return this.entry(async () => this.loginIn(await this.organization.open(), input, meta));
+  }
+
+  private async loginIn(tenant: TenantHandle, input: { email: string; password: string }, meta: RequestMeta): Promise<IssuedSession> {
     const startedAt = Date.now();
     const fail = async (): Promise<never> => {
       await this.padFailure(startedAt);
       throw INVALID_CREDENTIALS();
     };
-    const tenant = await this.openTenantOrNull(this.resolveOrganization(input.organization));
-    if (tenant === null) {
-      await verifyAgainstDummy(input.password);
-      return fail();
-    }
     const email = normalizeEmail(input.email);
     const user = await tenant.db.selectFrom('app_user').selectAll().where('email', '=', email).executeTakeFirst();
     if (user?.status !== 'active' || user.password_hash === null) {
@@ -381,9 +547,9 @@ export class IdentityService {
       await this.record(tenant, 'auth.login.failed', { actor: null, data: { reason: 'unknown_or_inactive', emailHmac: tenant.crypto.hmac('email', email) }, meta, audit: false });
       return fail();
     }
-    const attempt = await this.beginAttempt(tenant, user.id, 'failed_attempts');
+    const attempt = await this.beginAttempt(tenant, user.id, 'password', meta);
     if (attempt.lockedNow) {
-      await this.record(tenant, 'auth.account.locked', { actor: null, subjectUserId: user.id, data: { counter: 'password' }, meta });
+      await this.recordLock(tenant, user.id, 'password', null, meta);
     }
     if (!attempt.allowed) {
       await verifyAgainstDummy(input.password);
@@ -392,16 +558,16 @@ export class IdentityService {
     }
     const result = await verifyPassword(input.password, user.password_hash);
     if (!result.ok) {
-      await this.record(tenant, 'auth.login.failed', { actor: null, subjectUserId: user.id, data: { reason: 'password' }, meta, audit: false });
+      await this.recordFailure(tenant, 'auth.login.failed', { actor: null, userId: user.id, data: { reason: 'password' }, meta });
       return fail();
     }
     // Acertar la contraseña NO reinicia el contador de MFA (QA 2B-01).
-    await this.attemptSucceeded(tenant, user.id, ['failed_attempts']);
+    await this.attemptSucceeded(tenant, user.id, ['password'], meta);
     if (result.needsRehash) {
       await tenant.db.updateTable('app_user').set({ password_hash: await hashPassword(input.password) }).where('id', '=', user.id).execute();
     }
-    const roles = await this.rolesOf(tenant, user.id);
-    const stage: SessionStage = user.mfa_secret_sealed !== null ? 'mfa_pending' : requiresMfa(roles) ? 'mfa_enroll' : 'full';
+    // D-86 (QA 2C1-06): sin MFA configurada, cualquier usuario debe configurarla primero.
+    const stage: SessionStage = user.mfa_secret_sealed !== null ? 'mfa_pending' : requiresMfa() ? 'mfa_enroll' : 'full';
     const issued = await this.issueSession(tenant, user.id, stage, null);
     await this.record(tenant, stage === 'full' ? 'auth.login.succeeded' : 'auth.login.password_ok', { actor: { userId: user.id }, subjectUserId: user.id, data: { stage }, meta });
     return issued;
@@ -411,8 +577,8 @@ export class IdentityService {
   async verifyMfa(ctx: SessionContext, input: { code?: string | undefined; recoveryCode?: string | undefined }, meta: RequestMeta): Promise<IssuedSession> {
     const { tenant, user } = ctx;
     const invalid = (): ApiError => new ApiError(401, 'invalid_code', 'Código incorrecto.');
-    const attempt = await this.beginAttempt(tenant, user.id, 'mfa_failed_attempts');
-    if (attempt.lockedNow) await this.record(tenant, 'auth.account.locked', { actor: { userId: user.id }, subjectUserId: user.id, data: { counter: 'mfa' }, meta });
+    const attempt = await this.beginAttempt(tenant, user.id, 'mfa', meta);
+    if (attempt.lockedNow) await this.recordLock(tenant, user.id, 'mfa', { userId: user.id }, meta);
     if (!attempt.allowed) {
       await this.record(tenant, 'auth.mfa.blocked', { actor: { userId: user.id }, subjectUserId: user.id, meta, audit: false });
       throw invalid();
@@ -434,10 +600,10 @@ export class IdentityService {
       recoveryUsed = ok;
     }
     if (!ok) {
-      await this.record(tenant, 'auth.mfa.failed', { actor: { userId: user.id }, subjectUserId: user.id, meta, audit: false });
+      await this.recordFailure(tenant, 'auth.mfa.failed', { actor: { userId: user.id }, userId: user.id, meta });
       throw invalid();
     }
-    await this.attemptSucceeded(tenant, user.id, ['failed_attempts', 'mfa_failed_attempts']);
+    await this.attemptSucceeded(tenant, user.id, ['password', 'mfa'], meta);
     const issued = await this.rotate(ctx, 'full', iso(this.now()));
     await this.record(tenant, recoveryUsed ? 'auth.mfa.recovery_used' : 'auth.login.succeeded', { actor: { userId: user.id }, subjectUserId: user.id, data: { stage: 'full' }, meta });
     return issued;
@@ -502,13 +668,17 @@ export class IdentityService {
 
   /** Reautenticación para acciones de alto riesgo. */
   async reauthenticate(ctx: SessionContext, code: string, meta: RequestMeta): Promise<void> {
-    const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'mfa_failed_attempts');
-    if (attempt.lockedNow) await this.record(ctx.tenant, 'auth.account.locked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, data: { counter: 'mfa' }, meta });
-    if (!attempt.allowed || !(await this.checkTotp(ctx, code))) {
-      await this.record(ctx.tenant, 'auth.reauth.failed', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta, audit: false });
+    const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'mfa', meta);
+    if (attempt.lockedNow) await this.recordLock(ctx.tenant, ctx.user.id, 'mfa', { userId: ctx.user.id }, meta);
+    if (!attempt.allowed) {
+      await this.record(ctx.tenant, 'auth.reauth.blocked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta, audit: false });
       throw new ApiError(401, 'invalid_code', 'Código incorrecto.');
     }
-    await this.attemptSucceeded(ctx.tenant, ctx.user.id, ['mfa_failed_attempts']);
+    if (!(await this.checkTotp(ctx, code))) {
+      await this.recordFailure(ctx.tenant, 'auth.reauth.failed', { actor: { userId: ctx.user.id }, userId: ctx.user.id, meta });
+      throw new ApiError(401, 'invalid_code', 'Código incorrecto.');
+    }
+    await this.attemptSucceeded(ctx.tenant, ctx.user.id, ['mfa'], meta);
     await ctx.tenant.db.updateTable('user_session').set({ mfa_verified_at: iso(this.now()) }).where('id_hash', '=', ctx.session.id_hash).execute();
     await this.record(ctx.tenant, 'auth.reauth.succeeded', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta });
   }
@@ -521,13 +691,18 @@ export class IdentityService {
   /** Cambio de contraseña: revoca todas las sesiones y emite una nueva. */
   async changePassword(ctx: SessionContext, current: string, next: string, meta: RequestMeta): Promise<IssuedSession> {
     const stored = ctx.user.password_hash;
-    const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'failed_attempts');
-    if (attempt.lockedNow) await this.record(ctx.tenant, 'auth.account.locked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, data: { counter: 'password' }, meta });
-    if (!attempt.allowed || stored === null || !(await verifyPassword(current, stored)).ok) {
-      await this.record(ctx.tenant, 'auth.password.change_failed', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta, audit: false });
-      throw new ApiError(401, 'invalid_credentials', 'La contraseña actual no es correcta.');
+    const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'password', meta);
+    if (attempt.lockedNow) await this.recordLock(ctx.tenant, ctx.user.id, 'password', { userId: ctx.user.id }, meta);
+    const wrong = new ApiError(401, 'invalid_credentials', 'La contraseña actual no es correcta.');
+    if (!attempt.allowed) {
+      await this.record(ctx.tenant, 'auth.password.change_blocked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta, audit: false });
+      throw wrong;
     }
-    await this.attemptSucceeded(ctx.tenant, ctx.user.id, ['failed_attempts']);
+    if (stored === null || !(await verifyPassword(current, stored)).ok) {
+      await this.recordFailure(ctx.tenant, 'auth.password.change_failed', { actor: { userId: ctx.user.id }, userId: ctx.user.id, meta });
+      throw wrong;
+    }
+    await this.attemptSucceeded(ctx.tenant, ctx.user.id, ['password'], meta);
     const issues = checkPasswordPolicy(next, { email: ctx.user.email });
     if (issues.length > 0) throw weakPassword(issues);
     const now = iso(this.now());
@@ -543,14 +718,17 @@ export class IdentityService {
   }
 
   /** Activación con el enlace de un solo uso: fija la contraseña. */
-  async activate(input: { organization?: string | undefined; token: string; password: string }, meta: RequestMeta): Promise<IssuedSession> {
+  async activate(input: { token: string; password: string }, meta: RequestMeta): Promise<IssuedSession> {
+    return this.entry(async () => this.activateIn(await this.organization.open(), input, meta));
+  }
+
+  private async activateIn(tenant: TenantHandle, input: { token: string; password: string }, meta: RequestMeta): Promise<IssuedSession> {
     const startedAt = Date.now();
     const invalid = async (): Promise<never> => {
       await this.padFailure(startedAt);
       throw new ApiError(400, 'invalid_token', 'El enlace de activación no es válido o expiró.');
     };
-    const tenant = await this.openTenantOrNull(this.resolveOrganization(input.organization));
-    if (tenant === null || !TOKEN_FORMAT.test(input.token)) return invalid();
+    if (!TOKEN_FORMAT.test(input.token)) return invalid();
     const row = await tenant.db.selectFrom('activation_token').selectAll().where('token_hash', '=', hashToken(input.token)).executeTakeFirst();
     if (row === undefined || row.used_at !== null || new Date(row.expires_at).getTime() <= this.now().getTime()) return invalid();
     const user = await tenant.db.selectFrom('app_user').selectAll().where('id', '=', row.user_id).executeTakeFirst();
@@ -568,8 +746,7 @@ export class IdentityService {
       .executeTakeFirst();
     if (Number(consumed.numUpdatedRows) !== 1) return invalid();
     await tenant.db.updateTable('app_user').set({ status: 'active', password_hash: hash, password_changed_at: now, updated_at: now }).where('id', '=', user.id).execute();
-    const roles = await this.rolesOf(tenant, user.id);
-    const stage: SessionStage = requiresMfa(roles) ? 'mfa_enroll' : 'full';
+    const stage: SessionStage = requiresMfa() ? 'mfa_enroll' : 'full';
     const session = await this.issueSession(tenant, user.id, stage, null);
     await this.record(tenant, 'user.activated', { actor: { userId: user.id }, subjectUserId: user.id, meta });
     return session;
@@ -717,21 +894,27 @@ export class IdentityService {
     await this.findUser(ctx.tenant, userId);
     await ctx.tenant.db
       .updateTable('app_user')
-      .set({ mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, mfa_failed_attempts: 0, locked_until: null, updated_at: iso(this.now()) })
+      .set({ mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, updated_at: iso(this.now()) })
       .where('id', '=', userId)
       .execute();
+    // Restablecer la MFA levanta también su bloqueo (D-83). Desde D-89 es una fila por cuenta;
+    // se borran todas las de tipo `mfa` por si quedan filas por origen anteriores a D-89.
+    await ctx.tenant.db.deleteFrom('login_throttle').where('user_id', '=', userId).where('kind', '=', 'mfa').execute();
     await ctx.tenant.db.deleteFrom('recovery_code').where('user_id', '=', userId).execute();
     await this.revokeAllSessions(ctx.tenant, userId);
     await this.record(ctx.tenant, 'user.mfa.reset', { actor: { userId: ctx.user.id }, subjectUserId: userId, meta });
   }
 
   /**
-   * Desbloquea una cuenta: pone en cero ambos contadores y levanta el bloqueo (QA 2B-11).
-   * Es el remedio cuando alguien mantiene bloqueada una cuenta enviando intentos fallidos.
-   * Lo usan un administrador por la API (alto riesgo) o el operador por la CLI.
+   * Desbloquea una cuenta: borra los contadores de contraseña y MFA de TODOS sus orígenes
+   * (QA 2B-11, R-34). Lo usan un administrador por la API (alto riesgo) o el operador por la
+   * CLI. La marca de alerta de ataque se conserva: evita repetir la alerta en la ventana.
    */
   async unlockUser(tenant: TenantHandle, actor: Actor, userId: string, meta: RequestMeta | null): Promise<void> {
     await this.findUser(tenant, userId);
+    // Levanta los bloqueos de contraseña de todos los orígenes y el de MFA de la cuenta (D-83, D-89).
+    await tenant.db.deleteFrom('login_throttle').where('user_id', '=', userId).where('kind', 'in', ['password', 'mfa']).execute();
+    // Columnas de bloqueo por cuenta de 2B (sin uso desde 2C-1): se dejan en cero por coherencia.
     await tenant.db.updateTable('app_user').set({ failed_attempts: 0, mfa_failed_attempts: 0, locked_until: null, updated_at: iso(this.now()) }).where('id', '=', userId).execute();
     await this.record(tenant, 'user.unlocked', { actor, subjectUserId: userId, meta });
   }

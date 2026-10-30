@@ -74,9 +74,15 @@ FROM ${ALPINE_IMAGE} AS web
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates
 COPY --from=caddy-build /out/caddy /usr/bin/caddy
 COPY deploy/docker/Caddyfile /etc/caddy/Caddyfile
+# Perfil institucional con HTTPS (2C-1): lo activa deploy/compose/compose.institucional.yaml.
+COPY deploy/docker/Caddyfile.institucional /etc/caddy/Caddyfile.institucional
 COPY --from=build /src/apps/web/dist /srv
-# Caddy escucha en 8080 (puerto no privilegiado) y se ejecuta con un usuario sin privilegios.
+# Datos de Caddy del perfil institucional (CA interna y certificados): un volumen se monta
+# aquí y hereda este dueño, para que el usuario sin privilegios pueda escribir.
+RUN mkdir -p /data && chown 65532:65532 /data && chmod 700 /data
+# Caddy escucha en 8080 (perfil local) o en 8443 (perfil institucional), puertos no
+# privilegiados, y se ejecuta con un usuario sin privilegios.
 USER 65532:65532
 ENV XDG_DATA_HOME=/tmp/caddy-data XDG_CONFIG_HOME=/tmp/caddy-config
-EXPOSE 8080
+EXPOSE 8080 8443
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

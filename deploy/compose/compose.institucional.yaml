@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Perfil INSTITUCIONAL con HTTPS en la red interna (2C-1, D-37, D-88). Se usa JUNTO con
+# compose.yaml:
+#   docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.institucional.yaml up -d --wait
+# Guía paso a paso: docs/fase-2/instalacion-institucional.md
+#
+# Variables (en deploy/compose/.env, excluido de git):
+#   AUDITOR_SITE_ADDRESS  obligatorio: nombre o IP del servidor en la red interna.
+#   AUDITOR_HTTPS_PORT    puerto HTTPS publicado (por defecto 443).
+#   AUDITOR_HTTPS_BIND    dirección del servidor donde se publica (por defecto 0.0.0.0: todas).
+#   AUDITOR_TLS           "internal" (CA interna de Caddy, por defecto) o
+#                         "/run/secrets/tls_cert /run/secrets/tls_key" (certificado propio).
+#   AUDITOR_TLS_CERT_FILE, AUDITOR_TLS_KEY_FILE
+#                         archivos del certificado propio (solo con certificado propio).
+#
+# Advertencia R-35: fuera de 127.0.0.1 use SIEMPRE este perfil (HTTPS). El perfil local sin
+# HTTPS enviaría las contraseñas sin cifrar por la red interna.
+services:
+  web:
+    # Reemplaza (no suma) la publicación 127.0.0.1:8080 del perfil local.
+    ports: !override
+      - "${AUDITOR_HTTPS_BIND:-0.0.0.0}:${AUDITOR_HTTPS_PORT:-443}:8443"
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.institucional", "--adapter", "caddyfile"]
+    environment:
+      AUDITOR_SITE_ADDRESS: ${AUDITOR_SITE_ADDRESS:?Defina AUDITOR_SITE_ADDRESS en deploy/compose/.env (ver docs/fase-2/instalacion-institucional.md)}
+      AUDITOR_TLS: ${AUDITOR_TLS:-internal}
+      # La CA interna y los certificados deben sobrevivir a reinicios: si no, habría que
+      # reinstalar el certificado raíz en cada equipo.
+      XDG_DATA_HOME: /data
+    volumes:
+      - caddy-data:/data
+    secrets: [tls_cert, tls_key]
+
+  api:
+    environment:
+      # Con HTTPS la cookie de sesión lleva Secure y el prefijo __Host- (D-81).
+      COOKIE_SECURE: "true"
+
+volumes:
+  caddy-data: {}
+
+secrets:
+  # Con la CA interna se montan archivos vacíos (los crea generate-secrets.sh) y no se usan.
+  tls_cert:
+    file: ${AUDITOR_TLS_CERT_FILE:-./secrets/tls/sin-certificado.pem}
+  tls_key:
+    file: ${AUDITOR_TLS_KEY_FILE:-./secrets/tls/sin-llave.pem}

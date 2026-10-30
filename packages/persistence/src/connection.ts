@@ -42,7 +42,22 @@ export function connect<DB>(server: DbServerConfig, database: string, maxConnect
   }
   return new Kysely<DB>({
     dialect: new MssqlDialect({
-      tarn: { ...tarn, options: { min: 0, max: maxConnections } },
+      tarn: {
+        ...tarn,
+        options: {
+          min: 0,
+          max: maxConnections,
+          // Sin esto, tarn REINTENTA crear la conexión cada 200 ms hasta agotar la espera de
+          // 30 s por defecto: con el login deshabilitado (organización suspendida) cada
+          // petición quedaba colgada 30 s en vez de fallar (CI de 2C-1, SQL Server). Con
+          // `propagateCreateError` el error de inicio de sesión llega de inmediato a quien
+          // pidió la conexión, igual que en PostgreSQL (falla segura y rápida).
+          propagateCreateError: true,
+          // Tiempos máximos explícitos para obtener y crear una conexión del pool.
+          acquireTimeoutMillis: 20_000,
+          createTimeoutMillis: 20_000,
+        },
+      },
       tedious: {
         ...tedious,
         connectionFactory: () => {
@@ -56,6 +71,9 @@ export function connect<DB>(server: DbServerConfig, database: string, maxConnect
               trustServerCertificate: server.tls === 'trust-server-certificate',
               appName: 'auditor-21719',
               connectTimeout: 15_000,
+              // Tiempo máximo explícito de cada consulta (el valor por defecto de tedious es
+              // 15 s); holgado para migraciones y CREATE DATABASE.
+              requestTimeout: 30_000,
             },
           });
           // Mismo motivo que en PostgreSQL: un error de una conexión inactiva no debe

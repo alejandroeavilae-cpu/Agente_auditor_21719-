@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Proxy inverso y servidor de la interfaz web: PERFIL INSTITUCIONAL con HTTPS (2C-1, D-37).
+# Se usa con deploy/compose/compose.institucional.yaml. Guía: docs/fase-2/instalacion-institucional.md
+#
+# Variables (las fija Compose):
+#   AUDITOR_SITE_ADDRESS  nombre (o IP) con que los equipos de la red interna abren la
+#                         plataforma, p. ej. "auditor.municipio.local". Varios, separados por coma.
+#   AUDITOR_TLS           "internal" (CA interna de Caddy, por defecto) o
+#                         "/run/secrets/tls_cert /run/secrets/tls_key" (certificado propio).
+# Caddy sustituye {$VAR} antes de interpretar el archivo, por eso AUDITOR_TLS puede ser una
+# palabra o dos rutas.
+{
+	# Sin API de administración: nadie puede reconfigurar el proxy en caliente.
+	admin off
+	# Puertos sin privilegios dentro del contenedor; Compose publica 8443 en el puerto 443
+	# (o el que se configure) del servidor.
+	http_port 8080
+	https_port 8443
+	# El perfil no publica HTTP: no hay redirección que atender.
+	auto_https disable_redirects
+	# La CA interna no intenta instalarse en el almacén del sistema del contenedor: el
+	# certificado raíz se instala a mano en los equipos de los usuarios (ver la guía).
+	skip_install_trust
+}
+
+{$AUDITOR_SITE_ADDRESS} {
+	tls {$AUDITOR_TLS:internal}
+	encode zstd gzip
+
+	# Mismas cabeceras y CSP que el perfil local (deploy/docker/Caddyfile), más HSTS: con
+	# HTTPS el navegador no vuelve a intentar HTTP con este nombre.
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+	handle /health {
+		reverse_proxy api:3000
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
