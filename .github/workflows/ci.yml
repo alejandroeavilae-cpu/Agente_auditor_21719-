@@ -125,7 +125,7 @@ jobs:
         run: |
           pnpm exec vitest run --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-integracion.json
           node ../../scripts/check-integration-report.mjs vitest-integracion.json
-      - name: Pruebas de integración de identidad (2B) por HTTP, ambos motores
+      - name: Pruebas de integración de identidad (2B y 2C-1) por HTTP, ambos motores
         working-directory: apps/api
         env:
           REQUIRE_DB_ENGINES: postgresql,sqlserver
@@ -140,13 +140,15 @@ jobs:
           TEST_MSSQL_PASSWORD: ${{ env.MSSQL_TEST_PASSWORD }}
           TEST_MSSQL_TLS: trust-server-certificate
           SUITE_PREFIX: identidad en
-          MIN_TESTS_PER_ENGINE: "21"
+          # 25 por motor desde 2C-1 (observadas en PostgreSQL local; SQL Server ejecuta las
+          # mismas pruebas).
+          MIN_TESTS_PER_ENGINE: "25"
         run: |
           pnpm exec vitest run test/identity.int.test.ts --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-identidad.json
           node ../../scripts/check-integration-report.mjs vitest-identidad.json
 
   compose-smoke:
-    name: Prueba de humo de Docker Compose (perfil local)
+    name: Prueba de humo de Docker Compose (perfiles local e institucional)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -162,10 +164,15 @@ jobs:
           set -o pipefail
           docker compose -f deploy/compose/compose.yaml build --progress plain 2>&1 | tee build.log || {
             tail -25 build.log | while IFS= read -r l; do echo "::error title=build::$l"; done; exit 1; }
-      - name: Levantar servicios
-        run: docker compose -f deploy/compose/compose.yaml up -d --wait --wait-timeout 300
-      - name: Comprobaciones de comportamiento y aislamiento
+      # Desde 2C-1 (D-87) la API necesita los secretos de su organización para arrancar: se
+      # levantan primero la base y la caché; smoke-compose.sh crea la organización, escribe
+      # los secretos de la API y recién entonces levanta la API y la web.
+      - name: Levantar base de datos y caché
+        run: docker compose -f deploy/compose/compose.yaml up -d --wait --wait-timeout 300 postgres valkey
+      - name: Instalación y comprobaciones de comportamiento y aislamiento
         run: sh scripts/smoke-compose.sh "${{ github.sha }}"
+      - name: Perfil institucional con HTTPS y CA interna (2C-1)
+        run: sh scripts/smoke-institucional.sh 8443
       - name: Escanear imagen API
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -209,6 +216,8 @@ jobs:
         run: |
           docker compose -f deploy/compose/compose.yaml ps -a
           docker compose -f deploy/compose/compose.yaml logs --no-color --tail 15 | while IFS= read -r l; do echo "::warning title=logs::$l"; done
-      - name: Bajar servicios y borrar volúmenes
+      - name: Bajar servicios y borrar volúmenes (incluido el de la CA interna)
         if: always()
-        run: docker compose -f deploy/compose/compose.yaml down -v
+        env:
+          AUDITOR_SITE_ADDRESS: auditor.prueba.internal
+        run: docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.institucional.yaml down -v
