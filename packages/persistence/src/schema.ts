@@ -77,10 +77,15 @@ export interface AppUserTable {
   mfa_pending_secret_sealed: string | null;
   /** Último paso TOTP aceptado (evita reusar un código). */
   mfa_last_step: number | string | null;
-  /** Fallos consecutivos de contraseña. */
+  /**
+   * Contadores de bloqueo POR CUENTA de 2B. Desde 2C-1 el bloqueo es por cuenta + origen
+   * (`login_throttle`, mitigación de R-34) y estas columnas ya no se usan: se conservan
+   * porque la migración 0002 está publicada y no se edita [DECISIÓN].
+   */
   failed_attempts: number;
-  /** Fallos consecutivos de MFA: contador aparte, no se pone en 0 al acertar la contraseña (QA 2B-01). */
+  /** Sin uso desde 2C-1 (ver `failed_attempts`). */
   mfa_failed_attempts: number;
+  /** Sin uso desde 2C-1 (ver `failed_attempts`). */
   locked_until: string | null;
   password_changed_at: string | null;
   created_at: string;
@@ -131,6 +136,31 @@ export interface AccessLogTable {
   ua_family: string | null;
 }
 
+/**
+ * Tipo de contador de `login_throttle`:
+ * - `password` y `mfa`: bloqueo progresivo por cuenta + origen, separados (D-82, R-34);
+ * - `attack_alert`: fila única por cuenta (origen `ATTACK_ALERT_ORIGIN`) que marca hasta
+ *   cuándo ya se registró `account.attack_suspected`, para registrarlo UNA vez por ventana.
+ */
+export type ThrottleKind = 'password' | 'mfa' | 'attack_alert';
+
+/**
+ * Bloqueo progresivo por cuenta + origen (2C-1, mitigación de R-34). El origen es el HMAC
+ * de la IP con la DEK (propósito `login-origin`): la IP en claro no se guarda aquí. Las
+ * filas se borran con la retención del registro de accesos (D-78).
+ */
+export interface LoginThrottleTable {
+  user_id: string;
+  origin_hmac: string;
+  kind: ThrottleKind;
+  failed_attempts: number;
+  locked_until: string | null;
+  updated_at: string;
+}
+
+/** Origen fijo de la fila `attack_alert` (64 ceros: mismo largo que un HMAC, sin relleno). */
+export const ATTACK_ALERT_ORIGIN = '0'.repeat(64);
+
 export interface TenantDatabase {
   organization: OrganizationTable;
   audit_log: AuditLogTable;
@@ -140,10 +170,11 @@ export interface TenantDatabase {
   user_session: UserSessionTable;
   activation_token: ActivationTokenTable;
   access_log: AccessLogTable;
+  login_throttle: LoginThrottleTable;
 }
 
 /** Tablas de identidad a las que el usuario de aplicación accede con lectura y escritura. */
-export const IDENTITY_TABLES = ['app_user', 'user_role', 'recovery_code', 'user_session', 'activation_token', 'access_log'] as const;
+export const IDENTITY_TABLES = ['app_user', 'user_role', 'recovery_code', 'user_session', 'activation_token', 'access_log', 'login_throttle'] as const;
 
 // ---------- Tipos de columna portables ----------
 
@@ -276,6 +307,26 @@ export function tenantMigrations(engine: DbEngine): Record<string, Migration> {
           .addColumn('ua_family', str(engine, 40))
           .execute();
         await db.schema.createIndex('access_log_ts').on('access_log').column('ts').execute();
+      },
+    },
+    // 2C-1: bloqueo por cuenta + origen (mitigación de R-34). Migración nueva: 0002 ya está
+    // publicada y no se edita.
+    '0003_login_throttle': {
+      async up(db: Kysely<unknown>) {
+        await db.schema
+          .createTable('login_throttle')
+          .addColumn('user_id', ascii(36), (c) => c.notNull())
+          .addColumn('origin_hmac', ascii(64), (c) => c.notNull())
+          .addColumn('kind', str(engine, 20), (c) => c.notNull())
+          .addColumn('failed_attempts', 'integer', (c) => c.notNull().defaultTo(0))
+          .addColumn('locked_until', ascii(24))
+          .addColumn('updated_at', ascii(24), (c) => c.notNull())
+          .addPrimaryKeyConstraint('login_throttle_pk', ['user_id', 'origin_hmac', 'kind'])
+          .execute();
+        // Purga por retención (D-78).
+        await db.schema.createIndex('login_throttle_updated').on('login_throttle').column('updated_at').execute();
+        // Detección de ataque distribuido: fallos recientes de una cuenta en el registro de accesos.
+        await db.schema.createIndex('access_log_user_ts').on('access_log').columns(['user_id', 'ts']).execute();
       },
     },
   };
