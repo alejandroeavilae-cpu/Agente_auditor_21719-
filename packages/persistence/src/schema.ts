@@ -60,7 +60,11 @@ export interface AuditLogTable {
 }
 
 export type UserStatus = 'invited' | 'active' | 'disabled';
-export type SessionStage = 'mfa_pending' | 'mfa_enroll' | 'full';
+/**
+ * Etapa de la sesión. `password_change` (2C-2, R-38): la persona completó la MFA pero debe
+ * cambiar su contraseña antes de hacer cualquier otra cosa.
+ */
+export type SessionStage = 'mfa_pending' | 'mfa_enroll' | 'password_change' | 'full';
 
 /** Usuario de la organización (entrega 2B). Datos personales de la plataforma (O-01). */
 export interface AppUserTable {
@@ -90,6 +94,12 @@ export interface AppUserTable {
   password_changed_at: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * 1 = debe cambiar la contraseña antes de usar la plataforma (2C-2, mitigación de R-38).
+   * Se fija al levantar un bloqueo de MFA (desbloqueo o restablecimiento): un bloqueo de MFA
+   * significa que alguien conocía la contraseña. Entero 0/1 por portabilidad entre motores.
+   */
+  must_change_password: number;
 }
 
 export interface UserRoleTable {
@@ -341,6 +351,17 @@ export function tenantMigrations(engine: DbEngine): Record<string, Migration> {
         await db.schema.createIndex('login_throttle_updated').on('login_throttle').column('updated_at').execute();
         // Detección de ataque distribuido: fallos recientes de una cuenta en el registro de accesos.
         await db.schema.createIndex('access_log_user_ts').on('access_log').columns(['user_id', 'ts']).execute();
+      },
+    },
+    // 2C-2: cambio de contraseña obligatorio tras levantar un bloqueo de MFA (R-38). Migración
+    // nueva: 0002 y 0003 están publicadas y no se editan. La columna se agrega con valor por
+    // defecto 0, de modo que los usuarios existentes no quedan obligados a nada.
+    '0004_must_change_password': {
+      async up(db: Kysely<unknown>) {
+        await db.schema
+          .alterTable('app_user')
+          .addColumn('must_change_password', 'integer', (c) => c.notNull().defaultTo(0))
+          .execute();
       },
     },
   };

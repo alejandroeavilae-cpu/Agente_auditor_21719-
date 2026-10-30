@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Verifica que cada archivo fuente propio declare su licencia con una cabecera SPDX
 // en las primeras líneas (convención D-26). Falla con código 1 si falta en alguno.
+// Desde 2C-2 también revisa hojas de estilo y HTML de la interfaz (.css, .html).
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 const HEADER = 'SPDX-License-Identifier: AGPL-3.0-or-later';
-const EXTENSIONS = /\.(ts|tsx|js|mjs|cjs)$/;
+const EXTENSIONS = /\.(ts|tsx|js|mjs|cjs|css|html)$/;
 
 // Solo archivos versionados en git: evita revisar dependencias o artefactos compilados.
 const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8' })

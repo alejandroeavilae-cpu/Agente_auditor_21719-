@@ -51,7 +51,7 @@ const TENANT_TABLE_COLUMNS: Record<string, readonly string[]> = {
   audit_log: ['action', 'actor', 'chain_id', 'data', 'hash', 'object', 'prev_hash', 'seq', 'ts'],
   app_user: [
     'created_at', 'display_name', 'email', 'failed_attempts', 'id', 'locked_until', 'mfa_failed_attempts', 'mfa_last_step', 'mfa_pending_secret_sealed',
-    'mfa_secret_sealed', 'password_changed_at', 'password_hash', 'status', 'updated_at',
+    'mfa_secret_sealed', 'must_change_password', 'password_changed_at', 'password_hash', 'status', 'updated_at',
   ],
   user_role: ['role', 'user_id'],
   recovery_code: ['code_hash', 'used_at', 'user_id'],

@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Pruebas de integración de identidad (2B y 2C-1) contra motores reales, a través de HTTP.
+// Pruebas de integración de identidad (2B, 2C-1 y la API de 2C-2) contra motores reales, a través de HTTP.
 // Solo datos sintéticos. Cada ejecución crea sus cuentas, base de control y organizaciones.
 //
 // Desde 2C-1 cada API atiende UNA organización (D-84, D-75 ajustada) y no tiene la clave
 // maestra (D-87): recibe los secretos que escribe `auditor-admin api-secrets write`. Por
 // eso hay una API para la organización A y otra para la B.
 
+import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { parseJsonlLines, toJsonl, verifyChainItems } from '@auditor-21719/audit-log';
 import { encodeKeyForFile, generateKey } from '@auditor-21719/crypto';
-import { totpAt } from '@auditor-21719/identity';
+import { base32Encode, normalizeRecoveryCode, totpAt } from '@auditor-21719/identity';
 import { ACCOUNT_ORIGIN, connect, OrganizationDirectory, provisionerFor, serverAdminDatabase, TenantManager, type DbServerConfig, type TenantDatabase } from '@auditor-21719/persistence';
 import { Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -76,6 +78,22 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   const secrets = new Map<string, Buffer>();
   /** Contraseñas de base y DEK entregadas a las API (no deben aparecer en la base). */
   const apiSecretValues: string[] = [];
+  /**
+   * Valores sensibles creados en las pruebas (QA 2C1-15): contraseñas locales, tokens de
+   * activación y códigos de recuperación. La prueba de valores centinela (la última) revisa
+   * que ninguno aparezca en las bases.
+   */
+  const sentinels: string[] = [];
+  /** Contraseña sintética nueva, registrada como valor centinela. */
+  const syntheticPassword = (): string => {
+    const value = `sintetica-${randomBytes(9).toString('hex')}`;
+    sentinels.push(value);
+    return value;
+  };
+  /** Registra los códigos de recuperación entregados (tal cual y normalizados). */
+  const keepRecoveryCodes = (codes: unknown): void => {
+    for (const code of codes as string[]) sentinels.push(code, normalizeRecoveryCode(code));
+  };
   let adminId = '';
   /** Código TOTP del siguiente paso no usado (evita el rechazo por reuso). */
   const nextCode = (email: string): string => {
@@ -216,6 +234,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     secrets.set(email, base32Decode(enroll.body.secret as string));
     const confirm = await c.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode(email) });
     expect(confirm.body.stage).toBe('full');
+    keepRecoveryCodes(confirm.body.recoveryCodes);
     return c;
   }
 
@@ -249,6 +268,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   it('el primer administrador (CLI) se activa, queda obligado a configurar MFA y la configura', async () => {
     const handle = await apiA.directory.open();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'Admin@Ejemplo.cl', displayName: 'Admin Sintético', roles: ['org_admin'] }, null);
+    sentinels.push(invited.activationToken);
     adminId = invited.userId;
     const c = client();
     // D-75 ajustada: el campo `organization` ya no existe y se rechaza como cualquier campo no declarado.
@@ -273,6 +293,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(confirm.status).toBe(200);
     expect(confirm.body.stage).toBe('full');
     expect(confirm.body.recoveryCodes).toHaveLength(10);
+    keepRecoveryCodes(confirm.body.recoveryCodes);
     const me = await c.request('GET', '/api/v1/auth/me');
     expect(me.body).toMatchObject({ organization: { slug: slugA }, user: { email: 'admin@ejemplo.cl', mfaEnabled: true }, stage: 'full' });
   });
@@ -347,11 +368,12 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   it('2C1-06: un usuario sin roles reconocidos también queda obligado a configurar la MFA', async () => {
     const handle = await apiA.directory.open();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'sin-roles@ejemplo.cl', displayName: 'Sin Roles Sintético', roles: ['reader'] }, null);
+    sentinels.push(invited.activationToken);
     // Sus roles se reemplazan por uno que la plataforma no reconoce (p. ej. datos alterados).
     await handle.db.deleteFrom('user_role').where('user_id', '=', invited.userId).execute();
     await handle.db.insertInto('user_role').values({ user_id: invited.userId, role: 'rol-desconocido' }).execute();
     const c = client();
-    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    const PASSWORD = syntheticPassword();
     expect((await c.request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD })).body.stage).toBe('mfa_enroll');
     expect((await c.request('GET', '/api/v1/users')).body.error).toBe('mfa_enrollment_required');
     // Sin ninguna fila de rol, igual.
@@ -426,11 +448,13 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     // Se generan códigos nuevos con un usuario de prueba en B (su propia API).
     const handle = await apiB.directory.open();
     const invited = await apiB.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'admin-b@ejemplo.cl', displayName: 'Admin B', roles: ['org_admin'] }, null);
+    sentinels.push(invited.activationToken);
     const c = clientB();
     await c.request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD_ADMIN });
     const enroll = await c.request('POST', '/api/v1/auth/mfa/enroll', {});
     secrets.set('admin-b@ejemplo.cl', base32Decode(enroll.body.secret as string));
     const confirm = await c.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode('admin-b@ejemplo.cl') });
+    keepRecoveryCodes(confirm.body.recoveryCodes);
     const [recovery] = confirm.body.recoveryCodes as string[];
     const first = clientB();
     await first.request('POST', '/api/v1/auth/login', { email: 'admin-b@ejemplo.cl', password: PASSWORD_ADMIN });
@@ -443,7 +467,8 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   it('2B-01: el bloqueo resiste intentos en paralelo y no se reinicia al acertar la contraseña', async () => {
     const handle = await apiA.directory.open();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'jefa@ejemplo.cl', displayName: 'Jefa Sintética', roles: ['audit_lead'] }, null);
-    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    sentinels.push(invited.activationToken);
+    const PASSWORD = syntheticPassword();
     await activateWithMfa(invited.activationToken, 'jefa@ejemplo.cl', PASSWORD);
     const counter = async (kind: string): Promise<number> => (await throttleRows(invited.userId)).filter((r) => r.kind === kind).reduce((n, r) => n + r.failed_attempts, 0);
 
@@ -486,7 +511,8 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   it('2B-11: los intentos durante un bloqueo no lo alargan; un administrador puede desbloquear', async () => {
     const handle = await apiA.directory.open();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'lectora@ejemplo.cl', displayName: 'Lectora Sintética', roles: ['reader'] }, null);
-    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    sentinels.push(invited.activationToken);
+    const PASSWORD = syntheticPassword();
     await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD });
     // Un "atacante" bloquea el par cuenta + origen con 5 intentos.
     for (let i = 0; i < 5; i++) await client().request('POST', '/api/v1/auth/login', { email: 'lectora@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
@@ -512,7 +538,8 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   it('R-34: el atacante desde el origen A bloquea solo A; la víctima entra desde B; el paralelo no lo elude', async () => {
     const handle = await apiA.directory.open();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'victima@ejemplo.cl', displayName: 'Víctima Sintética', roles: ['reader'] }, null);
-    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    sentinels.push(invited.activationToken);
+    const PASSWORD = syntheticPassword();
     await activateWithMfa(invited.activationToken, 'victima@ejemplo.cl', PASSWORD, client('203.0.113.20'));
     const attacker = (): Client => client('198.51.100.7');
     const victim = (): Client => client('203.0.113.20');
@@ -556,7 +583,8 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   it('R-34: muchos fallos desde orígenes distintos registran UNA alerta de ataque por ventana, sin bloquear la cuenta', async () => {
     const handle = await apiA.directory.open();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'objetivo@ejemplo.cl', displayName: 'Objetivo Sintético', roles: ['reader'] }, null);
-    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    sentinels.push(invited.activationToken);
+    const PASSWORD = syntheticPassword();
     await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD });
     const alerts = async (): Promise<Record<string, unknown>[]> =>
       (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'account.attack_suspected' && e.object === `user/${invited.userId}`);
@@ -588,7 +616,8 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   it('2C1-10: bloquear muchos orígenes deja UN evento de bloqueo por cuenta y ventana en la bitácora; el registro de accesos los anota todos', async () => {
     const handle = await apiA.directory.open();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'muchos-origenes@ejemplo.cl', displayName: 'Cuenta Sintética', roles: ['reader'] }, null);
-    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    sentinels.push(invited.activationToken);
+    const PASSWORD = syntheticPassword();
     await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD });
     const lockFrom = async (origin: string): Promise<void> => {
       for (let i = 0; i < LOCK_AT; i++) await client(origin).request('POST', '/api/v1/auth/login', { email: 'muchos-origenes@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
@@ -614,7 +643,8 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     // 30 s, lo mismo que dura el primer bloqueo, y lo haría vencer.
     const admin = await loggedAdmin();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'mfa-cuenta@ejemplo.cl', displayName: 'MFA por Cuenta', roles: ['reader'] }, null);
-    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    sentinels.push(invited.activationToken);
+    const PASSWORD = syntheticPassword();
     const owner = await activateWithMfa(invited.activationToken, 'mfa-cuenta@ejemplo.cl', PASSWORD, client('203.0.113.40'));
     const mfaRows = async (): Promise<Awaited<ReturnType<typeof throttleRows>>> => (await throttleRows(invited.userId)).filter((r) => r.kind === 'mfa');
     /** Código del paso vigente, sin adelantar el reloj (no vence el bloqueo). */
@@ -670,7 +700,9 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
     expect(await mfaRows()).toEqual([]);
     const afterApi = await pendingFrom('198.51.104.100');
-    expect((await afterApi.request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.stage).toBe('full');
+    // Desde 2C-2 (R-38): levantar un bloqueo de MFA obliga a cambiar la contraseña, así que
+    // el código correcto lleva a la etapa `password_change` (antes, 'full').
+    expect((await afterApi.request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.stage).toBe('password_change');
 
     // Ronda 2, en la misma ventana de 1 hora: se vuelve a bloquear; desbloqueo por la CLI.
     offsetMs += 30_000;
@@ -682,13 +714,14 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(second.access).toBe(2);
     expect((await runCli(['user', 'unlock', '--tenant', slugA, '--email', 'mfa-cuenta@ejemplo.cl'])).code).toBe(0);
     expect(await mfaRows()).toEqual([]);
-    expect((await (await pendingFrom('198.51.105.100')).request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.stage).toBe('full');
+    expect((await (await pendingFrom('198.51.105.100')).request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.stage).toBe('password_change');
   });
 
   it('D-89 + D-82: una ráfaga de códigos desde muchos orígenes no elude el bloqueo de MFA por cuenta ni lleva la espera al tope; reiniciar la MFA lo levanta', async () => {
     const handle = await apiA.directory.open();
     const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'mfa-rafaga@ejemplo.cl', displayName: 'MFA Ráfaga', roles: ['reader'] }, null);
-    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    sentinels.push(invited.activationToken);
+    const PASSWORD = syntheticPassword();
     await activateWithMfa(invited.activationToken, 'mfa-rafaga@ejemplo.cl', PASSWORD, client('203.0.113.41'));
     const mfaRows = async (): Promise<Awaited<ReturnType<typeof throttleRows>>> => (await throttleRows(invited.userId)).filter((r) => r.kind === 'mfa');
     const pendingFrom = async (origin: string): Promise<Client> => {
@@ -721,12 +754,345 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(remaining).toBeGreaterThan(0);
     expect(remaining).toBeLessThanOrEqual(60_000);
 
-    // Restablecer la MFA levanta el bloqueo (D-83): la persona vuelve a configurarla.
+    // Restablecer la MFA levanta el bloqueo (D-83). Desde D-92 lo hace con un enlace de un solo
+    // uso: la contraseña anterior deja de servir y la persona configura la MFA desde el enlace.
     const admin = await loggedAdmin();
     expect((await admin.request('POST', '/api/v1/auth/reauth', { code: nextCode('admin@ejemplo.cl') })).status).toBe(204);
-    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`)).status).toBe(204);
+    const reset = await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`);
+    expect(reset.status).toBe(200);
+    sentinels.push(reset.body.activationToken as string);
     expect(await mfaRows()).toEqual([]);
-    expect((await client('198.51.107.99').request('POST', '/api/v1/auth/login', { email: 'mfa-rafaga@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
+    expect((await client('198.51.107.99').request('POST', '/api/v1/auth/login', { email: 'mfa-rafaga@ejemplo.cl', password: PASSWORD })).body).toEqual(GENERIC_FAILURE);
+    expect((await client('198.51.107.99').request('POST', '/api/v1/auth/activate', { token: reset.body.activationToken, password: syntheticPassword() })).body.stage).toBe('mfa_enroll');
+  });
+
+  // ---------- 2C-2 ----------
+
+  /** Usuario de la prueba R-38 (lo reutiliza la prueba del registro de accesos). */
+  let r38UserId = '';
+
+  /** Fila de un usuario en `GET /api/v1/users` (vista del administrador). */
+  async function userRow(admin: Client, userId: string): Promise<Record<string, unknown> | undefined> {
+    const r = await admin.request('GET', '/api/v1/users');
+    expect(r.status).toBe(200);
+    return (r.body.users as Record<string, unknown>[]).find((u) => u.id === userId);
+  }
+
+  /** Bloquea la MFA de una cuenta con 5 códigos errados desde orígenes distintos (el tercero conoce la contraseña). */
+  async function lockMfa(email: string, password: string, prefix: string): Promise<void> {
+    for (let i = 0; i < LOCK_AT; i++) {
+      const c = client(`${prefix}.${String(i + 1)}`);
+      expect((await c.request('POST', '/api/v1/auth/login', { email, password })).body.stage).toBe('mfa_pending');
+      expect((await c.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })).body.error).toBe('invalid_code');
+    }
+  }
+
+  it('R-38: la lista de usuarios informa los bloqueos y la sospecha de contraseña comprometida; desbloquear un bloqueo de MFA obliga a cambiar la contraseña', async () => {
+    const handle = await apiA.directory.open();
+    // Administrador con MFA reciente ANTES de los bloqueos (`nextCode` adelanta el reloj 30 s).
+    const admin = await loggedAdmin();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'r38@ejemplo.cl', displayName: 'R38 Sintética', roles: ['reader'] }, null);
+    sentinels.push(invited.activationToken);
+    r38UserId = invited.userId;
+    const PASSWORD = syntheticPassword();
+    const owner = await activateWithMfa(invited.activationToken, 'r38@ejemplo.cl', PASSWORD, client('203.0.113.60'));
+    expect(await userRow(admin, invited.userId)).toMatchObject({
+      passwordLock: { lockedOrigins: 0, lockedUntil: null },
+      mfaLock: { locked: false, lockedUntil: null, failedAttempts: 0 },
+      passwordCompromiseSuspected: false,
+      mustChangePassword: false,
+    });
+
+    // 1) Un tercero SIN la contraseña bloquea dos orígenes: se informa, sin sospecha de compromiso.
+    for (const origin of ['198.51.108.1', '198.51.108.2']) {
+      for (let i = 0; i < LOCK_AT; i++) await client(origin).request('POST', '/api/v1/auth/login', { email: 'r38@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
+    }
+    const pwLocked = await userRow(admin, invited.userId);
+    expect(pwLocked).toMatchObject({ passwordLock: { lockedOrigins: 2 }, mfaLock: { locked: false }, passwordCompromiseSuspected: false, mustChangePassword: false });
+    expect(Date.parse((pwLocked?.passwordLock as { lockedUntil: string }).lockedUntil)).toBeGreaterThan(now().getTime());
+    // Desbloquear un bloqueo solo de contraseña NO obliga a cambiarla.
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
+    expect(await userRow(admin, invited.userId)).toMatchObject({ passwordLock: { lockedOrigins: 0, lockedUntil: null }, mustChangePassword: false });
+
+    // 2) Un tercero CON la contraseña bloquea la MFA de la cuenta (D-89).
+    offsetMs += 30_000;
+    await lockMfa('r38@ejemplo.cl', PASSWORD, '198.51.109');
+    const mfaLocked = await userRow(admin, invited.userId);
+    expect(mfaLocked).toMatchObject({ mfaLock: { locked: true, failedAttempts: LOCK_AT }, passwordCompromiseSuspected: true, mustChangePassword: false });
+    // Vencida la espera, el bloqueo deja de estar vigente pero la sospecha se mantiene.
+    offsetMs += 31_000;
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mfaLock: { locked: false, lockedUntil: null, failedAttempts: LOCK_AT }, passwordCompromiseSuspected: true });
+
+    // 3) Desbloqueo por la API: la persona queda obligada a cambiar la contraseña.
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mfaLock: { locked: false, failedAttempts: 0 }, passwordCompromiseSuspected: false, mustChangePassword: true });
+    // Su sesión completa ya abierta queda limitada al cambio de contraseña.
+    const ownerMe = await owner.request('GET', '/api/v1/auth/me');
+    expect(ownerMe.body.stage).toBe('password_change');
+    expect(ownerMe.body.user).toBeUndefined();
+    expect(ownerMe.body.permissions).toBeUndefined();
+    expect((await owner.request('GET', '/api/v1/users')).body.error).toBe('password_change_required');
+
+    // El tercero conoce la contraseña pero no el segundo factor: no llega a la etapa de cambio.
+    const attacker = client('198.51.109.50');
+    expect((await attacker.request('POST', '/api/v1/auth/login', { email: 'r38@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+    expect((await attacker.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })).body.error).toBe('invalid_code');
+    expect((await attacker.request('POST', '/api/v1/auth/password', { currentPassword: PASSWORD, newPassword: syntheticPassword() })).body.error).toBe('mfa_required');
+
+    // La dueña: contraseña → MFA → SOLO cambio de contraseña, que debe ser distinta.
+    const again = client('203.0.113.60');
+    expect((await again.request('POST', '/api/v1/auth/login', { email: 'r38@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+    expect((await again.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode('r38@ejemplo.cl') })).body.stage).toBe('password_change');
+    expect((await again.request('GET', '/api/v1/auth/me')).body.stage).toBe('password_change');
+    expect((await again.request('GET', '/api/v1/users')).body.error).toBe('password_change_required');
+    expect((await again.request('POST', '/api/v1/auth/password', { currentPassword: PASSWORD, newPassword: PASSWORD })).body.error).toBe('password_reused');
+    const NEW_PASSWORD = syntheticPassword();
+    const changed = await again.request('POST', '/api/v1/auth/password', { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+    expect(changed.status).toBe(200);
+    expect(changed.body.stage).toBe('full');
+    expect((await again.request('GET', '/api/v1/auth/me')).body.stage).toBe('full');
+    // Cambiar la contraseña cerró las demás sesiones; la contraseña anterior ya no sirve.
+    expect((await owner.request('GET', '/api/v1/auth/me')).status).toBe(401);
+    expect((await client('198.51.109.51').request('POST', '/api/v1/auth/login', { email: 'r38@ejemplo.cl', password: PASSWORD })).body).toEqual(GENERIC_FAILURE);
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mustChangePassword: false, passwordCompromiseSuspected: false });
+
+    const audit = (await provisioner.exportAuditLog(slugA)).filter((e) => e.object === `user/${invited.userId}`);
+    expect(audit.filter((e) => e.action === 'user.unlocked').map((e) => (e.data as Record<string, unknown>).mustChangePassword)).toEqual([false, true]);
+    expect(audit.filter((e) => e.action === 'auth.password.changed').map((e) => (e.data as Record<string, unknown>).forced)).toEqual([true]);
+  });
+
+  it('D-92: reiniciar la MFA invalida la contraseña y las sesiones y entrega un enlace de un solo uso; con él la persona fija una contraseña nueva y configura la MFA', async () => {
+    const handle = await apiA.directory.open();
+    const admin = await loggedAdmin();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'd92@ejemplo.cl', displayName: 'D92 Sintética', roles: ['reader'] }, null);
+    sentinels.push(invited.activationToken);
+    const PASSWORD = syntheticPassword();
+    const owner = await activateWithMfa(invited.activationToken, 'd92@ejemplo.cl', PASSWORD, client('203.0.113.61'));
+    // Un tercero con la contraseña bloquea la MFA (R-38) y el administrador desbloquea: queda
+    // `mustChangePassword`, que la activación posterior debe limpiar.
+    offsetMs += 30_000;
+    await lockMfa('d92@ejemplo.cl', PASSWORD, '198.51.110');
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mustChangePassword: true });
+    // La persona tiene además otra sesión abierta (etapa de cambio de contraseña).
+    const second = client('203.0.113.62');
+    await second.request('POST', '/api/v1/auth/login', { email: 'd92@ejemplo.cl', password: PASSWORD });
+    expect((await second.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode('d92@ejemplo.cl') })).body.stage).toBe('password_change');
+
+    // Solo una cuenta activa: una invitación pendiente no se reinicia.
+    const pending = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'd92-invitada@ejemplo.cl', displayName: 'D92 Invitada', roles: ['reader'] }, null);
+    sentinels.push(pending.activationToken);
+    expect((await admin.request('POST', `/api/v1/users/${pending.userId}/mfa/reset`)).body.error).toBe('user_not_active');
+
+    const reset = await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`);
+    expect(reset.status).toBe(200);
+    expect(Object.keys(reset.body).sort()).toEqual(['activationToken', 'expiresAt']);
+    const token = reset.body.activationToken as string;
+    sentinels.push(token);
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const ttl = Date.parse(reset.body.expiresAt as string) - now().getTime();
+    expect(ttl).toBeGreaterThan(24 * 60 * 60_000 - 60_000);
+    expect(ttl).toBeLessThanOrEqual(24 * 60 * 60_000);
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mfaEnabled: false, mfaResetPending: true, passwordCompromiseSuspected: false, mfaLock: { failedAttempts: 0 }, passwordLock: { lockedOrigins: 0 } });
+
+    // Sesiones previas revocadas.
+    expect((await owner.request('GET', '/api/v1/auth/me')).status).toBe(401);
+    expect((await second.request('GET', '/api/v1/auth/me')).status).toBe(401);
+    // La contraseña antigua no da acceso: 401 genérico, sin `mfa_pending` ni cookie, desde cualquier origen.
+    for (const origin of ['203.0.113.61', '198.51.110.1']) {
+      const c = client(origin);
+      const r = await c.request('POST', '/api/v1/auth/login', { email: 'd92@ejemplo.cl', password: PASSWORD });
+      expect(r.status).toBe(401);
+      expect(r.body).toEqual(GENERIC_FAILURE);
+      expect(c.cookie).toBeUndefined();
+    }
+    // La bitácora registra el reinicio sin el token.
+    const resets = (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'user.mfa.reset' && e.object === `user/${invited.userId}`);
+    expect(resets).toHaveLength(1);
+    expect(resets[0]?.data).toMatchObject({ passwordInvalidated: true, activationExpiresAt: reset.body.expiresAt });
+    expect(JSON.stringify(resets)).not.toContain(token);
+
+    // Activación con el enlace: no admite la contraseña anterior ni una débil (sin consumir el enlace).
+    const c = client('203.0.113.61');
+    expect((await c.request('POST', '/api/v1/auth/activate', { token, password: PASSWORD })).body.error).toBe('password_reused');
+    expect((await c.request('POST', '/api/v1/auth/activate', { token, password: COMMON_PASSWORD })).body.error).toBe('weak_password');
+    const NEW = syntheticPassword();
+    expect((await c.request('POST', '/api/v1/auth/activate', { token, password: NEW })).body.stage).toBe('mfa_enroll');
+    const previous = secrets.get('d92@ejemplo.cl');
+    if (previous !== undefined) sentinels.push(previous.toString('hex'));
+    const enroll = await c.request('POST', '/api/v1/auth/mfa/enroll', {});
+    secrets.set('d92@ejemplo.cl', base32Decode(enroll.body.secret as string));
+    const confirm = await c.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode('d92@ejemplo.cl') });
+    // La activación limpió `must_change_password`: va directo a `full`.
+    expect(confirm.body.stage).toBe('full');
+    expect(confirm.body.recoveryCodes).toHaveLength(10);
+    keepRecoveryCodes(confirm.body.recoveryCodes);
+    // Un solo uso.
+    expect((await client().request('POST', '/api/v1/auth/activate', { token, password: syntheticPassword() })).body.error).toBe('invalid_token');
+    // Con la contraseña nueva entra normalmente.
+    await fullLogin('d92@ejemplo.cl', NEW, client('203.0.113.61'));
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mfaEnabled: true, mfaResetPending: false, mustChangePassword: false });
+    const activated = (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'user.activated' && e.object === `user/${invited.userId}`);
+    expect(activated.map((e) => (e.data as Record<string, unknown>).via)).toEqual(['invitation', 'mfa_reset']);
+
+    // Un reinicio nuevo reemplaza el enlace anterior, y el enlace vence a las 24 h.
+    expect((await admin.request('POST', '/api/v1/auth/reauth', { code: nextCode('admin@ejemplo.cl') })).status).toBe(204);
+    const r2 = await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`);
+    const r3 = await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`);
+    sentinels.push(r2.body.activationToken as string, r3.body.activationToken as string);
+    expect((await client().request('POST', '/api/v1/auth/activate', { token: r2.body.activationToken, password: syntheticPassword() })).body.error).toBe('invalid_token');
+    offsetMs += 24 * 60 * 60_000 + 60_000;
+    expect((await client().request('POST', '/api/v1/auth/activate', { token: r3.body.activationToken, password: syntheticPassword() })).body.error).toBe('invalid_token');
+    // Sigue sin poder entrar con la contraseña que tenía antes del segundo reinicio.
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'd92@ejemplo.cl', password: NEW })).body).toEqual(GENERIC_FAILURE);
+  });
+
+  it('/me con sesión completa: permisos efectivos y vencimientos de la sesión; sin datos antes de completar la MFA', async () => {
+    const admin = await loggedAdmin();
+    const me = await admin.request('GET', '/api/v1/auth/me');
+    expect(me.body.permissions).toEqual(['access_log.read', 'audit_log.export', 'reports.read', 'users.manage', 'users.read']);
+    const session = me.body.session as { expiresAt: string; idleExpiresAt: string; reauthValidUntil: string | null };
+    const idleLeft = Date.parse(session.idleExpiresAt) - now().getTime();
+    expect(idleLeft).toBeGreaterThan(29 * 60_000);
+    expect(idleLeft).toBeLessThanOrEqual(30 * 60_000);
+    expect(Date.parse(session.expiresAt)).toBeGreaterThan(Date.parse(session.idleExpiresAt));
+    expect(Date.parse(session.reauthValidUntil ?? '')).toBeGreaterThan(now().getTime());
+    expect(Date.parse(session.reauthValidUntil ?? '')).toBeLessThanOrEqual(now().getTime() + 5 * 60_000);
+    // Un lector solo tiene `reports.read`.
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'lector-me@ejemplo.cl', displayName: 'Lector Me', roles: ['reader'] }, null);
+    sentinels.push(invited.activationToken);
+    const reader = await activateWithMfa(invited.activationToken, 'lector-me@ejemplo.cl', syntheticPassword());
+    expect((await reader.request('GET', '/api/v1/auth/me')).body.permissions).toEqual(['reports.read']);
+    // Antes de la MFA: etapa, token anti-CSRF y vencimiento, sin usuario, roles ni permisos.
+    const pending = client();
+    await pending.request('POST', '/api/v1/auth/login', { email: 'admin@ejemplo.cl', password: PASSWORD_ADMIN });
+    const pre = await pending.request('GET', '/api/v1/auth/me');
+    expect(Object.keys(pre.body).sort()).toEqual(['csrfToken', 'organization', 'session', 'stage']);
+    expect(Object.keys(pre.body.session as object)).toEqual(['expiresAt']);
+  });
+
+  /** Descarga con la cookie del cliente (la respuesta no es JSON). */
+  async function download(c: Client, path: string): Promise<Response> {
+    return fetch(`${apiA.base}${path}`, { headers: { cookie: `${cookieName}=${encodeURIComponent(c.cookie ?? '')}` } });
+  }
+
+  it('registro de accesos: solo el administrador con MFA reciente; filtros, paginación por cursor e IP en claro; la consulta queda en la bitácora sin IP', async () => {
+    const handle = await apiA.directory.open();
+    // Un rol sin el permiso no ve el registro de accesos ni exporta la bitácora.
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'lector-logs@ejemplo.cl', displayName: 'Lector Logs', roles: ['reader'] }, null);
+    sentinels.push(invited.activationToken);
+    const reader = await activateWithMfa(invited.activationToken, 'lector-logs@ejemplo.cl', syntheticPassword());
+    expect((await reader.request('GET', '/api/v1/access-log')).body.error).toBe('forbidden');
+    expect((await download(reader, '/api/v1/audit-log/export')).status).toBe(403);
+
+    const admin = await loggedAdmin();
+    // Alto riesgo: exige MFA de los últimos 5 minutos.
+    offsetMs += 6 * 60_000;
+    expect((await admin.request('GET', '/api/v1/access-log')).body.error).toBe('reauth_required');
+    expect((await admin.request('POST', '/api/v1/auth/reauth', { code: nextCode('admin@ejemplo.cl') })).status).toBe(204);
+
+    // Validación estricta de los parámetros.
+    for (const query of ['limit=101', 'limit=0', 'limit=abc', 'otro=1', 'limit=2&limit=3', 'event=Auth.Login', 'event=', 'userId=no-uuid', 'from=ayer', 'from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z']) {
+      const r = await admin.request('GET', `/api/v1/access-log?${query}`);
+      expect(r.status, query).toBe(400);
+      expect(r.body.error, query).toBe('invalid_request');
+    }
+    for (const cursor of ['@@', Buffer.from('x|y').toString('base64url')]) {
+      expect((await admin.request('GET', `/api/v1/access-log?cursor=${encodeURIComponent(cursor)}`)).body.error).toBe('invalid_cursor');
+    }
+
+    // Filtro por usuario y evento: bloqueos y fallos de la prueba R-38, con la IP en claro.
+    type Item = { id: string; ts: string; event: string; userId: string | null; userEmail: string | null; ip: string | null; uaFamily: string | null };
+    const filtered = await admin.request('GET', `/api/v1/access-log?userId=${r38UserId}&event=auth.account.locked,auth.mfa.failed&limit=100`);
+    expect(filtered.status).toBe(200);
+    const items = filtered.body.events as Item[];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((e) => e.userId === r38UserId && e.userEmail === 'r38@ejemplo.cl' && ['auth.account.locked', 'auth.mfa.failed'].includes(e.event))).toBe(true);
+    expect(items.some((e) => e.event === 'auth.account.locked' && e.ip === '198.51.108.1')).toBe(true);
+    expect(items.some((e) => e.event === 'auth.mfa.failed' && e.ip === '198.51.109.1')).toBe(true);
+    expect(items.every((e) => typeof e.uaFamily === 'string')).toBe(true);
+    expect(Object.keys(items[0] ?? {}).sort()).toEqual(['event', 'id', 'ip', 'ts', 'uaFamily', 'userEmail', 'userId']);
+    // Las alertas de ataque distribuido (R-34) también aparecen.
+    const attacks = (await admin.request('GET', '/api/v1/access-log?event=account.attack_suspected')).body.events as Item[];
+    expect(attacks.some((e) => e.userEmail === 'objetivo@ejemplo.cl')).toBe(true);
+
+    // Paginación por cursor: recorre todo sin saltos ni repeticiones, de lo reciente a lo antiguo.
+    const expected = await handle.db.selectFrom('access_log').select('id').where('user_id', '=', r38UserId).orderBy('ts', 'desc').orderBy('id', 'desc').execute();
+    expect(expected.length).toBeGreaterThan(7);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page: { status: number; body: Record<string, unknown> } = await admin.request('GET', `/api/v1/access-log?userId=${r38UserId}&limit=3${cursor === null ? '' : `&cursor=${cursor}`}`);
+      expect(page.status).toBe(200);
+      const events = page.body.events as Item[];
+      expect(events.length).toBeLessThanOrEqual(3);
+      seen.push(...events.map((e) => e.id));
+      cursor = page.body.nextCursor as string | null;
+      pages += 1;
+    } while (cursor !== null && pages < 100);
+    expect(seen).toEqual(expected.map((r) => r.id));
+    // Rango de fechas: el futuro no tiene eventos.
+    const future = await admin.request('GET', `/api/v1/access-log?from=${encodeURIComponent(new Date(now().getTime() + 86_400_000).toISOString())}`);
+    expect(future.body).toEqual({ events: [], nextCursor: null });
+    // Sin filtros: página por defecto de 50.
+    expect(((await admin.request('GET', '/api/v1/access-log')).body.events as Item[]).length).toBe(50);
+
+    // Cada consulta queda en la bitácora (quién miró y con qué filtros), con la IP solo como HMAC;
+    // no se anota en el propio registro de accesos.
+    const viewed = (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'access_log.viewed');
+    expect(viewed.length).toBeGreaterThanOrEqual(pages + 4);
+    expect(viewed.every((e) => e.actor === `user:${adminId}` && e.object === 'access_log')).toBe(true);
+    expect(viewed.some((e) => JSON.stringify(e.data).includes(r38UserId))).toBe(true);
+    expect(viewed.every((e) => typeof (e.data as Record<string, unknown>).ipHmac === 'string')).toBe(true);
+    expect(JSON.stringify(viewed)).not.toMatch(/127\.0\.0\.1|198\.51\.|203\.0\.113/);
+    expect(await handle.db.selectFrom('access_log').select('id').where('event', '=', 'access_log.viewed').execute()).toEqual([]);
+  });
+
+  it('exportación de la bitácora: JSON Lines idéntico a la exportación de la CLI y verificable con `auditor-log verify`; cabeceras de descarga; registra audit_log.exported', async () => {
+    const admin = await loggedAdmin();
+    offsetMs += 6 * 60_000;
+    const stale = await download(admin, '/api/v1/audit-log/export');
+    expect(stale.status).toBe(403);
+    expect(((await stale.json()) as Record<string, unknown>).error).toBe('reauth_required');
+    expect((await admin.request('POST', '/api/v1/auth/reauth', { code: nextCode('admin@ejemplo.cl') })).status).toBe(204);
+    expect((await download(admin, '/api/v1/audit-log/export?desde=1')).status).toBe(400);
+
+    const res = await download(admin, '/api/v1/audit-log/export');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/x-ndjson; charset=utf-8');
+    expect(res.headers.get('content-disposition')).toMatch(new RegExp(`^attachment; filename="bitacora-${slugA}-\\d{8}T\\d{6}Z\\.jsonl"$`));
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('x-audit-chain-id')).toBe(slugA);
+    const text = await res.text();
+    // Exactamente lo mismo que `auditor-admin audit export` (nada se agregó entre ambas).
+    expect(text).toBe(toJsonl(await provisioner.exportAuditLog(slugA)));
+    const lines = parseJsonlLines(text);
+    expect(lines.length).toBeGreaterThan(100);
+    const last = lines.at(-1)?.value as Record<string, unknown>;
+    expect(last).toMatchObject({ action: 'audit_log.exported', actor: `user:${adminId}`, object: 'audit_log', data: { format: 'jsonl' } });
+    expect(typeof (last.data as Record<string, unknown>).ipHmac).toBe('string');
+    expect(text).not.toMatch(/127\.0\.0\.1|198\.51\.|203\.0\.113/);
+    expect(verifyChainItems(lines, slugA).issues).toEqual([]);
+
+    // La CLI independiente (el mismo código que usa la institución) la declara íntegra...
+    const file = join(workDir, 'bitacora-exportada.jsonl');
+    writeFileSync(file, text);
+    const cliPath = join(dirname(createRequire(import.meta.url).resolve('@auditor-21719/audit-log')), 'cli.js');
+    const ok = spawnSync(process.execPath, [cliPath, 'verify', '--entries', file, '--chain-id', slugA], { encoding: 'utf8' });
+    expect(ok.status, ok.stdout + ok.stderr).toBe(0);
+    expect(ok.stdout).toContain('RESULTADO: bitácora íntegra.');
+    // ...y detecta una alteración de una línea intermedia.
+    const tampered = text.split('\n');
+    tampered[5] = (tampered[5] ?? '').replace(/"actor":"[^"]*"/, '"actor":"alterado"');
+    const bad = join(workDir, 'bitacora-alterada.jsonl');
+    writeFileSync(bad, tampered.join('\n'));
+    const ko = spawnSync(process.execPath, [cliPath, 'verify', '--entries', bad, '--chain-id', slugA], { encoding: 'utf8' });
+    expect(ko.status).toBe(1);
+    // La exportación también queda en el registro de accesos (con IP, retención de D-78).
+    const handle = await apiA.directory.open();
+    expect((await handle.db.selectFrom('access_log').select('id').where('event', '=', 'audit_log.exported').execute()).length).toBeGreaterThan(0);
   });
 
   it('bitácora: eventos verificables, con IP solo como HMAC; el registro de accesos guarda la IP', async () => {
@@ -734,7 +1100,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     const result = verifyChainItems(parseJsonlLines(toJsonl(entries)), slugA);
     expect(result.issues).toEqual([]);
     const actions = new Set(entries.map((e) => e.action));
-    for (const a of ['tenant.api_secrets_written', 'user.invited', 'user.activated', 'auth.mfa.enabled', 'auth.account.locked', 'auth.login.succeeded', 'auth.reauth.succeeded', 'user.roles.changed', 'user.deactivated', 'auth.password.changed', 'account.attack_suspected']) {
+    for (const a of ['access_log.viewed', 'audit_log.exported', 'tenant.api_secrets_written', 'user.invited', 'user.activated', 'auth.mfa.enabled', 'auth.account.locked', 'auth.login.succeeded', 'auth.reauth.succeeded', 'user.roles.changed', 'user.deactivated', 'auth.password.changed', 'account.attack_suspected']) {
       expect(actions, a).toContain(a);
     }
     // Los intentos fallidos van solo al registro de accesos (QA 2B-08).
@@ -786,6 +1152,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
   it('2B-03: dos cambios simultáneos no dejan la organización sin administrador', async () => {
     const handle = await apiB.directory.open();
     const second = await apiB.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'admin-b2@ejemplo.cl', displayName: 'Admin B2', roles: ['org_admin'] }, null);
+    sentinels.push(second.activationToken);
     const c2 = await activateWithMfa(second.activationToken, 'admin-b2@ejemplo.cl', PASSWORD_ADMIN, clientB());
     const c1 = await fullLogin('admin-b@ejemplo.cl', PASSWORD_ADMIN, clientB());
     const b1 = (await handle.db.selectFrom('app_user').select('id').where('email', '=', 'admin-b@ejemplo.cl').executeTakeFirstOrThrow()).id;
@@ -902,6 +1269,42 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     // Plazo propio: suspender espera hasta 5 s a que se cierren las sesiones (waitForNoSessions).
   }, 90_000);
 
+  it('D-92 + D-79: dos administradores que se reinician la MFA mutuamente a la vez no dejan la organización sin administrador con MFA', async () => {
+    // En B (la API de A se sigue usando en otras pruebas): dos administradores nuevos y, como
+    // preparación sintética, sin el rol de administrador para los demás usuarios de B.
+    const handle = await apiB.directory.open();
+    const ids: string[] = [];
+    const admins: Client[] = [];
+    for (const email of ['admin-b3@ejemplo.cl', 'admin-b4@ejemplo.cl']) {
+      const invited = await apiB.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email, displayName: 'Admin Cruzado', roles: ['org_admin'] }, null);
+      sentinels.push(invited.activationToken);
+      ids.push(invited.userId);
+      admins.push(await activateWithMfa(invited.activationToken, email, syntheticPassword(), clientB()));
+    }
+    await handle.db.deleteFrom('user_role').where('role', '=', 'org_admin').where('user_id', 'not in', ids).execute();
+    const [a3, a4] = admins as [Client, Client];
+    const [id3, id4] = ids as [string, string];
+    const logged: string[] = [];
+    const spy = vi.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => {
+      logged.push(String(m));
+    });
+    const [r3, r4] = await Promise.all([a3.request('POST', `/api/v1/users/${id4}/mfa/reset`), a4.request('POST', `/api/v1/users/${id3}/mfa/reset`)]);
+    spy.mockRestore();
+    expect(logged, `errores internos: ${logged.join(' | ')}`).toEqual([]);
+    for (const r of [r3, r4]) if (typeof r.body.activationToken === 'string') sentinels.push(r.body.activationToken);
+    expect([r3.status, r4.status].filter((x) => x === 200)).toHaveLength(1);
+    expect(['last_admin', 'conflict', 'unauthenticated']).toContain([r3, r4].find((r) => r.status !== 200)?.body.error);
+    const remaining = await handle.db
+      .selectFrom('app_user')
+      .innerJoin('user_role', 'user_role.user_id', 'app_user.id')
+      .select('app_user.id')
+      .where('user_role.role', '=', 'org_admin')
+      .where('app_user.status', '=', 'active')
+      .where('app_user.mfa_secret_sealed', 'is not', null)
+      .execute();
+    expect(remaining).toHaveLength(1);
+  });
+
   // QA 2C1-09: al FINAL de la suite, para revisar todos los tokens emitidos en ella.
   it('valores centinela: ninguna contraseña, código, token de sesión ni secreto de la API aparece en las bases', async () => {
     const dump: string[] = [];
@@ -918,10 +1321,18 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     const all = dump.join('\n');
     // Observación QA 2B §7: también los tokens de sesión emitidos (valor de la cookie).
     expect(issuedSessionTokens.size).toBeGreaterThan(10);
-    for (const secret of [PASSWORD_ADMIN, PASSWORD_AUDITOR, `${PASSWORD_AUDITOR}-nueva`, auditorToken, ...issuedSessionTokens, ...apiSecretValues]) {
-      expect(all).not.toContain(secret);
+    // QA 2C1-15: también las contraseñas, tokens de activación y códigos de recuperación de
+    // los usuarios de las pruebas D-89, 2C1-06, R-38 y demás (registrados en `sentinels`).
+    expect(sentinels.length).toBeGreaterThan(100);
+    for (const secret of [PASSWORD_ADMIN, PASSWORD_AUDITOR, `${PASSWORD_AUDITOR}-nueva`, auditorToken, ...issuedSessionTokens, ...apiSecretValues, ...sentinels]) {
+      expect(all, 'valor sensible encontrado en la base').not.toContain(secret);
     }
-    expect(all).not.toContain(secrets.get('admin@ejemplo.cl')?.toString('hex') ?? 'x');
+    // Secretos TOTP de TODOS los usuarios de la prueba, en hexadecimal y en base32.
+    expect(secrets.size).toBeGreaterThan(5);
+    for (const secret of secrets.values()) {
+      expect(all).not.toContain(secret.toString('hex'));
+      expect(all).not.toContain(base32Encode(secret));
+    }
   });
 });
 

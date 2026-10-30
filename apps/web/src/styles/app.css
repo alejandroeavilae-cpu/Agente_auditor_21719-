@@ -1,0 +1,814 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * Estilos propios de la interfaz (sin CDN ni fuentes externas: CSP `style-src 'self'`,
+ * `font-src 'self'`). Objetivo WCAG 2.2 AA: contraste ≥ 4.5:1 en texto, foco siempre
+ * visible, objetivos táctiles ≥ 24×24 px (2.5.8) y diseño que se adapta a 320 px de ancho
+ * sin desplazamiento horizontal de la página (1.4.10).
+ *
+ * Contrastes sobre blanco [VERIFICADO con la fórmula de WCAG 2.x en test/contrast.test.ts]:
+ * texto #1b1b1b, secundario #4a4a4a, primario #0b4f8a, peligro #9b1c1c.
+ */
+
+:root {
+  --color-text: #1b1b1b;
+  --color-text-muted: #4a4a4a;
+  --color-bg: #ffffff;
+  --color-surface: #f4f6f8;
+  --color-border: #6b6b6b;
+  --color-border-soft: #c9cdd2;
+  --color-primary: #0b4f8a;
+  --color-primary-dark: #083a66;
+  --color-danger: #9b1c1c;
+  --color-danger-bg: #fdecec;
+  --color-warning-bg: #fff4d6;
+  --color-warning-border: #8a5a00;
+  --color-success-bg: #e7f4ea;
+  --color-success-border: #1e6b34;
+  --color-info-bg: #e8f0fb;
+  --color-info-border: #0b4f8a;
+  --color-focus: #1b1b1b;
+  --radius: 6px;
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', 'Liberation Sans', Arial, sans-serif;
+  --mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+/* Reemplaza el <style> que React Aria inyecta en tiempo de ejecución (usePress), bloqueado
+ * por la CSP. index.html declara un elemento con su id para que no intente inyectarlo. */
+[data-react-aria-pressable] {
+  touch-action: pan-x pan-y pinch-zoom;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  line-height: 1.5;
+  color: var(--color-text);
+  background: var(--color-bg);
+  overflow-wrap: anywhere;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+a:hover {
+  color: var(--color-primary-dark);
+}
+
+/* Foco visible y consistente (2.4.7, 2.4.13 orientativo): contorno grueso de alto contraste. */
+:focus-visible,
+[data-focus-visible] {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px #ffffff;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: 1.75rem;
+  margin: 0 0 1rem;
+}
+
+h1:focus {
+  outline: none;
+}
+
+h1:focus-visible {
+  outline: 3px solid var(--color-focus);
+}
+
+h2 {
+  font-size: 1.25rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.mono,
+code,
+pre {
+  font-family: var(--mono);
+}
+
+.skip-link {
+  position: absolute;
+  left: 0.5rem;
+  top: -10rem;
+  padding: 0.75rem 1rem;
+  background: var(--color-bg);
+  color: var(--color-primary);
+  border: 2px solid var(--color-primary);
+  z-index: 100;
+}
+
+.skip-link:focus {
+  top: 0.5rem;
+}
+
+/* ---------- Estructura ---------- */
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.site-header {
+  background: var(--color-primary-dark);
+  color: #ffffff;
+  padding: 0.75rem 1rem;
+}
+
+.header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+.site-header .brand {
+  font-weight: 700;
+  font-size: 1.125rem;
+  margin: 0;
+}
+
+.site-header .org-name {
+  margin: 0;
+}
+
+.header-user {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.site-header :focus-visible,
+.site-header [data-focus-visible] {
+  outline-color: #ffffff;
+  box-shadow: 0 0 0 5px var(--color-primary-dark);
+}
+
+.main-nav ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0;
+  margin: 0.5rem auto 0;
+  max-width: 72rem;
+}
+
+.nav-link {
+  display: inline-block;
+  min-height: 44px;
+  padding: 0.625rem 0.75rem;
+  color: #ffffff;
+  text-decoration: none;
+  border-radius: var(--radius);
+}
+
+.nav-link:hover {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+/* La página actual se marca con subrayado grueso y aria-current, no solo con color. */
+.nav-link[aria-current='page'] {
+  text-decoration: underline;
+  text-decoration-thickness: 3px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
+
+.main:focus {
+  outline: none;
+}
+
+.main-narrow {
+  max-width: 40rem;
+}
+
+.site-footer {
+  border-top: 1px solid var(--color-border-soft);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  padding: 1rem;
+  font-size: 0.875rem;
+}
+
+.site-footer p {
+  max-width: 72rem;
+  margin: 0.25rem auto;
+}
+
+/* ---------- Formularios ---------- */
+
+.form,
+.filters {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.filters {
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  align-items: end;
+  background: var(--color-surface);
+  padding: 1rem;
+  border-radius: var(--radius);
+}
+
+.filters .actions {
+  grid-column: 1 / -1;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.field-label {
+  font-weight: 600;
+}
+
+.field-required {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.field-description,
+.hint {
+  color: var(--color-text-muted);
+  font-size: 0.9375rem;
+}
+
+.field-input {
+  font: inherit;
+  color: var(--color-text);
+  background: #ffffff;
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 100%;
+}
+
+.field-input[aria-invalid='true'],
+.field-input[data-invalid] {
+  border-color: var(--color-danger);
+  border-width: 3px;
+}
+
+.field-error {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.field-error::before {
+  content: 'Error: ';
+}
+
+/* ---------- Botones (≥ 24 px; los principales 44 px) ---------- */
+
+.button {
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.5rem 1rem;
+  border: 2px solid var(--color-primary);
+  border-radius: var(--radius);
+  background: #ffffff;
+  color: var(--color-primary);
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+
+.button[data-hovered] {
+  background: var(--color-info-bg);
+}
+
+.button[data-pressed] {
+  background: #d3e2f6;
+}
+
+.button[data-disabled] {
+  cursor: not-allowed;
+  border-color: #8a8a8a;
+  color: #5c5c5c;
+  background: #eeeeee;
+}
+
+.button-primary {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+.button-primary[data-hovered],
+.button-primary[data-pressed] {
+  background: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+}
+
+.button-danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.button-danger.button-primary,
+.dialog .button-danger {
+  background: var(--color-danger);
+  color: #ffffff;
+}
+
+.button-danger[data-hovered] {
+  background: var(--color-danger-bg);
+}
+
+.dialog .button-danger[data-hovered] {
+  background: #7a1515;
+}
+
+.button-small {
+  min-height: 32px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.9375rem;
+}
+
+.site-header .button {
+  background: transparent;
+  color: #ffffff;
+  border-color: #ffffff;
+}
+
+.site-header .button[data-hovered] {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.button-link {
+  border-color: transparent;
+  background: transparent;
+  text-decoration: underline;
+  font-weight: 400;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 1rem 0;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* ---------- Casillas (React Aria Checkbox) ---------- */
+
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.checkbox {
+  /* Contiene a la casilla nativa oculta (React Aria): al recibir el foco, el navegador se
+   * desplaza hasta la etiqueta visible y no a otra parte del diálogo. */
+  position: relative;
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  min-height: 44px;
+  padding: 0.25rem 0;
+  cursor: pointer;
+}
+
+.checkbox-box {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-top: 0.125rem;
+  border: 2px solid var(--color-border);
+  border-radius: 4px;
+  background: #ffffff;
+  position: relative;
+}
+
+.checkbox[data-selected] .checkbox-box {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* Marca de verificación dibujada con bordes: visible también sin color (forma). */
+.checkbox[data-selected] .checkbox-box::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 1px;
+  width: 7px;
+  height: 13px;
+  border: solid #ffffff;
+  border-width: 0 3px 3px 0;
+  transform: rotate(45deg);
+}
+
+.checkbox[data-focus-visible] .checkbox-box {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.checkbox-hint {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: 0.9375rem;
+}
+
+/* ---------- Avisos ---------- */
+
+.notice {
+  border: 2px solid;
+  border-left-width: 8px;
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+
+.notice-title {
+  margin: 0;
+}
+
+.notice-body > :first-child {
+  margin-top: 0.25rem;
+}
+
+.notice-body > :last-child {
+  margin-bottom: 0;
+}
+
+.notice-error {
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger);
+}
+
+.notice-warning {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+}
+
+.notice-success {
+  background: var(--color-success-bg);
+  border-color: var(--color-success-border);
+}
+
+.notice-info {
+  background: var(--color-info-bg);
+  border-color: var(--color-info-border);
+}
+
+.alert-panel {
+  border: 3px solid var(--color-danger);
+  border-left-width: 10px;
+  background: var(--color-danger-bg);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+
+.alert-panel h2 {
+  margin-top: 0;
+  color: var(--color-danger);
+}
+
+.alert-panel li {
+  margin: 0.5rem 0;
+}
+
+.live-message {
+  min-height: 1.5em;
+  margin: 0.25rem 0;
+}
+
+/* ---------- Tablas ---------- */
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 1rem 0;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table caption {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.75rem;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.625rem 0.75rem;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.table thead th {
+  background: var(--color-surface);
+}
+
+.table tbody th {
+  font-weight: 400;
+}
+
+.row-alert {
+  background: var(--color-danger-bg);
+  box-shadow: inset 6px 0 0 var(--color-danger);
+}
+
+.person-name {
+  display: block;
+  font-weight: 600;
+}
+
+.person-email,
+.person-self,
+.event-code {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.badges {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.badge {
+  display: inline-block;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.badge-detail {
+  display: block;
+  font-weight: 400;
+}
+
+.badge-ok {
+  background: var(--color-success-bg);
+  border-color: var(--color-success-border);
+}
+
+.badge-info {
+  background: var(--color-info-bg);
+  border-color: var(--color-info-border);
+}
+
+.badge-warning {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+}
+
+.badge-danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: #ffffff;
+}
+
+.badge-muted {
+  background: #eeeeee;
+  border-color: #6b6b6b;
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+
+/* ---------- Diálogos (React Aria Modal) ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 50;
+}
+
+.modal {
+  background: #ffffff;
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 42rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.dialog {
+  padding: 1.25rem 1.25rem 0.5rem;
+}
+
+.dialog:focus {
+  outline: none;
+}
+
+.dialog-title {
+  font-size: 1.375rem;
+  margin: 0 0 0.75rem;
+}
+
+/* ---------- Componentes varios ---------- */
+
+.card {
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius);
+  padding: 0.25rem 1rem 1rem;
+  margin: 1rem 0;
+}
+
+.details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1rem;
+}
+
+.details dt {
+  font-weight: 600;
+}
+
+.details dd {
+  margin: 0;
+}
+
+.steps > li {
+  margin-bottom: 1.5rem;
+}
+
+.qr {
+  display: block;
+  width: 220px;
+  height: 220px;
+  max-width: 100%;
+  border: 1px solid var(--color-border-soft);
+}
+
+.secret {
+  font-size: 1.125rem;
+  letter-spacing: 0.05em;
+  background: var(--color-surface);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  display: inline-block;
+}
+
+.recovery-codes {
+  columns: 2 12rem;
+  font-size: 1.0625rem;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  padding: 1rem 1rem 1rem 2.5rem;
+}
+
+.copy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.copy-row .field-input {
+  flex: 1 1 16rem;
+  font-size: 0.9375rem;
+}
+
+.command {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.strength {
+  margin-top: -0.25rem;
+}
+
+.strength-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.strength-value {
+  font-weight: 600;
+}
+
+.strength-bar {
+  height: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.strength-fill {
+  height: 100%;
+  background: var(--color-danger);
+}
+
+.strength-2 {
+  background: #8a5a00;
+}
+
+.strength-3,
+.strength-4 {
+  background: var(--color-success-border);
+}
+
+.strength-problems {
+  margin: 0.25rem 0;
+  color: var(--color-danger);
+}
+
+@media (max-width: 40rem) {
+  h1 {
+    font-size: 1.5rem;
+  }
+
+  .header-user {
+    margin-left: 0;
+  }
+
+  .details {
+    grid-template-columns: 1fr;
+  }
+
+  .details dd {
+    margin-bottom: 0.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

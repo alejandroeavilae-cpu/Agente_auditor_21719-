@@ -4,7 +4,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
     <title>Auditor 21719</title>
+    <!--
+      React Aria (usePress) inyecta en tiempo de ejecución un <style id="react-aria-pressable-style">,
+      que la CSP (style-src 'self', sin 'unsafe-inline') bloquearía. Solo lo inyecta si no existe
+      un elemento con ese id: este marcador inerte lo evita, y la regla equivalente está en
+      src/styles/app.css. Ver docs/fase-2/2c2-registro.md (parte frontend).
+    -->
+    <template id="react-aria-pressable-style"></template>
   </head>
   <body>
     <div id="root"></div>

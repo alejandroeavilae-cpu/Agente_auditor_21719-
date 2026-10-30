@@ -73,7 +73,7 @@ Hay dos formas de ejecutar el proyecto. Elija **una**:
    ```
    Termina cuando todos los servicios aparecen como `Healthy` o `Started`. Si la API no arranca, revise `docker compose -f deploy/compose/compose.yaml logs api`: el mensaje indica qué archivo falta.
 8. Abra en el navegador: **http://127.0.0.1:8080**
-   Debe ver "Auditor 21719", el estado de la Fase 1 y el enlace "Código fuente de esta versión".
+   Desde 2C-2 debe ver la pantalla **"Iniciar sesión"** y, al pie, la versión y el enlace "Código fuente de esta versión". Para entrar por primera vez, active al primer administrador (paso 9 de "Administrar organizaciones").
 9. (Opcional) Ejecute las comprobaciones automáticas **sobre una instalación nueva** con solo la base y la caché levantadas (pasos 2 y 3, sin los pasos 4 a 7). El script crea sus propias organizaciones ficticias y falla si ya existen:
    ```sh
    sh scripts/smoke-compose.sh desarrollo
@@ -139,17 +139,20 @@ Con los servicios levantados (pasos 1 a 7 de la Opción A), en la misma terminal
    | `user invite-admin --tenant <id> --email <correo> --name <nombre>` | Invita al **primer administrador** de una organización (entrega 2B). Imprime un token de activación de un solo uso, válido 24 h |
    | `user unlock --tenant <id> --email <correo>` | Desbloquea una cuenta bloqueada por intentos fallidos, desde **todos** los orígenes (equipos) |
 
-9. Active al primer administrador (entrega 2B; las pantallas llegan en 2C, por ahora se usa la API):
+9. Active al primer administrador (desde 2C-2, con las pantallas):
    - Invítelo y copie el token que se imprime (se muestra **una sola vez**):
      ```sh
      docker compose -f deploy/compose/compose.yaml run --rm admin user invite-admin --tenant muni-demo --email admin@muni-demo.example --name "Administración Demo"
      ```
-   - Fije la contraseña (mínimo 12 caracteres, que no sea común ni contenga su correo). Reemplace `<TOKEN>`:
-     ```sh
-     curl -c cookies.txt -H "content-type: application/json" -d '{"token":"<TOKEN>","password":"una frase larga y propia"}' http://127.0.0.1:8080/api/v1/auth/activate
+   - En el navegador, abra esta dirección reemplazando `<TOKEN>` por el token copiado (va **después de `#`**, así no viaja al servidor ni queda en registros):
      ```
-     Debe responder `"stage":"mfa_enroll"`: **toda** persona (cualquier rol, D-86) debe configurar la verificación en dos pasos (app autenticadora) antes de usar la plataforma. Ese paso se hará con la pantalla de 2C-2. Desde 2C-1 el inicio de sesión pide solo correo y contraseña: el campo `organization` ya no existe y se rechaza.
-   - Borre `cookies.txt` al terminar: contiene su sesión.
+     http://127.0.0.1:8080/activar#<TOKEN>
+     ```
+   - Elija la contraseña (mínimo 12 caracteres, que no sea común ni contenga su correo) y pulse **Activar cuenta**.
+   - Configure la verificación en dos pasos: escanee el código QR con una app autenticadora de su teléfono (o escriba la clave que aparece debajo), escriba el código de 6 dígitos y pulse **Confirmar y activar**. **Toda** persona debe hacerlo (D-86).
+   - Guarde los **códigos de recuperación** (se muestran una sola vez): pulse **Descargar como archivo .txt**, guárdelo en un lugar seguro, marque la casilla "Guardé mis códigos…" y pulse **Continuar**.
+   - Desde el menú **Usuarios** puede invitar al resto de las personas; cada invitación muestra un enlace de activación una sola vez, con botón para copiarlo.
+   - Si prefiere hacerlo sin navegador (como en 2B), la API sigue disponible: `curl -c cookies.txt -H "content-type: application/json" -d '{"token":"<TOKEN>","password":"una frase larga y propia"}' http://127.0.0.1:8080/api/v1/auth/activate` (borre `cookies.txt` al terminar: contiene su sesión).
 
 **Notas**
 - Solo el puerto 8080 queda abierto y únicamente en su propio equipo (127.0.0.1); nadie más en la red puede acceder.
@@ -198,6 +201,31 @@ Con los servicios levantados (pasos 1 a 7 de la Opción A), en la misma terminal
    Para SQL Server use las variables equivalentes `TEST_MSSQL_HOST`, `TEST_MSSQL_PORT`, `TEST_MSSQL_USER`, `TEST_MSSQL_PASSWORD` y `TEST_MSSQL_TLS` (`trust-server-certificate` solo para contenedores de prueba). En Windows (PowerShell) use `$env:TEST_PG_HOST="127.0.0.1"`, etc.
 
 ---
+
+## Pruebas de extremo a extremo de las pantallas (2C-2)
+
+Prueban las pantallas en un navegador real (Chromium) contra la API real y un PostgreSQL, con axe-core (accesibilidad) en cada pantalla y con la CSP de Caddy aplicada. Requieren la Opción B instalada (pasos 1–4) y un **PostgreSQL desechable** (el mismo de las pruebas de integración del paso 7: nunca uno con datos reales). No requieren Docker.
+
+1. Compile todo (la API, los paquetes y la web):
+   ```sh
+   pnpm run build
+   ```
+2. Instale el navegador de pruebas **una sola vez** (descarga Chromium; en Linux, `--with-deps` instala además las bibliotecas del sistema y pide permisos de administrador):
+   ```sh
+   pnpm --filter @auditor-21719/web exec playwright install --with-deps chromium
+   ```
+3. Defina las variables del PostgreSQL de pruebas (cuenta de superusuario de ese servidor desechable):
+   ```sh
+   export TEST_PG_HOST=127.0.0.1 TEST_PG_PORT=5432 TEST_PG_USER=postgres TEST_PG_PASSWORD='<contraseña de su servidor de pruebas>' TEST_PG_TLS=disable
+   ```
+   En Windows (PowerShell) use `$env:TEST_PG_HOST="127.0.0.1"`, etc.
+4. Ejecute las pruebas (tardan unos 10 minutos: algunas esperan el siguiente código de la app autenticadora):
+   ```sh
+   pnpm --filter @auditor-21719/web e2e
+   ```
+   Debe terminar con `15 passed`. Si algo falla, las capturas y trazas quedan en `apps/web/test-results/` (excluido de Git); ábralas con `pnpm --filter @auditor-21719/web exec playwright show-trace <ruta del trace.zip>`.
+
+Qué hacen por dentro (para saber qué toca en su servidor de pruebas): crean una cuenta de aprovisionamiento sin superusuario, una base de control y una organización ficticia con nombres aleatorios, arrancan la API en `127.0.0.1:3187` y la web en `127.0.0.1:4187`, y al terminar **borran** todo lo que crearon. Para conservarlo e inspeccionarlo, agregue `E2E_KEEP=1` antes del comando. Los puertos se cambian con `E2E_API_PORT` y `E2E_WEB_PORT`.
 
 ## Probar la verificación independiente de la bitácora
 

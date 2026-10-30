@@ -13,3 +13,6 @@ secrets/
 deploy/compose/secrets/*
 !deploy/compose/secrets/.gitkeep
 THIRD_PARTY_LICENSES.md.tmp
+# Resultados de Playwright (E2E de 2C-2): capturas y trazas locales, nunca se versionan.
+apps/web/test-results/
+apps/web/playwright-report/
