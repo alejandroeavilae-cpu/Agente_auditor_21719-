@@ -148,6 +148,61 @@ jobs:
           pnpm exec vitest run test/identity.int.test.ts --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-identidad.json
           node ../../scripts/check-integration-report.mjs vitest-identidad.json
 
+  e2e:
+    # 2C-2 (2C §2.5): pantallas de usuarios de extremo a extremo con Playwright y axe-core,
+    # contra la API REAL compilada y PostgreSQL. El entorno efímero lo levanta el global setup
+    # de Playwright con la CLI real (auditor-admin); la SPA se sirve con las cabeceras y la CSP
+    # leídas del Caddyfile (apps/web/e2e/support/web-server.mjs), así que cualquier estilo o
+    # script en línea que la CSP bloquee hace fallar las pruebas. ZAP corre contra el Compose
+    # real (con Caddy) en el job compose-smoke.
+    name: E2E y accesibilidad (Playwright + axe-core) con la API real y PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PG_TEST_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Pg_2026
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
+        env:
+          POSTGRES_USER: auditor
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Pg_2026
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U auditor"
+          --health-interval 5s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Instalar dependencias (lockfile congelado)
+        run: pnpm install --frozen-lockfile
+      - name: Compilar paquetes, API y web
+        run: pnpm run build
+      - name: Instalar Chromium (la versión que fija @playwright/test en el lockfile)
+        run: pnpm --filter @auditor-21719/web exec playwright install --with-deps chromium
+      - name: Pruebas E2E con axe-core en cada pantalla y guarda de CSP
+        working-directory: apps/web
+        env:
+          TEST_PG_HOST: 127.0.0.1
+          TEST_PG_PORT: "5432"
+          TEST_PG_USER: auditor
+          TEST_PG_PASSWORD: ${{ env.PG_TEST_PASSWORD }}
+          TEST_PG_TLS: disable
+        run: pnpm exec playwright test
+      - name: Ninguna prueba E2E omitida ni inestable, y al menos el mínimo observado
+        if: always()
+        # 15 pruebas observadas localmente (Chromium de Playwright 1.63, PostgreSQL 16) en 2C-2.
+        run: node scripts/check-e2e-report.mjs apps/web/test-results/e2e-report.json 15
+      - name: Registros de la API del entorno E2E (como anotaciones si algo falló)
+        if: failure()
+        run: tail -n 30 apps/web/test-results/entorno/api.log 2>/dev/null | while IFS= read -r l; do echo "::warning title=api-e2e::$l"; done
+
   compose-smoke:
     name: Prueba de humo de Docker Compose (perfiles local e institucional)
     runs-on: ubuntu-latest
@@ -172,6 +227,8 @@ jobs:
         run: docker compose -f deploy/compose/compose.yaml up -d --wait --wait-timeout 300 postgres valkey
       - name: Instalación y comprobaciones de comportamiento y aislamiento
         run: sh scripts/smoke-compose.sh "${{ github.sha }}"
+      - name: ZAP baseline contra el entorno efímero con Caddy (bloquea en alertas altas, 2C-2)
+        run: sh scripts/zap-baseline.sh http://127.0.0.1:8080 zap-out
       - name: Perfil institucional con HTTPS y CA interna (2C-1)
         run: sh scripts/smoke-institucional.sh 8443
       - name: Escanear imagen API

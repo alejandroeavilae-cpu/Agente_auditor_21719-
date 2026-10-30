@@ -30,7 +30,7 @@ export default tseslint.config(
     rules: { '@typescript-eslint/no-non-null-assertion': 'off' },
   },
   {
-    files: ['scripts/**/*.mjs', 'eslint.config.js'],
+    files: ['scripts/**/*.mjs', 'eslint.config.js', 'apps/web/e2e/support/*.mjs'],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       parserOptions: { projectService: false },
