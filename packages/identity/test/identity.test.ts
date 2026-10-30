@@ -153,10 +153,9 @@ describe('roles y permisos', () => {
   });
   it('MFA obligatoria para los 6 roles (D-86)', () => {
     expect(MFA_REQUIRED_ROLES.size).toBe(ROLES.length);
-    for (const role of ROLES) expect(requiresMfa([role]), role).toBe(true);
-    expect(requiresMfa(['auditor', 'reader', 'remediation_owner'])).toBe(true);
-    // Sin roles no hay nada que proteger (no ocurre: validateRoleSet exige al menos uno).
-    expect(requiresMfa([])).toBe(false);
+    for (const role of ROLES) expect(MFA_REQUIRED_ROLES.has(role), role).toBe(true);
+    // QA 2C1-06: la MFA se exige siempre, sin depender de los roles (incluso sin roles).
+    expect(requiresMfa()).toBe(true);
   });
   it('combinaciones prohibidas y roles inválidos', () => {
     expect(validateRoleSet(['org_admin', 'legal_reviewer']).join(' ')).toMatch(/Separación de funciones/);

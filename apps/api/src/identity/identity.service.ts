@@ -417,6 +417,47 @@ export class IdentityService {
   }
 
   /**
+   * Reclama la marca "ya registrado en esta ventana" de una cuenta (fila con el origen fijo
+   * `ATTACK_ALERT_ORIGIN`). Solo una petición la obtiene por ventana, aunque lleguen muchas a
+   * la vez: inserción (clave primaria) o actualización condicional al vencer la anterior.
+   */
+  private async claimOncePerWindow(tenant: TenantHandle, userId: string, kind: 'attack_alert' | 'lock_logged_pw' | 'lock_logged_mfa', now: Date): Promise<boolean> {
+    const until = iso(new Date(now.getTime() + ATTACK_WINDOW_MS));
+    try {
+      await tenant.db.insertInto('login_throttle').values({ user_id: userId, origin_hmac: ATTACK_ALERT_ORIGIN, kind, failed_attempts: 0, locked_until: until, updated_at: iso(now) }).execute();
+      return true;
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+    }
+    const claimed = await tenant.db
+      .updateTable('login_throttle')
+      .set({ locked_until: until, updated_at: iso(now) })
+      .where('user_id', '=', userId)
+      .where('origin_hmac', '=', ATTACK_ALERT_ORIGIN)
+      .where('kind', '=', kind)
+      .where((eb) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', iso(now))]))
+      .executeTakeFirst();
+    return Number(claimed.numUpdatedRows) === 1;
+  }
+
+  /**
+   * Registra un bloqueo del par cuenta + origen. El registro de accesos anota CADA bloqueo
+   * (con su IP); la bitácora inmutable, solo UNO por cuenta, contador y ventana de 1 hora:
+   * un atacante que bloquea muchos orígenes no puede hacer crecer sin límite la bitácora
+   * (QA 2C1-10, misma razón que QA 2B-08).
+   */
+  private async recordLock(tenant: TenantHandle, userId: string, counter: Counter, actor: Actor | null, meta: RequestMeta): Promise<void> {
+    const toAudit = await this.claimOncePerWindow(tenant, userId, counter === 'password' ? 'lock_logged_pw' : 'lock_logged_mfa', this.now());
+    await this.record(tenant, 'auth.account.locked', {
+      actor,
+      subjectUserId: userId,
+      data: { counter, scope: 'account+origin', ...(toAudit ? { auditWindowMinutes: ATTACK_WINDOW_MS / 60_000 } : {}) },
+      meta,
+      audit: toAudit,
+    });
+  }
+
+  /**
    * Detección de ataque distribuido (R-34): si la cuenta acumula al menos
    * `attackAlertThreshold` fallos verificados en 1 hora, desde al menos 2 orígenes
    * distintos, se registra `account.attack_suspected` en la bitácora UNA vez por ventana
@@ -436,23 +477,7 @@ export class IdentityService {
     const failures = Number(stats?.failures ?? 0);
     const origins = Number(stats?.origins ?? 0);
     if (failures < threshold || origins < 2) return;
-    const until = iso(new Date(now.getTime() + ATTACK_WINDOW_MS));
-    let won: boolean;
-    try {
-      await tenant.db.insertInto('login_throttle').values({ user_id: userId, origin_hmac: ATTACK_ALERT_ORIGIN, kind: 'attack_alert', failed_attempts: 0, locked_until: until, updated_at: iso(now) }).execute();
-      won = true;
-    } catch (error) {
-      if (!isUniqueViolation(error)) throw error;
-      const claimed = await tenant.db
-        .updateTable('login_throttle')
-        .set({ locked_until: until, updated_at: iso(now) })
-        .where('user_id', '=', userId)
-        .where('origin_hmac', '=', ATTACK_ALERT_ORIGIN)
-        .where('kind', '=', 'attack_alert')
-        .where((eb) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', iso(now))]))
-        .executeTakeFirst();
-      won = Number(claimed.numUpdatedRows) === 1;
-    }
+    const won = await this.claimOncePerWindow(tenant, userId, 'attack_alert', now);
     if (!won) return;
     await this.record(tenant, 'account.attack_suspected', {
       actor: { label: 'sistema:deteccion-ataques' },
@@ -499,7 +524,7 @@ export class IdentityService {
     }
     const attempt = await this.beginAttempt(tenant, user.id, 'password', meta);
     if (attempt.lockedNow) {
-      await this.record(tenant, 'auth.account.locked', { actor: null, subjectUserId: user.id, data: { counter: 'password', scope: 'account+origin' }, meta });
+      await this.recordLock(tenant, user.id, 'password', null, meta);
     }
     if (!attempt.allowed) {
       await verifyAgainstDummy(input.password);
@@ -516,8 +541,8 @@ export class IdentityService {
     if (result.needsRehash) {
       await tenant.db.updateTable('app_user').set({ password_hash: await hashPassword(input.password) }).where('id', '=', user.id).execute();
     }
-    const roles = await this.rolesOf(tenant, user.id);
-    const stage: SessionStage = user.mfa_secret_sealed !== null ? 'mfa_pending' : requiresMfa(roles) ? 'mfa_enroll' : 'full';
+    // D-86 (QA 2C1-06): sin MFA configurada, cualquier usuario debe configurarla primero.
+    const stage: SessionStage = user.mfa_secret_sealed !== null ? 'mfa_pending' : requiresMfa() ? 'mfa_enroll' : 'full';
     const issued = await this.issueSession(tenant, user.id, stage, null);
     await this.record(tenant, stage === 'full' ? 'auth.login.succeeded' : 'auth.login.password_ok', { actor: { userId: user.id }, subjectUserId: user.id, data: { stage }, meta });
     return issued;
@@ -528,7 +553,7 @@ export class IdentityService {
     const { tenant, user } = ctx;
     const invalid = (): ApiError => new ApiError(401, 'invalid_code', 'Código incorrecto.');
     const attempt = await this.beginAttempt(tenant, user.id, 'mfa', meta);
-    if (attempt.lockedNow) await this.record(tenant, 'auth.account.locked', { actor: { userId: user.id }, subjectUserId: user.id, data: { counter: 'mfa', scope: 'account+origin' }, meta });
+    if (attempt.lockedNow) await this.recordLock(tenant, user.id, 'mfa', { userId: user.id }, meta);
     if (!attempt.allowed) {
       await this.record(tenant, 'auth.mfa.blocked', { actor: { userId: user.id }, subjectUserId: user.id, meta, audit: false });
       throw invalid();
@@ -619,7 +644,7 @@ export class IdentityService {
   /** Reautenticación para acciones de alto riesgo. */
   async reauthenticate(ctx: SessionContext, code: string, meta: RequestMeta): Promise<void> {
     const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'mfa', meta);
-    if (attempt.lockedNow) await this.record(ctx.tenant, 'auth.account.locked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, data: { counter: 'mfa', scope: 'account+origin' }, meta });
+    if (attempt.lockedNow) await this.recordLock(ctx.tenant, ctx.user.id, 'mfa', { userId: ctx.user.id }, meta);
     if (!attempt.allowed) {
       await this.record(ctx.tenant, 'auth.reauth.blocked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta, audit: false });
       throw new ApiError(401, 'invalid_code', 'Código incorrecto.');
@@ -642,7 +667,7 @@ export class IdentityService {
   async changePassword(ctx: SessionContext, current: string, next: string, meta: RequestMeta): Promise<IssuedSession> {
     const stored = ctx.user.password_hash;
     const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'password', meta);
-    if (attempt.lockedNow) await this.record(ctx.tenant, 'auth.account.locked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, data: { counter: 'password', scope: 'account+origin' }, meta });
+    if (attempt.lockedNow) await this.recordLock(ctx.tenant, ctx.user.id, 'password', { userId: ctx.user.id }, meta);
     const wrong = new ApiError(401, 'invalid_credentials', 'La contraseña actual no es correcta.');
     if (!attempt.allowed) {
       await this.record(ctx.tenant, 'auth.password.change_blocked', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta, audit: false });
@@ -696,8 +721,7 @@ export class IdentityService {
       .executeTakeFirst();
     if (Number(consumed.numUpdatedRows) !== 1) return invalid();
     await tenant.db.updateTable('app_user').set({ status: 'active', password_hash: hash, password_changed_at: now, updated_at: now }).where('id', '=', user.id).execute();
-    const roles = await this.rolesOf(tenant, user.id);
-    const stage: SessionStage = requiresMfa(roles) ? 'mfa_enroll' : 'full';
+    const stage: SessionStage = requiresMfa() ? 'mfa_enroll' : 'full';
     const session = await this.issueSession(tenant, user.id, stage, null);
     await this.record(tenant, 'user.activated', { actor: { userId: user.id }, subjectUserId: user.id, meta });
     return session;

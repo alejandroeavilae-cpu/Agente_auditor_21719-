@@ -140,9 +140,12 @@ export interface AccessLogTable {
  * Tipo de contador de `login_throttle`:
  * - `password` y `mfa`: bloqueo progresivo por cuenta + origen, separados (D-82, R-34);
  * - `attack_alert`: fila única por cuenta (origen `ATTACK_ALERT_ORIGIN`) que marca hasta
- *   cuándo ya se registró `account.attack_suspected`, para registrarlo UNA vez por ventana.
+ *   cuándo ya se registró `account.attack_suspected`, para registrarlo UNA vez por ventana;
+ * - `lock_logged_pw` y `lock_logged_mfa`: fila única por cuenta (mismo origen fijo) que marca
+ *   hasta cuándo ya se registró `auth.account.locked` en la bitácora inmutable: UNA vez por
+ *   cuenta, contador y ventana, aunque se bloqueen muchos orígenes (QA 2C1-10).
  */
-export type ThrottleKind = 'password' | 'mfa' | 'attack_alert';
+export type ThrottleKind = 'password' | 'mfa' | 'attack_alert' | 'lock_logged_pw' | 'lock_logged_mfa';
 
 /**
  * Bloqueo progresivo por cuenta + origen (2C-1, mitigación de R-34). El origen es el HMAC
@@ -158,7 +161,7 @@ export interface LoginThrottleTable {
   updated_at: string;
 }
 
-/** Origen fijo de la fila `attack_alert` (64 ceros: mismo largo que un HMAC, sin relleno). */
+/** Origen fijo de las filas por cuenta (`attack_alert`, `lock_logged_*`): 64 ceros, mismo largo que un HMAC, sin relleno. */
 export const ATTACK_ALERT_ORIGIN = '0'.repeat(64);
 
 export interface TenantDatabase {
