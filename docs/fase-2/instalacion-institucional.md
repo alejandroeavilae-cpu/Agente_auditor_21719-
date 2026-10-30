@@ -59,9 +59,17 @@ Hay dos formas. Elija **una**.
    ```sh
    cp certificado.pem deploy/compose/secrets/tls/certificado.pem
    cp llave.pem deploy/compose/secrets/tls/llave.pem
-   chmod 644 deploy/compose/secrets/tls/certificado.pem deploy/compose/secrets/tls/llave.pem
+   # El certificado es público: puede leerlo cualquiera.
+   chmod 644 deploy/compose/secrets/tls/certificado.pem
+   # La llave privada es SECRETA: solo debe poder leerla el usuario con que corre Caddy en el
+   # contenedor (identificador 65532). Requiere permisos de administrador (sudo).
+   sudo chown 65532:65532 deploy/compose/secrets/tls/llave.pem
+   sudo chmod 400 deploy/compose/secrets/tls/llave.pem
    ```
-   El contenedor web lee los archivos con otro usuario; la protección está en la carpeta `deploy/compose/secrets` (permisos 700), igual que el resto de los secretos.
+   **Por qué así:** Caddy no se ejecuta como administrador sino con el usuario 65532, y Docker le entrega el archivo con el mismo dueño y los mismos permisos que tiene en el servidor. Con dueño 65532 y permisos `400`, solo ese usuario puede leer la llave. Ninguna otra cuenta del servidor puede, salvo el administrador del sistema.
+   - **No** use `chmod 644` en la llave: cualquier cuenta del servidor que pudiera entrar a la carpeta podría leerla. En ese caso la única protección sería la carpeta `deploy/compose/secrets` (permisos 700, solo su dueño), y basta un error de permisos en esa carpeta para exponer la llave.
+   - Para reemplazar la llave más adelante, repita los dos comandos `sudo`.
+   - `[PENDIENTE]` La prueba automática de CI usa la CA interna, no un certificado propio: este modo de permisos no se ha probado en CI.
 3. Borre las copias que hayan quedado fuera de esa carpeta (descargas, correo, etc.).
 
 ### 3.B. CA interna de Caddy
@@ -93,6 +101,7 @@ AUDITOR_TLS_KEY_FILE=./secrets/tls/llave.pem
 - Reemplace `auditor.municipio.local` por el nombre real del servidor. Si los usuarios entrarán por IP, escriba la IP (p. ej. `10.0.0.25`). Puede poner varios separados por coma: `auditor.municipio.local, 10.0.0.25`.
 - `AUDITOR_HTTPS_PORT` puede ser otro puerto si el 443 está ocupado (entonces los usuarios escribirán `https://nombre:PUERTO`).
 - Opcional: `AUDITOR_HTTPS_BIND=10.0.0.25` publica solo en esa interfaz de red del servidor, en vez de en todas (`0.0.0.0`).
+- **No cambie la forma de publicar la API.** El perfil deja `TRUST_PROXY=true` en la API: la API toma la IP de cada usuario de la cabecera `X-Forwarded-For` que agrega Caddy. Esto solo es seguro porque **la API está detrás de exactamente un proxy (Caddy) y no se publica directamente**. Si la API se publicara (por ejemplo, agregando `ports` al servicio `api`) o se pusiera otro proxy delante de Caddy, cualquiera podría inventar su IP y eludir el límite de intentos y el bloqueo por equipo (R-34). La API lo advierte en su registro al arrancar. Si la institución tiene otro proxy o balanceador delante del servidor, consulte antes de instalar `[PENDIENTE: soporte de más de un salto]`.
 
 Para no repetir los dos archivos en cada comando, defina en la terminal:
 ```sh

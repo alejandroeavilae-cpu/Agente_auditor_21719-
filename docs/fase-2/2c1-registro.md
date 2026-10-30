@@ -96,3 +96,28 @@ Pruebas unitarias nuevas: configuración (DEK de otra organización, slug distin
 | **SQL Server:** `D-87: al suspender…` excedió 30 s (sqlserver=24 de 25) | Con el login deshabilitado, el pool `tarn` de tedious **reintenta** crear la conexión cada 200 ms hasta su espera por defecto de 30 s (`acquireTimeoutMillis`), en vez de fallar. `pg.Pool` falla al primer error de autenticación | `connect()`: `propagateCreateError: true`, `acquireTimeoutMillis` y `createTimeoutMillis` de 20 s, y `requestTimeout` de 30 s explícito en tedious. La prueba registra los tiempos (PostgreSQL local: 503 en 3 ms y 6 ms; 200 al reactivar en 7 ms), exige fallar en menos de 10 s y tiene su propio plazo de 90 s. `[PENDIENTE: resultado en SQL Server en CI]` |
 | **CodeQL** `js/clear-text-logging` en `cli.ts` | El mensaje de `api-secrets write` imprimía rutas devueltas por `writeApiSecrets`, que recibe los secretos | `writeApiSecrets` ya no devuelve nada. La CLI imprime solo los nombres constantes de `API_SECRET_FILES` y el directorio indicado por quien ejecuta. Si la escritura falla en `rotate-password`, se imprime un aviso sin datos del error y el error de archivos se propaga |
 | **Gitleaks** `generic-api-key` en `smoke-compose.sh:16` (`5e31731`) y `smoke-institucional.sh:18` (`4d307cf`) | Frase de acceso sintética literal del administrador de una instalación efímera de prueba | Falso positivo: no es credencial de ningún sistema. Huellas agregadas a `.gitleaksignore` con su justificación. Los scripts ahora generan una frase aleatoria por ejecución (`deploy/compose/secrets/smoke_admin_phrase`, excluido de git) |
+
+## 6. Correcciones de la verificación QA de 2C-1 (veredicto "aprobado con observaciones" sobre `bccb96f`)
+
+`2C1-04` (bloqueo de MFA por cuenta + origen) **no se modificó**: está pendiente de decisión del responsable.
+
+| Hallazgo | Corrección | Prueba |
+|---|---|---|
+| **2C1-05** `TRUST_PROXY` | Se documenta en `identity-config.ts`, `compose.yaml`, la guía institucional y `ejecucion-local.md` que `TRUST_PROXY=true` solo es válido con **exactamente un** proxy delante y la API sin publicar. Si no, un cliente fija su IP con `X-Forwarded-For` y elude el límite por IP y el bloqueo por origen. La API emite un aviso (`warn`) al arrancar con `TRUST_PROXY=true` | La prueba de humo ya comprueba que la API no publica puertos (paso 4) y que una `X-Forwarded-For` del cliente no falsifica la IP (paso 13) `[PENDIENTE: CI]` |
+| **2C1-06** MFA sin depender de los roles | `requiresMfa()` devuelve siempre `true`. Inicio de sesión y activación ya no consultan los roles para decidir la etapa | Unitaria: `requiresMfa()` es `true`. Integración: un usuario con un rol no reconocido, y luego sin ninguna fila de rol, queda en `mfa_enroll` |
+| **2C1-07** Rotación y conexiones abiertas | `rotatePassword` cierra las sesiones del usuario de la organización después de `resetPassword`, con el mismo mecanismo de la suspensión (`terminateSessions`: `pg_terminate_backend` / `KILL`), y espera a que se cierren. Devuelve `{ secrets, warnings }`, con los avisos separados de los secretos para no mezclarlos en lo que se imprime. La CLI termina con código 1 si quedan sesiones abiertas | Integración: la API con la contraseña anterior responde `503 unavailable`; la reiniciada con la nueva funciona, y la sesión anterior sigue valiendo en ella (vive en la base) |
+| **2C1-08** Directorio de secretos | `checkSecretsDir` rechaza cualquier directorio con escritura para el grupo o para otros (`mode & 0o022`) | Unitaria: se rechazan `777`, `770` y `702`; se acepta `750` |
+| **2C1-09** Valores centinela | La prueba se movió **al final** de la suite y ahora revisa las bases de **ambas** organizaciones | Es la última prueba del bloque |
+| **2C1-10** Bitácora y bloqueos | `auth.account.locked` va a la bitácora inmutable **una vez por cuenta, contador (contraseña o MFA) y ventana de 1 hora**. La ventana se reclama con la misma marca condicional de la alerta de ataque (`kind` `lock_logged_pw` o `lock_logged_mfa`, origen fijo). El registro de accesos sigue anotando cada bloqueo con su IP | Integración: 6 orígenes bloqueados dejan 6 bloqueos en el registro de accesos y 1 en la bitácora. En la ventana siguiente, 2 bloqueos más dejan 8 y 2. La prueba R-34 (dos bloqueos del mismo origen) espera 1 en la bitácora y 2 en el registro de accesos |
+| **2C1-12** Llave privada TLS | La guía ya no indica `chmod 644` para la llave: `sudo chown 65532:65532` y `chmod 400`, para que solo pueda leerla el usuario de Caddy en el contenedor. Docker conserva dueño y permisos en el montaje. Explica por qué `644` dejaría la protección solo en la carpeta 700. El certificado sigue en 644, porque es público | `[PENDIENTE]` CI prueba la CA interna, no el certificado propio |
+
+### Ejecución local (30-10-2026, PostgreSQL 16.15)
+
+| Comando | Resultado real |
+|---|---|
+| `pnpm run verify` | Código 0. web 4, crypto 15, audit-log 44, identity 19, persistence 23 + 1 omitida, api 28 + 1 omitida. Licencias: 314 paquetes permitidos |
+| `vitest run` en `apps/api` con PostgreSQL | **55 aprobadas**, 0 fallidas |
+| Identidad + `check-integration-report` (mínimo 27) | **27 aprobadas · postgresql=27**. Informe: `evidencia-2c1/identidad-pg-qa1.json` |
+| Organizaciones + `check-integration-report` (mínimo 24) | **47 aprobadas · postgresql=24**, incluidas las de rotación (M-02), que ahora cierran sesiones. Informe: `evidencia-2c1/organizaciones-pg-qa1.json` |
+
+Mínimo de CI para identidad: 25 → **27** por motor. Para SQL Server se asume el mismo número `[PENDIENTE: CI]`.

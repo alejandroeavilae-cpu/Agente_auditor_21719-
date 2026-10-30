@@ -154,6 +154,7 @@ Con los servicios levantados (pasos 1 a 7 de la Opción A), en la misma terminal
 **Notas**
 - Solo el puerto 8080 queda abierto y únicamente en su propio equipo (127.0.0.1); nadie más en la red puede acceder.
 - La API, PostgreSQL y Valkey no tienen salida a Internet.
+- La API confía en la cabecera `X-Forwarded-For` de un proxy (`TRUST_PROXY=true`), porque Caddy (servicio `web`) es el **único** proxy delante de ella y la API **no** publica puertos. No publique la API directamente ni agregue otro proxy delante: un cliente podría inventar su IP y eludir el límite de intentos y el bloqueo por equipo (R-34). La API lo advierte en su registro al arrancar (`docker compose -f deploy/compose/compose.yaml logs api`).
 
 ---
 
