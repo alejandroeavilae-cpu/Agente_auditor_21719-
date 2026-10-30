@@ -12,8 +12,12 @@ BASE="http://127.0.0.1:$PORT"
 COMPOSE="docker compose -f deploy/compose/compose.yaml"
 ADMIN="$COMPOSE run --rm -T admin"
 fail() { echo "::error title=smoke-compose::FALLA: $*"; echo "FALLA: $*" >&2; exit 1; }
-# Contraseña sintética del administrador de prueba (solo existe en esta instalación efímera).
-ADMIN_PASSWORD="frase-sintetica-de-prueba-2026"
+# Frase de acceso SINTÉTICA y aleatoria del administrador de prueba, distinta en cada
+# ejecución (no hay valores literales que Gitleaks confunda con secretos). Se guarda en el
+# directorio de secretos (excluido de git, 700) para que smoke-institucional.sh la reutilice.
+PHRASE_FILE="deploy/compose/secrets/smoke_admin_phrase"
+(umask 077 && head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$PHRASE_FILE")
+ADMIN_PHRASE="frase-$(cat "$PHRASE_FILE")"
 
 echo "0. Instalación (2C-1): base de control, organización y secretos de la API ANTES de arrancarla (D-87)"
 $ADMIN init
@@ -116,7 +120,7 @@ echo "$BAD" | grep -q 'Correo o contraseña incorrectos' || fail "mensaje de err
 ORGF="$(curl -s -H 'content-type: application/json' -d '{"organization":"muni-ficticia","email":"admin@muni-ficticia.example","password":"incorrecta-sintetica"}' "$BASE/api/v1/auth/login")"
 echo "$ORGF" | grep -q '"error":"invalid_request"' || fail "el campo organization debe rechazarse (D-75 ajustada): $ORGF"
 JAR="$(mktemp)"
-ACT="$(curl -s -c "$JAR" -H 'content-type: application/json' -d "{\"token\":\"$TOKEN\",\"password\":\"$ADMIN_PASSWORD\"}" "$BASE/api/v1/auth/activate")"
+ACT="$(curl -s -c "$JAR" -H 'content-type: application/json' -d "{\"token\":\"$TOKEN\",\"password\":\"$ADMIN_PHRASE\"}" "$BASE/api/v1/auth/activate")"
 echo "$ACT" | grep -q '"stage":"mfa_enroll"' || fail "la activación debe exigir configurar MFA ($ACT)"
 grep -q 'auditor_session' "$JAR" || fail "la activación no entregó la cookie de sesión"
 grep -i 'auditor_session' "$JAR" | grep -q '#HttpOnly_' || fail "la cookie de sesión debe ser HttpOnly"
@@ -134,7 +138,7 @@ echo "última IP registrada: $LASTIP"
 [ "$LASTIP" != "203.0.113.77" ] || fail "la IP registrada es la que envió el cliente en X-Forwarded-For"
 
 login_stage() {
-  curl -s -H 'content-type: application/json' -d "{\"email\":\"admin@muni-ficticia.example\",\"password\":\"$ADMIN_PASSWORD\"}" "$BASE/api/v1/auth/login"
+  curl -s -H 'content-type: application/json' -d "{\"email\":\"admin@muni-ficticia.example\",\"password\":\"$ADMIN_PHRASE\"}" "$BASE/api/v1/auth/login"
 }
 
 echo "14. Cambio de contraseña de la base (D-87): se reescriben los secretos y se reinicia la API"
@@ -152,7 +156,7 @@ echo "$R" | grep -q '"stage":"mfa_enroll"' || fail "tras rotar la contraseña la
 
 echo "15. Suspender la organización cierra las conexiones de la API, que falla de forma segura (D-87)"
 $ADMIN tenant suspend --slug muni-ficticia || fail "la suspensión terminó con advertencias"
-CODE="$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d "{\"email\":\"admin@muni-ficticia.example\",\"password\":\"$ADMIN_PASSWORD\"}" "$BASE/api/v1/auth/login")"
+CODE="$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d "{\"email\":\"admin@muni-ficticia.example\",\"password\":\"$ADMIN_PHRASE\"}" "$BASE/api/v1/auth/login")"
 [ "$CODE" = "503" ] || fail "con la organización suspendida el inicio de sesión debe responder 503 (obtenido $CODE)"
 $ADMIN tenant reactivate --slug muni-ficticia
 for i in $(seq 1 5); do

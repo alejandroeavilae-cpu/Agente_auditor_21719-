@@ -15,7 +15,10 @@ trap 'rm -rf "$WORK"' EXIT
 ROOT_CRT="$WORK/root.crt"
 # --resolve: el nombre apunta al propio equipo sin tocar /etc/hosts.
 CURL="curl -sS --resolve $SITE:$PORT:127.0.0.1"
-ADMIN_PASSWORD="frase-sintetica-de-prueba-2026"
+# Frase aleatoria que generó smoke-compose.sh para su administrador de prueba.
+PHRASE_FILE="deploy/compose/secrets/smoke_admin_phrase"
+[ -s "$PHRASE_FILE" ] || { echo "FALLA: ejecute antes scripts/smoke-compose.sh (falta $PHRASE_FILE)" >&2; exit 1; }
+ADMIN_PHRASE="frase-$(cat "$PHRASE_FILE")"
 fail() { echo "::error title=smoke-institucional::FALLA: $*"; echo "FALLA: $*" >&2; exit 1; }
 
 echo "I-1. Se levanta el perfil institucional (web en HTTPS, API con COOKIE_SECURE=true)"
@@ -53,7 +56,7 @@ WEB_BIND="$($COMPOSE port web 8443)"
 
 echo "I-6. La cookie de sesión lleva Secure, HttpOnly, SameSite=Strict y el prefijo __Host- (D-81)"
 SET_COOKIE="$($CURL --cacert "$ROOT_CRT" -D - -o /dev/null -H 'content-type: application/json' \
-  -d "{\"email\":\"admin@muni-ficticia.example\",\"password\":\"$ADMIN_PASSWORD\"}" "$BASE/api/v1/auth/login" | grep -i '^set-cookie:' || true)"
+  -d "{\"email\":\"admin@muni-ficticia.example\",\"password\":\"$ADMIN_PHRASE\"}" "$BASE/api/v1/auth/login" | grep -i '^set-cookie:' || true)"
 echo "$SET_COOKIE" | sed 's/=[A-Za-z0-9_%-]\{20,\}/=<token>/'
 echo "$SET_COOKIE" | grep -qi '__Host-auditor_session=' || fail "falta el prefijo __Host-"
 for attr in Secure HttpOnly 'SameSite=Strict' 'Path=/'; do
