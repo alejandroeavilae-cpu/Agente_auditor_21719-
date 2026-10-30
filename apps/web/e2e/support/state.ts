@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { DbServerConfig } from '@auditor-21719/persistence';
 
-/**
- * Estado de la ejecución E2E que escribe el global setup en un directorio temporal propio
- * (permisos 700, fuera del repositorio). Solo datos SINTÉTICOS generados en la ejecución.
- */
+/** Estado de la ejecución E2E. Solo datos SINTÉTICOS generados en la ejecución. */
 export interface E2EState {
   webUrl: string;
   apiUrl: string;
@@ -22,18 +18,23 @@ export interface E2EState {
   repoRoot: string;
 }
 
+/**
+ * El global setup entrega el estado en la variable de entorno `E2E_STATE` (Playwright la
+ * hereda a los procesos de prueba). No se escribe a disco: incluye el secreto TOTP
+ * sintético del administrador de prueba.
+ */
 export function loadState(): E2EState {
-  const dir = process.env.E2E_STATE_DIR;
-  if (dir === undefined) throw new Error('E2E_STATE_DIR no está definido (¿se ejecutó el global setup?)');
-  return JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')) as E2EState;
+  const raw = process.env.E2E_STATE;
+  if (raw === undefined) throw new Error('E2E_STATE no está definido (¿se ejecutó el global setup?)');
+  return JSON.parse(raw) as E2EState;
 }
 
 /** Contraseña sintética aleatoria y larga (pasa la política: ≥ 12, no común). */
 export function syntheticPassword(): string {
-  return `frase-sintetica-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+  return `frase-sintetica-${randomBytes(9).toString('base64url')}`;
 }
 
-/** Sufijo único para correos sintéticos. */
+/** Sufijo único para correos y nombres sintéticos (minúsculas y dígitos). */
 export function uid(): string {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  return `${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
 }

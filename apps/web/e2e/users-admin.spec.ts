@@ -32,7 +32,8 @@ test('invitar, cambiar roles (con combinación prohibida) y desactivar, con reau
   const created = page.getByRole('dialog', { name: 'Invitación creada' });
   await expect(created).toBeVisible();
   const link = await created.getByLabel('Enlace de activación').inputValue();
-  expect(link).toMatch(new RegExp(`^${state.webUrl.replace(/[.]/g, '\\.')}/activar#[A-Za-z0-9_-]{43}$`));
+  expect(link.startsWith(`${state.webUrl}/activar#`)).toBe(true);
+  expect(link.slice(`${state.webUrl}/activar#`.length)).toMatch(/^[A-Za-z0-9_-]{43}$/);
   await created.getByRole('button', { name: 'Copiar enlace' }).click();
   await expect(created.getByText('Enlace copiado al portapapeles.')).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(link);

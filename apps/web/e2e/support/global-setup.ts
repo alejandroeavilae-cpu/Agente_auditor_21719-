@@ -189,10 +189,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     stateDir,
     repoRoot,
   };
-  writeFileSync(join(stateDir, 'state.json'), JSON.stringify(state), { mode: 0o600 });
   const { secret } = await new ApiClient(apiUrl).activateWithMfa(token, adminPassword);
   state.admin.secret = secret;
-  writeFileSync(join(stateDir, 'state.json'), JSON.stringify(state), { mode: 0o600 });
+  // Playwright hereda las variables de entorno del global setup a los procesos de prueba.
+  process.env.E2E_STATE = JSON.stringify(state);
 
   return async () => {
     for (const child of [web, api]) {
