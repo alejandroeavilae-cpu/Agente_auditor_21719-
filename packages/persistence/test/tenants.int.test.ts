@@ -514,7 +514,8 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
         await sql`ALTER TABLE app_user DROP COLUMN must_change_password`.execute(adminB);
       } else {
         // SQL Server: antes de quitar la columna hay que quitar su restricción DEFAULT (nombre generado).
-        await sql`DECLARE @c sysname; SELECT @c = d.name FROM sys.default_constraints d JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id WHERE d.parent_object_id = OBJECT_ID('dbo.app_user') AND c.name = 'must_change_password'; IF @c IS NOT NULL EXEC('ALTER TABLE dbo.app_user DROP CONSTRAINT ' + QUOTENAME(@c)); ALTER TABLE dbo.app_user DROP COLUMN must_change_password;`.execute(adminB);
+        // EXEC() no admite llamadas a funciones en su argumento: la orden se arma antes en @q.
+        await sql`DECLARE @c sysname; SELECT @c = d.name FROM sys.default_constraints d JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id WHERE d.parent_object_id = OBJECT_ID('dbo.app_user') AND c.name = 'must_change_password'; DECLARE @q nvarchar(400) = N'ALTER TABLE dbo.app_user DROP CONSTRAINT ' + QUOTENAME(@c); IF @c IS NOT NULL EXEC(@q); ALTER TABLE dbo.app_user DROP COLUMN must_change_password;`.execute(adminB);
       }
       await sql`DELETE FROM kysely_migration WHERE name = ${'0004_must_change_password'}`.execute(adminB);
       // Usuario sintético existente antes de la migración.
