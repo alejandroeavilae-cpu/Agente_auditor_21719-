@@ -28,8 +28,13 @@ function clientErrorOf(exception: unknown): { status: number; code: string; mess
   return null;
 }
 
-/** Mensaje único para cualquier fallo de inicio de sesión: no revela qué dato falló. */
-export const INVALID_CREDENTIALS = (): ApiError => new ApiError(401, 'invalid_credentials', 'Organización, correo o contraseña incorrectos.');
+/** Mensaje único para cualquier fallo de inicio de sesión: no revela qué dato falló (D-75 ajustada). */
+export const INVALID_CREDENTIALS = (): ApiError => new ApiError(401, 'invalid_credentials', 'Correo o contraseña incorrectos.');
+/**
+ * La base de la organización no responde o rechaza la conexión (p. ej. organización
+ * suspendida, D-87). Se responde sin detalles: falla segura.
+ */
+export const UNAVAILABLE = (): ApiError => new ApiError(503, 'unavailable', 'El servicio no está disponible en este momento. Intente más tarde o contacte a la administración.');
 export const UNAUTHENTICATED = (): ApiError => new ApiError(401, 'unauthenticated', 'Debe iniciar sesión.');
 export const FORBIDDEN = (): ApiError => new ApiError(403, 'forbidden', 'No tiene permiso para esta acción.');
 

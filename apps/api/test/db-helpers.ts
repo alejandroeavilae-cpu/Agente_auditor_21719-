@@ -36,18 +36,13 @@ export function engineConfigs(): { engine: DbEngine; server: DbServerConfig }[] 
 export const runId = (): string => randomBytes(3).toString('hex');
 
 /**
- * Crea, con el superusuario de pruebas, una cuenta de aprovisionamiento SIN superusuario
- * y una cuenta de la API (solo login; los permisos los concede `initControl`), como indica
- * docs/fase-2/servidor-de-base-de-datos.md.
+ * Crea, con el superusuario de pruebas, una cuenta de aprovisionamiento SIN superusuario,
+ * como indica docs/fase-2/servidor-de-base-de-datos.md. Desde 2C-1 (D-87) la API no tiene
+ * cuenta propia: usa la de su organización.
  */
-export async function createAccounts(
-  superServer: DbServerConfig,
-  id: string,
-): Promise<{ provisioner: DbServerConfig; api: DbServerConfig; drop: () => Promise<void> }> {
+export async function createAccounts(superServer: DbServerConfig, id: string): Promise<{ provisioner: DbServerConfig; drop: () => Promise<void> }> {
   const prov = `auditor_prov_api_${id}`;
-  const api = `auditor_api_${id}`;
   const provPassword = generateDbPassword();
-  const apiPassword = generateDbPassword();
   const admin = connect<unknown>(superServer, serverAdminDatabase(superServer), 1);
   try {
     if (superServer.engine === 'postgresql') {
@@ -56,25 +51,21 @@ export async function createAccounts(
       await sql`REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC`.execute(admin);
       await sql`REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC`.execute(admin);
       await sql`GRANT CONNECT ON DATABASE postgres TO ${sql.id(prov)}`.execute(admin);
-      await sql`CREATE ROLE ${sql.id(api)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${sql.lit(apiPassword)}`.execute(admin);
     } else {
       await sql`CREATE LOGIN ${sql.id(prov)} WITH PASSWORD = ${sql.lit(provPassword)}, CHECK_POLICY = OFF`.execute(admin);
       for (const role of ['dbcreator', 'securityadmin', 'processadmin']) {
         await sql`ALTER SERVER ROLE ${sql.id(role)} ADD MEMBER ${sql.id(prov)}`.execute(admin);
       }
-      await sql`CREATE LOGIN ${sql.id(api)} WITH PASSWORD = ${sql.lit(apiPassword)}, CHECK_POLICY = OFF`.execute(admin);
-      await sql`DENY VIEW ANY DATABASE TO ${sql.id(api)}`.execute(admin);
     }
   } finally {
     await admin.destroy();
   }
   return {
     provisioner: { ...superServer, user: prov, password: provPassword },
-    api: { ...superServer, user: api, password: apiPassword },
     drop: async () => {
       const db = connect<unknown>(superServer, serverAdminDatabase(superServer), 1);
       try {
-        for (const login of [api, prov]) {
+        for (const login of [prov]) {
           if (superServer.engine === 'postgresql') {
             await sql`REVOKE ALL ON DATABASE postgres FROM ${sql.id(login)}`.execute(db).catch(() => undefined);
             await sql`DROP ROLE IF EXISTS ${sql.id(login)}`.execute(db);
@@ -108,7 +99,14 @@ export function base32Decode(text: string): Buffer {
   return Buffer.from(out);
 }
 
-/** Cliente HTTP mínimo con su propia cookie de sesión y token anti-CSRF. */
+/** Todos los valores de cookie de sesión emitidos en la ejecución (prueba de valores centinela). */
+export const issuedSessionTokens = new Set<string>();
+
+/**
+ * Cliente HTTP mínimo con su propia cookie de sesión y token anti-CSRF.
+ * `origin` simula la IP del cliente con `X-Forwarded-For` (la API de prueba confía en un
+ * salto de proxy, como detrás de Caddy).
+ */
 export class Client {
   cookie: string | undefined;
   csrf: string | undefined;
@@ -116,10 +114,12 @@ export class Client {
   constructor(
     private readonly base: string,
     private readonly cookieName: string,
+    private readonly origin?: string,
   ) {}
 
   async request(method: string, path: string, body?: unknown, options: { csrf?: boolean } = {}): Promise<{ status: number; body: Record<string, unknown>; headers: Headers }> {
     const headers: Record<string, string> = {};
+    if (this.origin !== undefined) headers['x-forwarded-for'] = this.origin;
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (this.cookie !== undefined) headers.cookie = `${this.cookieName}=${encodeURIComponent(this.cookie)}`;
     if ((options.csrf ?? true) && this.csrf !== undefined && method !== 'GET') headers['x-csrf-token'] = this.csrf;
@@ -128,6 +128,7 @@ export class Client {
     if (setCookie !== undefined) {
       const value = decodeURIComponent(setCookie.slice(this.cookieName.length + 1).split(';')[0] ?? '');
       this.cookie = value === '' ? undefined : value;
+      if (value !== '') issuedSessionTokens.add(value);
     }
     const text = await res.text();
     const parsed = text === '' ? {} : (JSON.parse(text) as Record<string, unknown>);

@@ -22,6 +22,9 @@ describe('auditor-admin: códigos de salida', () => {
     [['tenant', 'suspend', '--opcion-desconocida', 'x']],
     [['audit', 'export']],
     [['tenant', 'list', 'posicional']],
+    [['api-secrets', 'write', '--tenant', 'muni-ejemplo']],
+    [['api-secrets', 'write', '--out', '/tmp']],
+    [['tenant', 'rotate-password', '--slug', 'x', '--api-secrets-dir', '/tmp']],
   ])('error de uso → 2: %j', async (argv) => {
     expect(await main(argv)).toBe(2);
   });

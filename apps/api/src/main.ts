@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { loadMasterKey } from '@auditor-21719/crypto';
-import { TenantManager } from '@auditor-21719/persistence';
+import { OrganizationDirectory } from '@auditor-21719/persistence';
 import { createApp } from './bootstrap.js';
 import { loadConfig } from './config/app-config.js';
 import { loadIdentityConfig } from './identity/identity-config.js';
@@ -11,22 +10,21 @@ import { IdentityService } from './identity/identity.service.js';
 async function main(): Promise<void> {
   const config = loadConfig();
   const identityConfig = loadIdentityConfig();
-  let manager: TenantManager | undefined;
+  let directory: OrganizationDirectory | undefined;
   let identity;
   if (identityConfig !== undefined) {
-    const masterKey = loadMasterKey(identityConfig.masterKeyFile, { checkPermissions: identityConfig.checkMasterKeyPermissions });
-    // Cuenta de solo lectura del registro de organizaciones (D-80): la API nunca usa la
-    // cuenta de aprovisionamiento.
-    manager = new TenantManager(identityConfig.db, [masterKey]);
+    // Solo las credenciales de SU organización y su DEK: sin clave maestra, sin cuenta de
+    // aprovisionamiento y sin acceso a la base de control (D-87 precisada por D-88).
+    directory = new OrganizationDirectory(identityConfig.server, identityConfig.organization, identityConfig.dbPassword, identityConfig.dek);
     identity = {
       config: identityConfig,
-      service: new IdentityService(manager, { defaultOrganization: identityConfig.defaultOrganization, accessLogRetentionDays: identityConfig.accessLogRetentionDays }),
+      service: new IdentityService(directory, { accessLogRetentionDays: identityConfig.accessLogRetentionDays, attackAlertThreshold: identityConfig.attackAlertThreshold }),
     };
   }
   const app = await createApp(config, identity);
-  const closeManager = manager;
-  if (closeManager !== undefined) {
-    process.once('beforeExit', () => void closeManager.close());
+  const closeDirectory = directory;
+  if (closeDirectory !== undefined) {
+    process.once('beforeExit', () => void closeDirectory.close());
   }
   await app.listen(config.PORT, config.HOST);
 }
