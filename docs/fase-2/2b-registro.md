@@ -2,7 +2,7 @@
 
 - **Aprobación de inicio:** Alejandro Ávila, 29-10-2026 14:07 (hora de Chile), después de aprobar el cierre de 2A (fusión del PR #3, 29-10-2026 13:32).
 - **Rama:** `fase-2b`.
-- **Estado:** diseño aprobado (D-79, 29-10-2026 14:46). Implementado y probado: local con PostgreSQL; CI con PostgreSQL y SQL Server. Pendiente: QA independiente y aprobación humana del cierre.
+- **Estado:** diseño aprobado (D-79, 29-10-2026 14:46). Implementado y probado: local con PostgreSQL; CI con PostgreSQL y SQL Server. **Aprobado por QA en la tercera revisión** (29-10-2026, `421b0fb`). Pendiente: aprobación humana del cierre y aceptación del riesgo residual R-34.
 - **Orden de trabajo:**
   1. Corregir los hallazgos abiertos de 2A.
   2. Diseñar identidad y permisos y **presentar el diseño al responsable antes de implementarlo**.
@@ -153,7 +153,16 @@ QA atacó la API como lo haría un adversario.
   - Prueba de humo (job 123663297319), incluido el paso 13: la IP enviada en `X-Forwarded-For` a través de Caddy no queda registrada.
   - Advertencia: esa carrera no es determinista. Una sola ejecución en verde no demuestra que el caso de SQL Server esté cubierto en todas las intercalaciones posibles [PENDIENTE: verificación QA].
 
-QA: [PENDIENTE].
+**Tercera revisión QA (29-10-2026, sobre `421b0fb`): APROBADA.**
+- 2B-11 corregido. QA confirmó con ejecución real que los intentos durante un bloqueo no cuentan, y probó el desbloqueo por API (RBAC, CSRF, MFA reciente, otra organización → 404) y por CLI (único administrador bloqueado).
+- 2B-01 no se reabrió: 120 contraseñas en paralelo → 5 verificaciones reales.
+- Sin regresiones en 2B ni en 2A.
+- **R-34 está descrito con exactitud:** la espera se duplica en cada ventana hasta 15 min, unas 4 peticiones por hora.
+- **Observaciones Bajas, sin bloqueo:**
+  1. Contra un atacante persistente, el desbloqueo solo abre una ventana breve. Precisado en D-83.
+  2. Una ráfaga en paralelo lleva la espera directo al tope. Precisado en D-83.
+  3. Restablecer la MFA también levanta un bloqueo de contraseña. Es inocuo, porque el contador de contraseña se conserva.
+- **Sigue `[PENDIENTE]`:** la carrera de "último administrador" en SQL Server, que no es determinista (solo hay evidencia de CI).
 
 ## 5. Segunda revisión QA de 2B (29-10-2026, sobre `5243d1f`): NO APROBADA
 
