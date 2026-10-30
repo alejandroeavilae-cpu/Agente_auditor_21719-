@@ -140,9 +140,9 @@ jobs:
           TEST_MSSQL_PASSWORD: ${{ env.MSSQL_TEST_PASSWORD }}
           TEST_MSSQL_TLS: trust-server-certificate
           SUITE_PREFIX: identidad en
-          # 25 por motor desde 2C-1 (observadas en PostgreSQL local; SQL Server ejecuta las
-          # mismas pruebas).
-          MIN_TESTS_PER_ENGINE: "25"
+          # 27 por motor desde las correcciones QA de 2C-1 (observadas en PostgreSQL local;
+          # SQL Server ejecuta las mismas pruebas).
+          MIN_TESTS_PER_ENGINE: "27"
         run: |
           pnpm exec vitest run test/identity.int.test.ts --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-identidad.json
           node ../../scripts/check-integration-report.mjs vitest-identidad.json

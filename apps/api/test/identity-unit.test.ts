@@ -157,7 +157,7 @@ describe('api-secrets write: archivos 0600 y escritura atómica', () => {
     expect(lstatSync(join(dir, API_SECRET_FILES.dbPassword)).isSymbolicLink()).toBe(false);
   });
 
-  it('rechaza un destino que no es directorio, un enlace o un directorio modificable por cualquiera', () => {
+  it('rechaza un destino que no es directorio, un enlace o un directorio modificable por el grupo u otros', () => {
     const dir = mkdtempSync(join(tmpdir(), 'apisec-'));
     expect(() => {
       writeApiSecrets(join(dir, 'no-existe'), secrets());
@@ -166,11 +166,19 @@ describe('api-secrets write: archivos 0600 y escritura atómica', () => {
     expect(() => {
       writeApiSecrets(join(dir, 'enlace'), secrets());
     }).toThrow(/no un enlace/);
-    const open = join(dir, 'abierto');
-    mkdirSync(open);
-    chmodSync(open, 0o777);
-    expect(() => {
-      writeApiSecrets(open, secrets());
-    }).toThrow(/cualquier usuario/);
+    // QA 2C1-08: también se rechaza la escritura solo del grupo (0o770) o solo de otros (0o702).
+    for (const mode of [0o777, 0o770, 0o702]) {
+      const open = join(dir, `abierto-${mode.toString(8)}`);
+      mkdirSync(open);
+      chmodSync(open, mode);
+      expect(() => {
+        writeApiSecrets(open, secrets());
+      }, mode.toString(8)).toThrow(/otros usuarios o por su grupo/);
+    }
+    // 0o750 (el grupo solo lee) sí se acepta.
+    const readable = join(dir, 'grupo-lee');
+    mkdirSync(readable);
+    chmodSync(readable, 0o750);
+    writeApiSecrets(readable, secrets());
   });
 });

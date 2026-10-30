@@ -344,6 +344,21 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect((await again.request('POST', '/api/v1/auth/login', { email: 'auditora@ejemplo.cl', password: PASSWORD_AUDITOR })).body.stage).toBe('mfa_pending');
   });
 
+  it('2C1-06: un usuario sin roles reconocidos también queda obligado a configurar la MFA', async () => {
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'sin-roles@ejemplo.cl', displayName: 'Sin Roles Sintético', roles: ['reader'] }, null);
+    // Sus roles se reemplazan por uno que la plataforma no reconoce (p. ej. datos alterados).
+    await handle.db.deleteFrom('user_role').where('user_id', '=', invited.userId).execute();
+    await handle.db.insertInto('user_role').values({ user_id: invited.userId, role: 'rol-desconocido' }).execute();
+    const c = client();
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    expect((await c.request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD })).body.stage).toBe('mfa_enroll');
+    expect((await c.request('GET', '/api/v1/users')).body.error).toBe('mfa_enrollment_required');
+    // Sin ninguna fila de rol, igual.
+    await handle.db.deleteFrom('user_role').where('user_id', '=', invited.userId).execute();
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'sin-roles@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
+  });
+
   it('una sesión de A no sirve en la API de B, ni con el formato antiguo `<slug>.<token>`', async () => {
     const c = await loggedAdmin();
     const forged = clientB();
@@ -475,17 +490,19 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD });
     // Un "atacante" bloquea el par cuenta + origen con 5 intentos.
     for (let i = 0; i < 5; i++) await client().request('POST', '/api/v1/auth/login', { email: 'lectora@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
-    const locked = await throttleRows(invited.userId);
+    // Solo los contadores (la marca `lock_logged_pw` de QA 2C1-10 es por cuenta, no por origen).
+    const counters = async (): Promise<Awaited<ReturnType<typeof throttleRows>>> => (await throttleRows(invited.userId)).filter((r) => r.kind === 'password' || r.kind === 'mfa');
+    const locked = await counters();
     expect(locked).toHaveLength(1);
     expect(locked[0]).toMatchObject({ kind: 'password', failed_attempts: 5 });
     expect(locked[0]?.locked_until).not.toBeNull();
     // La dueña y el atacante insisten durante el bloqueo: no se cuenta ni se alarga.
     for (let i = 0; i < 3; i++) await client().request('POST', '/api/v1/auth/login', { email: 'lectora@ejemplo.cl', password: PASSWORD });
-    expect(await throttleRows(invited.userId)).toEqual(locked);
+    expect(await counters()).toEqual(locked);
     // El administrador la desbloquea (acción de alto riesgo) y ella entra.
     const admin = await loggedAdmin();
     expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
-    expect(await throttleRows(invited.userId)).toEqual([]);
+    expect(await counters()).toEqual([]);
     // Sin MFA configurada todavía, su inicio de sesión la lleva a configurarla (D-86).
     expect((await client().request('POST', '/api/v1/auth/login', { email: 'lectora@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
     const actions = (await provisioner.exportAuditLog(slugA)).map((e) => e.action);
@@ -524,12 +541,15 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(new Date(relocked?.locked_until ?? 0).getTime()).toBeGreaterThan(now().getTime());
     expect((await victim().request('POST', '/api/v1/auth/login', { email: 'victima@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
 
-    // El bloqueo queda en la bitácora; los intentos fallidos solo en el registro de accesos.
+    // Dos bloqueos del mismo origen en la ventana: la bitácora registra UNO (QA 2C1-10); el
+    // registro de accesos, ambos. Los intentos fallidos van solo al registro de accesos.
     const locks = (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'auth.account.locked' && e.object === `user/${invited.userId}`);
-    expect(locks.length).toBeGreaterThanOrEqual(2);
+    expect(locks).toHaveLength(1);
+    const accessLocks = await handle.db.selectFrom('access_log').select('ip').where('user_id', '=', invited.userId).where('event', '=', 'auth.account.locked').execute();
+    expect(accessLocks).toHaveLength(2);
     // El desbloqueo (CLI) limpia todos los pares de la cuenta.
     expect((await runCli(['user', 'unlock', '--tenant', slugA, '--email', 'victima@ejemplo.cl'])).code).toBe(0);
-    expect((await throttleRows(invited.userId)).filter((r) => r.kind !== 'attack_alert')).toEqual([]);
+    expect((await throttleRows(invited.userId)).filter((r) => r.kind === 'password' || r.kind === 'mfa')).toEqual([]);
     expect((await attacker().request('POST', '/api/v1/auth/login', { email: 'victima@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
   });
 
@@ -565,6 +585,29 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(await alerts()).toHaveLength(2);
   });
 
+  it('2C1-10: bloquear muchos orígenes deja UN evento de bloqueo por cuenta y ventana en la bitácora; el registro de accesos los anota todos', async () => {
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'muchos-origenes@ejemplo.cl', displayName: 'Cuenta Sintética', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    await client().request('POST', '/api/v1/auth/activate', { token: invited.activationToken, password: PASSWORD });
+    const lockFrom = async (origin: string): Promise<void> => {
+      for (let i = 0; i < LOCK_AT; i++) await client(origin).request('POST', '/api/v1/auth/login', { email: 'muchos-origenes@ejemplo.cl', password: `${WRONG_PASSWORD}-${String(i)}` });
+    };
+    const auditLocks = async (): Promise<number> =>
+      (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'auth.account.locked' && e.object === `user/${invited.userId}`).length;
+    const accessLocks = async (): Promise<number> =>
+      (await handle.db.selectFrom('access_log').select('id').where('user_id', '=', invited.userId).where('event', '=', 'auth.account.locked').execute()).length;
+    for (let o = 1; o <= 6; o++) await lockFrom(`192.0.2.${String(o)}`);
+    expect(await accessLocks()).toBe(6);
+    expect(await auditLocks()).toBe(1);
+    // En la ventana siguiente, un bloqueo nuevo vuelve a registrarse una vez.
+    offsetMs += 61 * 60_000;
+    await lockFrom('192.0.2.50');
+    await lockFrom('192.0.2.51');
+    expect(await accessLocks()).toBe(8);
+    expect(await auditLocks()).toBe(2);
+  });
+
   it('bitácora: eventos verificables, con IP solo como HMAC; el registro de accesos guarda la IP', async () => {
     const entries = await provisioner.exportAuditLog(slugA);
     const result = verifyChainItems(parseJsonlLines(toJsonl(entries)), slugA);
@@ -587,24 +630,6 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     // login_throttle guarda el origen solo como HMAC.
     const throttle = await handle.db.selectFrom('login_throttle').selectAll().execute();
     expect(JSON.stringify(throttle)).not.toMatch(/198\.51\.|203\.0\.113|127\.0\.0\.1/);
-  });
-
-  it('valores centinela: ninguna contraseña, código, token de sesión ni secreto de la API aparece en la base', async () => {
-    const handle = await apiA.directory.open();
-    const db = connect<TenantDatabase>(provisionerServer, handle.info.dbName, 1);
-    const dump: string[] = [];
-    for (const table of ['app_user', 'user_session', 'activation_token', 'recovery_code', 'access_log', 'audit_log', 'login_throttle'] as const) {
-      const rows = await db.selectFrom(table).selectAll().execute();
-      dump.push(JSON.stringify(rows));
-    }
-    await db.destroy();
-    const all = dump.join('\n');
-    // Observación QA 2B §7: también los tokens de sesión emitidos (valor de la cookie).
-    expect(issuedSessionTokens.size).toBeGreaterThan(10);
-    for (const secret of [PASSWORD_ADMIN, PASSWORD_AUDITOR, `${PASSWORD_AUDITOR}-nueva`, auditorToken, ...issuedSessionTokens, ...apiSecretValues]) {
-      expect(all).not.toContain(secret);
-    }
-    expect(all).not.toContain(secrets.get('admin@ejemplo.cl')?.toString('hex') ?? 'x');
   });
 
   it('cookie de sesión: HttpOnly y SameSite=Strict; con COOKIE_SECURE=true, Secure y prefijo __Host-', async () => {
@@ -678,14 +703,22 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     await expect(sql`DELETE FROM audit_log`.execute(handle.db)).rejects.toThrow();
   });
 
-  it('D-87: rotate-password reescribe los secretos de la API; la API reiniciada funciona y los MFA siguen abriendo', async () => {
+  it('D-87 y 2C1-07: rotate-password cierra las conexiones con la contraseña anterior; la API con la nueva funciona y los MFA siguen abriendo', async () => {
     const before = apiA.config.dbPassword;
+    // Sesión abierta en la API que todavía usa la contraseña anterior.
+    const oldSession = await loggedAdmin();
+    expect((await oldSession.request('GET', '/api/v1/auth/me')).status).toBe(200);
     const rotated = await runCli(['tenant', 'rotate-password', '--slug', slugA, '--api-secrets-out', secretsDirA]);
     expect(rotated, rotated.err).toMatchObject({ code: 0 });
     const config = apiConfig(slugA, secretsDirA);
     expect(config.dbPassword).not.toBe(before);
     // Misma DEK: los secretos MFA cifrados antes se siguen abriendo (D-88).
     expect(config.dek.id).toBe(apiA.config.dek.id);
+    // QA 2C1-07: la API con la contraseña anterior pierde sus conexiones y no puede abrir
+    // otras: falla de forma segura (503), sin seguir operando.
+    const stale = await oldSession.request('GET', '/api/v1/auth/me');
+    expect(stale.status).toBe(503);
+    expect(stale.body.error).toBe('unavailable');
     // "Reinicio" de la API: una instancia nueva con los secretos reescritos.
     const old = apiA;
     apiA = await startApi(config);
@@ -693,6 +726,10 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     await old.directory.close();
     const c = await loggedAdmin();
     expect((await c.request('GET', '/api/v1/users')).status).toBe(200);
+    // La sesión vive en la base: sigue valiendo en la API reiniciada.
+    const resumed = client();
+    resumed.cookie = oldSession.cookie;
+    expect((await resumed.request('GET', '/api/v1/auth/me')).status).toBe(200);
     // Sin --api-secrets-out, la CLI avisa que la API quedará con la contraseña anterior.
     const warned = await runCli(['tenant', 'rotate-password', '--slug', slugB]);
     expect(warned.code).toBe(0);
@@ -743,6 +780,28 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(back.status).toBe(200);
     // Plazo propio: suspender espera hasta 5 s a que se cierren las sesiones (waitForNoSessions).
   }, 90_000);
+
+  // QA 2C1-09: al FINAL de la suite, para revisar todos los tokens emitidos en ella.
+  it('valores centinela: ninguna contraseña, código, token de sesión ni secreto de la API aparece en las bases', async () => {
+    const dump: string[] = [];
+    for (const api of [apiA, apiB]) {
+      const db = connect<TenantDatabase>(provisionerServer, api.config.organization.dbName, 1);
+      try {
+        for (const table of ['app_user', 'user_session', 'activation_token', 'recovery_code', 'access_log', 'audit_log', 'login_throttle'] as const) {
+          dump.push(JSON.stringify(await db.selectFrom(table).selectAll().execute()));
+        }
+      } finally {
+        await db.destroy();
+      }
+    }
+    const all = dump.join('\n');
+    // Observación QA 2B §7: también los tokens de sesión emitidos (valor de la cookie).
+    expect(issuedSessionTokens.size).toBeGreaterThan(10);
+    for (const secret of [PASSWORD_ADMIN, PASSWORD_AUDITOR, `${PASSWORD_AUDITOR}-nueva`, auditorToken, ...issuedSessionTokens, ...apiSecretValues]) {
+      expect(all).not.toContain(secret);
+    }
+    expect(all).not.toContain(secrets.get('admin@ejemplo.cl')?.toString('hex') ?? 'x');
+  });
 });
 
 /** Directorio de secretos propio (700), como `deploy/compose/secrets/api`. */
