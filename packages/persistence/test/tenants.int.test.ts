@@ -478,6 +478,67 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     expect(verifyChainItems(parseJsonlLines(toJsonl(await manager.exportAuditLog(slugB))), slugB).ok).toBe(true);
   });
 
+  it('2C-2: la exportación por lotes entrega exactamente lo mismo que la completa, con cualquier tamaño de lote y con límite superior', async () => {
+    const a = await manager.openTenant(slugA);
+    for (let i = 0; i < 7; i++) await a.audit.append({ actor: 'usuario-sintetico', action: 'prueba.lote', object: `o/${String(i)}` });
+    const full = await a.audit.exportRaw();
+    expect(full.length).toBeGreaterThan(7);
+    for (const size of [1, 3, full.length, 1000]) {
+      const got: Record<string, unknown>[] = [];
+      for await (const batch of a.audit.exportRawBatches(size)) {
+        expect(batch.length).toBeLessThanOrEqual(size);
+        got.push(...batch);
+      }
+      expect(got, `lote de ${String(size)}`).toEqual(full);
+    }
+    // Límite superior: lo que se agregue después del inicio de la exportación no se incluye.
+    const upTo = await a.audit.lastSeqRaw();
+    expect(Number(upTo)).toBe(full.at(-1)?.seq);
+    await a.audit.append({ actor: 'usuario-sintetico', action: 'prueba.lote', object: 'o/posterior' });
+    const bounded: Record<string, unknown>[] = [];
+    for await (const batch of a.audit.exportRawBatches(2, upTo)) bounded.push(...batch);
+    // (La cadena de A fue alterada a propósito en PT-04: aquí se compara el contenido, no la integridad.)
+    expect(bounded).toEqual(full);
+    // Bitácora vacía (null) no entrega nada; un lote inválido se rechaza.
+    expect((await a.audit.exportRawBatches(2, null).next()).done).toBe(true);
+    await expect(a.audit.exportRawBatches(0).next()).rejects.toThrow(/lote/);
+  });
+
+  it('2C-2: la migración 0004 se aplica a una organización existente; los usuarios quedan sin cambio obligatorio y la cuenta de la organización puede usar la columna', async () => {
+    const credsB = await manager.credentials(slugB);
+    const adminB = connect<unknown>(server, credsB.dbName, 1);
+    const ts = new Date().toISOString();
+    try {
+      // Simula una organización de 2C-1: sin la columna ni el registro de la migración 0004.
+      if (engine === 'postgresql') {
+        await sql`ALTER TABLE app_user DROP COLUMN must_change_password`.execute(adminB);
+      } else {
+        // SQL Server: antes de quitar la columna hay que quitar su restricción DEFAULT (nombre generado).
+        await sql`DECLARE @c sysname; SELECT @c = d.name FROM sys.default_constraints d JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id WHERE d.parent_object_id = OBJECT_ID('dbo.app_user') AND c.name = 'must_change_password'; IF @c IS NOT NULL EXEC('ALTER TABLE dbo.app_user DROP CONSTRAINT ' + QUOTENAME(@c)); ALTER TABLE dbo.app_user DROP COLUMN must_change_password;`.execute(adminB);
+      }
+      await sql`DELETE FROM kysely_migration WHERE name = ${'0004_must_change_password'}`.execute(adminB);
+      // Usuario sintético existente antes de la migración.
+      await sql`INSERT INTO app_user (id, email, display_name, status, failed_attempts, mfa_failed_attempts, created_at, updated_at) VALUES (${'00000000-0000-4000-8000-000000000004'}, ${'previo@ejemplo.cl'}, ${'Usuario Previo'}, ${'active'}, 0, 0, ${ts}, ${ts})`.execute(adminB);
+    } finally {
+      await adminB.destroy();
+    }
+    const result = await manager.migrateAllTenants('operador:pruebas');
+    expect(result[slugB]).toEqual({ applied: ['0004_must_change_password'] });
+    expect(result[slugA]).toEqual({ applied: [] });
+    // Con la cuenta de la organización (la que usa la API): lee 0 y puede modificarla.
+    const asB = connect<TenantDatabase>({ ...server, user: credsB.user, password: credsB.password }, credsB.dbName, 1);
+    try {
+      const read = async (): Promise<number> => (await asB.selectFrom('app_user').select('must_change_password').where('email', '=', 'previo@ejemplo.cl').executeTakeFirstOrThrow()).must_change_password;
+      expect(await read()).toBe(0);
+      await asB.updateTable('app_user').set({ must_change_password: 1 }).where('email', '=', 'previo@ejemplo.cl').execute();
+      expect(await read()).toBe(1);
+    } finally {
+      await asB.destroy();
+    }
+    const actions = (await manager.exportAuditLog(slugB)).map((e) => e.action);
+    expect(actions.at(-1)).toBe('schema.migrated');
+  });
+
   it('rechaza identificadores que podrían inyectar SQL y nombres con caracteres de control', async () => {
     for (const bad of ['a"; DROP DATABASE x; --', 'Mayus', 'ab', 'x'.repeat(31), '-inicio', 'doble--guion']) {
       await expect(manager.createTenant(bad, 'Mala', 'operador:pruebas')).rejects.toThrow(/Identificador de organización inválido/);

@@ -134,26 +134,70 @@ export class AuditLogRepository {
    */
   async exportRaw(): Promise<Record<string, unknown>[]> {
     const rows = await this.db.selectFrom('audit_log').selectAll().orderBy('seq', 'asc').execute();
-    return rows.map((row) => {
-      let data: unknown;
-      try {
-        data = JSON.parse(row.data);
-      } catch {
-        data = row.data;
-      }
-      return {
-        chainId: row.chain_id,
-        // Si el número no es un entero seguro se exporta como texto, sin perder dígitos: la
-        // CLI de verificación lo reportará como formato inválido (hallazgo QA B-01).
-        seq: Number.isSafeInteger(Number(row.seq)) ? Number(row.seq) : String(row.seq),
-        timestamp: row.ts,
-        actor: row.actor,
-        action: row.action,
-        object: row.object,
-        data,
-        prevHash: row.prev_hash,
-        hash: row.hash,
-      };
-    });
+    return rows.map(rawExportRow);
   }
+
+  /**
+   * Último `seq` guardado tal como lo devuelve el motor (texto o número), o `null` si la
+   * bitácora está vacía. Sirve de límite superior de una exportación por lotes.
+   */
+  async lastSeqRaw(): Promise<number | string | null> {
+    const row = await this.db.selectFrom('audit_log').select('seq').orderBy('seq', 'desc').offset(0).fetch(1).executeTakeFirst();
+    return row?.seq ?? null;
+  }
+
+  /**
+   * Igual que `exportRaw`, pero por lotes ordenados por `seq` (2C-2, exportación desde la
+   * API): la bitácora puede ser grande y no se carga entera en memoria. Cada lote continúa
+   * desde el último `seq` entregado (paginación por clave, no por desplazamiento), de modo
+   * que una entrada agregada durante la exportación no desordena ni repite filas.
+   *
+   * `OFFSET 0 ... FETCH NEXT n ROWS ONLY` es sintaxis estándar que aceptan PostgreSQL y SQL
+   * Server (SQL Server no admite LIMIT).
+   *
+   * @param batchSize filas por lote (1 a 10 000).
+   * @param upToSeq si se indica, no se exportan entradas con `seq` mayor: fija el final de
+   *   la exportación aunque se sigan agregando entradas mientras se descarga.
+   */
+  async *exportRawBatches(batchSize: number, upToSeq?: number | string | null): AsyncGenerator<Record<string, unknown>[]> {
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 10_000) throw new Error('Tamaño de lote inválido.');
+    if (upToSeq === null) return;
+    let after: number | string | null = null;
+    for (;;) {
+      let query = this.db.selectFrom('audit_log').selectAll();
+      if (after !== null) query = query.where('seq', '>', after);
+      if (upToSeq !== undefined) query = query.where('seq', '<=', upToSeq);
+      const rows = await query.orderBy('seq', 'asc').offset(0).fetch(batchSize).execute();
+      if (rows.length === 0) return;
+      yield rows.map(rawExportRow);
+      if (rows.length < batchSize) return;
+      after = rows[rows.length - 1]?.seq ?? null;
+    }
+  }
+}
+
+/**
+ * Convierte una fila al formato de exportación sin validarla (ver `exportRaw`). Compartida
+ * por la exportación completa y por lotes: ambas deben producir exactamente lo mismo.
+ */
+function rawExportRow(row: AuditLogTable): Record<string, unknown> {
+  let data: unknown;
+  try {
+    data = JSON.parse(row.data);
+  } catch {
+    data = row.data;
+  }
+  return {
+    chainId: row.chain_id,
+    // Si el número no es un entero seguro se exporta como texto, sin perder dígitos: la
+    // CLI de verificación lo reportará como formato inválido (hallazgo QA B-01).
+    seq: Number.isSafeInteger(Number(row.seq)) ? Number(row.seq) : String(row.seq),
+    timestamp: row.ts,
+    actor: row.actor,
+    action: row.action,
+    object: row.object,
+    data,
+    prevHash: row.prev_hash,
+    hash: row.hash,
+  };
 }

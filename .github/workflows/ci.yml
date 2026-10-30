@@ -120,12 +120,13 @@ jobs:
           # Certificado autofirmado del contenedor de pruebas: solo aceptable aquí.
           TEST_MSSQL_TLS: trust-server-certificate
           # Mínimo de pruebas aprobadas POR MOTOR (hallazgo QA B-13): si el archivo de
-          # integración no se ejecutara, o un motor se omitiera, el job falla.
-          MIN_TESTS_PER_ENGINE: "24"
+          # integración no se ejecutara, o un motor se omitiera, el job falla. 26 desde 2C-2
+          # (exportación por lotes y migración 0004), observadas en PostgreSQL local.
+          MIN_TESTS_PER_ENGINE: "26"
         run: |
           pnpm exec vitest run --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-integracion.json
           node ../../scripts/check-integration-report.mjs vitest-integracion.json
-      - name: Pruebas de integración de identidad (2B y 2C-1) por HTTP, ambos motores
+      - name: Pruebas de integración de identidad (2B, 2C-1 y API de 2C-2) por HTTP, ambos motores
         working-directory: apps/api
         env:
           REQUIRE_DB_ENGINES: postgresql,sqlserver
@@ -140,9 +141,9 @@ jobs:
           TEST_MSSQL_PASSWORD: ${{ env.MSSQL_TEST_PASSWORD }}
           TEST_MSSQL_TLS: trust-server-certificate
           SUITE_PREFIX: identidad en
-          # 29 por motor desde D-89 (MFA por cuenta, QA 2C1-04), observadas en PostgreSQL
-          # local; SQL Server ejecuta las mismas pruebas.
-          MIN_TESTS_PER_ENGINE: "29"
+          # 34 por motor desde 2C-2 (R-38, registro de accesos, exportación de la bitácora y
+          # /me), observadas en PostgreSQL local; SQL Server ejecuta las mismas pruebas.
+          MIN_TESTS_PER_ENGINE: "34"
         run: |
           pnpm exec vitest run test/identity.int.test.ts --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-identidad.json
           node ../../scripts/check-integration-report.mjs vitest-identidad.json

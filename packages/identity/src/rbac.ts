@@ -29,6 +29,11 @@ export const PERMISSIONS = [
   // 2B
   'users.read',
   'users.manage',
+  // 2C-2 [DECISIÓN técnica]: permisos propios en vez de reutilizar `users.manage`, para que
+  // la matriz diga explícitamente quién ve IP de acceso (D-78) y quién exporta la bitácora,
+  // y para poder asignarlos a otro rol en el futuro sin darle la gestión de usuarios.
+  'access_log.read',
+  'audit_log.export',
   // Fase 3+
   'audits.authorize',
   'audits.run',
@@ -42,7 +47,9 @@ export type Permission = (typeof PERMISSIONS)[number];
 /** Matriz rol → permisos, según los alcances de `06-modelo-de-datos.md` §7.5. */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   // Usuarios, roles y configuración institucional; no ejecuta auditorías (separación de funciones).
-  org_admin: ['users.read', 'users.manage', 'reports.read'],
+  // Desde 2C-2 también el registro de accesos (IP en claro, D-78, pregunta 3 de 2C §6) y la
+  // exportación de la bitácora (2C §2.4): solo este rol.
+  org_admin: ['users.read', 'users.manage', 'access_log.read', 'audit_log.export', 'reports.read'],
   audit_lead: ['audits.authorize', 'audits.run', 'findings.review', 'reports.read'],
   auditor: ['findings.review', 'reports.read'],
   // Único rol que fija "Conforme"/"No conforme" en obligaciones legales (D-06).

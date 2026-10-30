@@ -246,8 +246,10 @@ async function run(argv: string[]): Promise<number> {
         const tenant = required(v.tenant, 'tenant');
         const handle = await m.openTenant(tenant);
         const service = new IdentityService({ open: () => m.openTenant(tenant) }, { accessLogRetentionDays: 90 });
-        await service.unlockUser(handle, { label: ACTOR }, await service.userIdByEmail(handle, required(v.email, 'email')), null);
+        const { mustChangePassword } = await service.unlockUser(handle, { label: ACTOR }, await service.userIdByEmail(handle, required(v.email, 'email')), null);
         console.log(`Cuenta desbloqueada en ${tenant}.`);
+        // R-38: un bloqueo de MFA indica que un tercero conoce la contraseña.
+        if (mustChangePassword) console.log('La cuenta tenía la verificación en dos pasos bloqueada: su contraseña se considera comprometida y deberá cambiarla al ingresar.');
         return 0;
       }
       default: {

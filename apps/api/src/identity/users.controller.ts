@@ -30,6 +30,7 @@ function userId(raw: string): string {
 export class UsersController {
   constructor(@Inject(IDENTITY_SERVICE) private readonly identity: IdentityRuntime) {}
 
+  /** Lista con estado de bloqueo y aviso de contraseña comprometida (R-38, `docs/fase-2/2c2-api.md`). */
   @Get()
   @Authenticated({ permission: 'users.read' })
   async list(@Req() req: IdentityRequest): Promise<object> {
@@ -61,7 +62,11 @@ export class UsersController {
     await this.identity.service.deactivate(sessionOf(req), userId(id), requestMeta(req));
   }
 
-  /** Desbloquea una cuenta bloqueada por intentos fallidos (QA 2B-11). */
+  /**
+   * Desbloquea una cuenta bloqueada por intentos fallidos (QA 2B-11). Si levanta un bloqueo
+   * de MFA, la persona queda obligada a cambiar su contraseña (R-38); la lista de usuarios
+   * lo informa en `mustChangePassword`.
+   */
   @Post(':id/unlock')
   @HttpCode(204)
   @Authenticated({ permission: 'users.manage', recentMfa: true })

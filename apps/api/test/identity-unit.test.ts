@@ -16,11 +16,13 @@ import { AuthController } from '../src/identity/auth.controller.js';
 import { readCookie, RateLimiter, ROUTE_POLICY, type RoutePolicy } from '../src/identity/http.js';
 import { loadIdentityConfig } from '../src/identity/identity-config.js';
 import { userAgentFamily } from '../src/identity/identity.service.js';
+import { AccessLogController, AuditLogController } from '../src/identity/logs.controller.js';
+import { decodeCursor, encodeCursor } from '../src/identity/logs.service.js';
 import { UsersController } from '../src/identity/users.controller.js';
 import { createApp } from '../src/bootstrap.js';
 import { loadConfig } from '../src/config/app-config.js';
 
-const CONTROLLERS = [HealthController, AboutController, AuthController, UsersController];
+const CONTROLLERS = [HealthController, AboutController, AuthController, UsersController, AccessLogController, AuditLogController];
 
 describe('denegar por defecto', () => {
   it('toda ruta declara su política de acceso (@Public o @Authenticated)', () => {
@@ -37,7 +39,8 @@ describe('denegar por defecto', () => {
         if (policy === undefined) missing.push(`${controller.name}.${name}`);
       }
     }
-    expect(routes).toBeGreaterThanOrEqual(15);
+    // 15 hasta 2C-1; 17 desde 2C-2 (registro de accesos y exportación de la bitácora).
+    expect(routes).toBeGreaterThanOrEqual(17);
     expect(missing).toEqual([]);
   });
 
@@ -48,6 +51,27 @@ describe('denegar por defecto', () => {
     for (const name of ['invite', 'setRoles', 'deactivate', 'resetMfa', 'unlock']) {
       expect(policy(name)).toMatchObject({ kind: 'session', permission: 'users.manage', recentMfa: true });
     }
+  });
+
+  it('2C-2: registro de accesos y exportación de la bitácora exigen su permiso y MFA reciente, con sesión completa', () => {
+    const policyOf = (controller: { prototype: object }, name: string): RoutePolicy =>
+      Reflect.getMetadata(ROUTE_POLICY, (controller.prototype as Record<string, object>)[name] as object) as RoutePolicy;
+    expect(policyOf(AccessLogController, 'list')).toEqual({ kind: 'session', stages: ['full'], permission: 'access_log.read', recentMfa: true });
+    expect(policyOf(AuditLogController, 'export')).toEqual({ kind: 'session', stages: ['full'], permission: 'audit_log.export', recentMfa: true });
+  });
+
+  it('R-38: la etapa `password_change` solo permite cambiar la contraseña, consultar /me y cerrar sesión', () => {
+    const allowed: string[] = [];
+    for (const controller of CONTROLLERS) {
+      const proto = controller.prototype as unknown as Record<string, unknown>;
+      for (const name of Object.getOwnPropertyNames(proto)) {
+        const handler = proto[name];
+        if (name === 'constructor' || typeof handler !== 'function') continue;
+        const policy = Reflect.getMetadata(ROUTE_POLICY, handler) as RoutePolicy | undefined;
+        if (policy?.kind === 'session' && policy.stages.includes('password_change')) allowed.push(`${controller.name}.${name}`);
+      }
+    }
+    expect(allowed.sort()).toEqual(['AuthController.changePassword', 'AuthController.logout', 'AuthController.me']);
   });
 });
 
@@ -68,6 +92,17 @@ describe('API sin identidad configurada', () => {
       expect(h.get('cache-control')).toBe('no-store');
     } finally {
       await app.close();
+    }
+  });
+});
+
+describe('cursor del registro de accesos', () => {
+  it('ida y vuelta, y rechazo de cursores manipulados', () => {
+    const ts = '2026-10-30T12:00:00.000Z';
+    const id = randomUUID();
+    expect(decodeCursor(encodeCursor(ts, id))).toEqual({ ts, id });
+    for (const bad of ['', '@@', 'a'.repeat(201), Buffer.from(`${ts}|no-uuid`).toString('base64url'), Buffer.from(`ayer|${id}`).toString('base64url'), Buffer.from(`${ts}|${id}|x`).toString('base64url'), Buffer.from(`${ts}' OR 1=1 --|${id}`).toString('base64url')]) {
+      expect(() => decodeCursor(bad), bad).toThrow(/cursor/);
     }
   });
 });

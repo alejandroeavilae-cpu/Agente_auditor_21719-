@@ -145,6 +145,9 @@ describe('roles y permisos', () => {
       const p = ROLE_PERMISSIONS[role];
       expect(p.includes('users.manage')).toBe(role === 'org_admin');
       expect(p.includes('users.read')).toBe(role === 'org_admin');
+      // 2C-2: registro de accesos (IP en claro) y exportación de la bitácora, solo el administrador.
+      expect(p.includes('access_log.read')).toBe(role === 'org_admin');
+      expect(p.includes('audit_log.export')).toBe(role === 'org_admin');
     }
     // Solo el revisor jurídico decide en obligaciones legales (D-06).
     for (const role of ROLES) expect(ROLE_PERMISSIONS[role].includes('controls.legal_decision')).toBe(role === 'legal_reviewer');

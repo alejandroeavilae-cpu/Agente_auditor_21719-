@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { ROLE_LABELS } from '@auditor-21719/identity';
+import { permissionsOf, ROLE_LABELS } from '@auditor-21719/identity';
 import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { z } from 'zod';
 import { Authenticated, clearSessionCookie, IDENTITY_SERVICE, Public, requestMeta, sessionOf, setSessionCookie, type IdentityRequest, type IdentityRuntime } from './http.js';
-import type { IssuedSession } from './identity.service.js';
+import { IDLE_MS, REAUTH_MS, type IssuedSession } from './identity.service.js';
 
 // Esquemas estrictos: se rechazan campos no declarados (`09-seguridad.md` §10.4). Desde 2C-1
 // (D-75 ajustada) no existe el campo `organization`: si se envía, la petición se rechaza.
@@ -76,15 +76,16 @@ export class AuthController {
 
   @Post('logout')
   @HttpCode(204)
-  @Authenticated({ stages: ['mfa_pending', 'mfa_enroll', 'full'] })
+  @Authenticated({ stages: ['mfa_pending', 'mfa_enroll', 'password_change', 'full'] })
   async logout(@Req() req: IdentityRequest, @Res({ passthrough: true }) res: Response): Promise<void> {
     await this.identity.service.logout(sessionOf(req), requestMeta(req));
     clearSessionCookie(res, this.identity.config);
   }
 
+  /** Cambio de contraseña; es lo único permitido en la etapa `password_change` (R-38). */
   @Post('password')
   @HttpCode(200)
-  @Authenticated({ rateLimited: true })
+  @Authenticated({ stages: ['password_change', 'full'], rateLimited: true })
   async changePassword(@Body() body: unknown, @Req() req: IdentityRequest, @Res({ passthrough: true }) res: Response): Promise<object> {
     const input = passwordSchema.parse(body);
     const issued = await this.identity.service.changePassword(sessionOf(req), input.currentPassword, input.newPassword, requestMeta(req));
@@ -104,19 +105,35 @@ export class AuthController {
 
   /**
    * Estado de la sesión y su token anti-CSRF (p. ej. al recargar la página). Antes de
-   * completar la MFA solo se informa la etapa: quien únicamente conoce la contraseña no ve
-   * datos del usuario ni sus roles (QA 2B-07).
+   * completar la MFA, o mientras deba cambiar la contraseña, solo se informa la etapa: quien
+   * únicamente conoce la contraseña no ve datos del usuario ni sus roles (QA 2B-07).
+   *
+   * Desde 2C-2, con sesión completa, incluye los **permisos efectivos** para que la interfaz
+   * oculte lo que el usuario no puede hacer (la API sigue decidiendo en cada ruta), y los
+   * vencimientos de la sesión para avisar antes de la expiración por inactividad (2C §2.2).
+   * Ojo: esta llamada renueva la inactividad, así que la interfaz no debe usarla para sondear.
    */
   @Get('me')
-  @Authenticated({ stages: ['mfa_pending', 'mfa_enroll', 'full'] })
+  @Authenticated({ stages: ['mfa_pending', 'mfa_enroll', 'password_change', 'full'] })
   me(@Req() req: IdentityRequest): object {
     const ctx = sessionOf(req);
-    const base = { organization: { slug: ctx.tenant.info.slug, name: ctx.tenant.info.name }, stage: ctx.session.stage, csrfToken: this.identity.service.csrfToken(ctx) };
-    if (ctx.session.stage !== 'full') return base;
+    const { session } = ctx;
+    const expiresAt = session.expires_at;
+    const base = {
+      organization: { slug: ctx.tenant.info.slug, name: ctx.tenant.info.name },
+      stage: session.stage,
+      csrfToken: this.identity.service.csrfToken(ctx),
+      session: { expiresAt },
+    };
+    if (session.stage !== 'full') return base;
+    const idle = new Date(new Date(session.last_seen_at).getTime() + IDLE_MS).toISOString();
+    const reauth = session.mfa_verified_at === null ? null : new Date(new Date(session.mfa_verified_at).getTime() + REAUTH_MS).toISOString();
     return {
       ...base,
+      session: { expiresAt, idleExpiresAt: idle < expiresAt ? idle : expiresAt, reauthValidUntil: reauth },
       user: { id: ctx.user.id, email: ctx.user.email, displayName: ctx.user.display_name, mfaEnabled: ctx.user.mfa_secret_sealed !== null },
       roles: ctx.roles.map((r) => ({ id: r, label: ROLE_LABELS[r] })),
+      permissions: [...permissionsOf(ctx.roles)].sort(),
     };
   }
 }

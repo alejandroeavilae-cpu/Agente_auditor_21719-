@@ -169,6 +169,41 @@ export function weakPassword(issues: PasswordIssue[]): ApiError {
   return new ApiError(400, 'weak_password', `La contraseña no cumple la política: ${issues.map((i) => text[i]).join('; ')}.`);
 }
 
+/** Fila del listado de usuarios (`GET /api/v1/users`). Contrato en `docs/fase-2/2c2-api.md`. */
+export interface UserListItem {
+  id: string;
+  email: string;
+  displayName: string;
+  status: string;
+  roles: Role[];
+  mfaEnabled: boolean;
+  /** Bloqueos de contraseña vigentes, uno por origen (D-88). */
+  passwordLock: { lockedOrigins: number; lockedUntil: string | null };
+  /** Bloqueo de MFA de la cuenta (D-89). `failedAttempts` cuenta desde el último éxito. */
+  mfaLock: { locked: boolean; lockedUntil: string | null; failedAttempts: number };
+  /** R-38: alguien que conocía la contraseña llegó al bloqueo de MFA y no hubo éxito después. */
+  passwordCompromiseSuspected: boolean;
+  /** Debe cambiar la contraseña en su próximo ingreso (se fija al levantar un bloqueo de MFA). */
+  mustChangePassword: boolean;
+}
+
+/** El contador de MFA alcanzó el umbral de bloqueo (R-38). */
+function mfaLockReached(failedAttempts: number | undefined): boolean {
+  return (failedAttempts ?? 0) >= LOCK_THRESHOLD;
+}
+
+/** Etapa tras verificar la MFA: completa, o solo cambio de contraseña si está pendiente (R-38). */
+function afterMfaStage(user: AppUserTable): SessionStage {
+  return user.must_change_password === 1 ? 'password_change' : 'full';
+}
+
+/** Error de una ruta que no admite la etapa de la sesión. */
+function stageError(stage: SessionStage): ApiError {
+  if (stage === 'mfa_enroll') return new ApiError(403, 'mfa_enrollment_required', 'Debe configurar la verificación en dos pasos antes de continuar.');
+  if (stage === 'password_change') return new ApiError(403, 'password_change_required', 'Debe cambiar su contraseña antes de continuar.');
+  return new ApiError(403, 'mfa_required', 'Debe completar la verificación en dos pasos.');
+}
+
 export class IdentityService {
   private readonly logger = new Logger('Identidad');
 
@@ -217,6 +252,8 @@ export class IdentityService {
       data?: Record<string, JsonValue>;
       meta?: RequestMeta | null;
       accessLog?: boolean;
+      /** Objeto de la entrada de bitácora; por defecto `user/<id>` del sujeto o `auth`. */
+      object?: string;
       /**
        * `false` = solo registro de accesos. Los intentos fallidos van solo ahí (con
        * retención), para que un atacante no haga crecer sin límite la bitácora inmutable
@@ -233,7 +270,7 @@ export class IdentityService {
     const ua = userAgentFamily(meta?.userAgent ?? null);
     if (ua !== null) data.ua = ua;
     if (params.audit ?? true) {
-      await tenant.audit.append({ actor, action: event, object: params.subjectUserId != null ? `user/${params.subjectUserId}` : 'auth', data });
+      await tenant.audit.append({ actor, action: event, object: params.object ?? (params.subjectUserId != null ? `user/${params.subjectUserId}` : 'auth'), data });
     }
     if (params.accessLog ?? meta !== null) {
       const now = this.now();
@@ -319,14 +356,13 @@ export class IdentityService {
       await this.revokeAllSessions(tenant, session.user_id);
       throw UNAUTHENTICATED();
     }
-    if (!allowedStages.includes(session.stage)) {
-      throw session.stage === 'mfa_enroll'
-        ? new ApiError(403, 'mfa_enrollment_required', 'Debe configurar la verificación en dos pasos antes de continuar.')
-        : new ApiError(403, 'mfa_required', 'Debe completar la verificación en dos pasos.');
-    }
+    // R-38 (2C-2): si se levantó un bloqueo de MFA, la contraseña se considera comprometida.
+    // Una sesión completa ya abierta queda limitada a cambiar la contraseña hasta hacerlo.
+    const stage: SessionStage = session.stage === 'full' && user.must_change_password === 1 ? 'password_change' : session.stage;
+    if (!allowedStages.includes(stage)) throw stageError(stage);
     await tenant.db.updateTable('user_session').set({ last_seen_at: iso(now) }).where('id_hash', '=', session.id_hash).execute();
     const roles = await this.rolesOf(tenant, user.id);
-    return { tenant, user, roles, session: { ...session, last_seen_at: iso(now) } };
+    return { tenant, user, roles, session: { ...session, stage, last_seen_at: iso(now) } };
   }
 
   /** Comprueba el token anti-CSRF de una petición con efectos. */
@@ -604,8 +640,9 @@ export class IdentityService {
       throw invalid();
     }
     await this.attemptSucceeded(tenant, user.id, ['password', 'mfa'], meta);
-    const issued = await this.rotate(ctx, 'full', iso(this.now()));
-    await this.record(tenant, recoveryUsed ? 'auth.mfa.recovery_used' : 'auth.login.succeeded', { actor: { userId: user.id }, subjectUserId: user.id, data: { stage: 'full' }, meta });
+    const stage = afterMfaStage(user);
+    const issued = await this.rotate(ctx, stage, iso(this.now()));
+    await this.record(tenant, recoveryUsed ? 'auth.mfa.recovery_used' : 'auth.login.succeeded', { actor: { userId: user.id }, subjectUserId: user.id, data: { stage }, meta });
     return issued;
   }
 
@@ -661,7 +698,7 @@ export class IdentityService {
         .values(recoveryCodes.map((c) => ({ code_hash: hashToken(normalizeRecoveryCode(c)), user_id: ctx.user.id, used_at: null })))
         .execute();
     });
-    const session = await this.rotate(ctx, 'full', iso(this.now()));
+    const session = await this.rotate(ctx, afterMfaStage(ctx.user), iso(this.now()));
     await this.record(ctx.tenant, 'auth.mfa.enabled', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta });
     return { session, recoveryCodes };
   }
@@ -688,7 +725,12 @@ export class IdentityService {
     await this.record(ctx.tenant, 'auth.logout', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta });
   }
 
-  /** Cambio de contraseña: revoca todas las sesiones y emite una nueva. */
+  /**
+   * Cambio de contraseña: revoca todas las sesiones y emite una nueva. Es la única acción
+   * permitida en la etapa `password_change` (R-38) y levanta esa obligación. La nueva
+   * contraseña debe ser distinta de la actual: si no, el cambio obligatorio tras un bloqueo
+   * de MFA no invalidaría lo que conoce el tercero.
+   */
   async changePassword(ctx: SessionContext, current: string, next: string, meta: RequestMeta): Promise<IssuedSession> {
     const stored = ctx.user.password_hash;
     const attempt = await this.beginAttempt(ctx.tenant, ctx.user.id, 'password', meta);
@@ -705,15 +747,16 @@ export class IdentityService {
     await this.attemptSucceeded(ctx.tenant, ctx.user.id, ['password'], meta);
     const issues = checkPasswordPolicy(next, { email: ctx.user.email });
     if (issues.length > 0) throw weakPassword(issues);
+    if ((await verifyPassword(next, stored)).ok) throw new ApiError(400, 'password_reused', 'La nueva contraseña debe ser distinta de la actual.');
     const now = iso(this.now());
     await ctx.tenant.db
       .updateTable('app_user')
-      .set({ password_hash: await hashPassword(next), password_changed_at: now, updated_at: now })
+      .set({ password_hash: await hashPassword(next), password_changed_at: now, updated_at: now, must_change_password: 0 })
       .where('id', '=', ctx.user.id)
       .execute();
     await this.revokeAllSessions(ctx.tenant, ctx.user.id);
     const session = await this.issueSession(ctx.tenant, ctx.user.id, 'full', ctx.session.mfa_verified_at);
-    await this.record(ctx.tenant, 'auth.password.changed', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, meta });
+    await this.record(ctx.tenant, 'auth.password.changed', { actor: { userId: ctx.user.id }, subjectUserId: ctx.user.id, data: { forced: ctx.user.must_change_password === 1 }, meta });
     return session;
   }
 
@@ -754,17 +797,50 @@ export class IdentityService {
 
   // ---------- Gestión de usuarios ----------
 
-  async listUsers(tenant: TenantHandle): Promise<{ id: string; email: string; displayName: string; status: string; roles: Role[]; mfaEnabled: boolean }[]> {
-    const users = await tenant.db.selectFrom('app_user').select(['id', 'email', 'display_name', 'status', 'mfa_secret_sealed']).orderBy('email').execute();
+  /**
+   * Usuarios de la organización con su estado de bloqueo (2C-2, R-38), para que la pantalla
+   * de usuarios avise al administrador. Ver el contrato en `docs/fase-2/2c2-api.md`.
+   */
+  async listUsers(tenant: TenantHandle): Promise<UserListItem[]> {
+    const users = await tenant.db.selectFrom('app_user').select(['id', 'email', 'display_name', 'status', 'mfa_secret_sealed', 'must_change_password']).orderBy('email').execute();
     const roles = await tenant.db.selectFrom('user_role').selectAll().execute();
-    return users.map((u) => ({
-      id: u.id,
-      email: u.email,
-      displayName: u.display_name,
-      status: u.status,
-      roles: roles.filter((r) => r.user_id === u.id).map((r) => r.role).filter(isRole),
-      mfaEnabled: u.mfa_secret_sealed !== null,
-    }));
+    const counters = await tenant.db.selectFrom('login_throttle').select(['user_id', 'kind', 'failed_attempts', 'locked_until']).where('kind', 'in', ['password', 'mfa']).execute();
+    const nowIso = iso(this.now());
+    return users.map((u) => {
+      const own = counters.filter((c) => c.user_id === u.id);
+      // Bloqueos de contraseña VIGENTES (uno por origen, D-88): suelen ser de un tercero que
+      // no conoce la contraseña; la persona sigue entrando desde su propio origen.
+      const pwLocked = own.filter((c) => c.kind === 'password' && c.locked_until !== null && c.locked_until > nowIso);
+      const mfa = own.find((c) => c.kind === 'mfa');
+      const mfaLockedUntil = mfa?.locked_until != null && mfa.locked_until > nowIso ? mfa.locked_until : null;
+      return {
+        id: u.id,
+        email: u.email,
+        displayName: u.display_name,
+        status: u.status,
+        roles: roles.filter((r) => r.user_id === u.id).map((r) => r.role).filter(isRole),
+        mfaEnabled: u.mfa_secret_sealed !== null,
+        passwordLock: {
+          lockedOrigins: pwLocked.length,
+          lockedUntil: pwLocked.reduce<string | null>((max, c) => (max === null || (c.locked_until ?? '') > max ? c.locked_until : max), null),
+        },
+        mfaLock: { locked: mfaLockedUntil !== null, lockedUntil: mfaLockedUntil, failedAttempts: mfa?.failed_attempts ?? 0 },
+        // R-38: llegar a 5 códigos errados exige la contraseña correcta. Mientras no haya un
+        // éxito de MFA, desbloqueo ni restablecimiento (que borran el contador), se considera
+        // que un tercero conoce la contraseña, aunque la espera ya haya vencido.
+        passwordCompromiseSuspected: mfaLockReached(mfa?.failed_attempts),
+        mustChangePassword: u.must_change_password === 1,
+      };
+    });
+  }
+
+  /**
+   * Si la cuenta llegó al bloqueo de MFA sin un éxito posterior (R-38). Se consulta ANTES de
+   * borrar el contador al desbloquear o restablecer la MFA.
+   */
+  private async mfaLockReachedFor(tenant: TenantHandle, userId: string): Promise<boolean> {
+    const rows = await tenant.db.selectFrom('login_throttle').select('failed_attempts').where('user_id', '=', userId).where('kind', '=', 'mfa').execute();
+    return rows.some((r) => mfaLockReached(r.failed_attempts));
   }
 
   /** Invita a un usuario: queda "invitado" hasta usar su enlace de activación (24 h). */
@@ -799,6 +875,7 @@ export class IdentityService {
           mfa_failed_attempts: 0,
           locked_until: null,
           password_changed_at: null,
+          must_change_password: 0,
           created_at: iso(now),
           updated_at: iso(now),
         })
@@ -892,9 +969,11 @@ export class IdentityService {
   async resetMfa(ctx: SessionContext, userId: string, meta: RequestMeta): Promise<void> {
     if (userId === ctx.user.id) throw new ApiError(409, 'self_mfa_reset', 'Otro administrador debe restablecer su verificación en dos pasos.');
     await this.findUser(ctx.tenant, userId);
+    // R-38: si se levanta un bloqueo de MFA, la contraseña se considera comprometida.
+    const mustChange = await this.mfaLockReachedFor(ctx.tenant, userId);
     await ctx.tenant.db
       .updateTable('app_user')
-      .set({ mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, updated_at: iso(this.now()) })
+      .set({ mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, updated_at: iso(this.now()), ...(mustChange ? { must_change_password: 1 } : {}) })
       .where('id', '=', userId)
       .execute();
     // Restablecer la MFA levanta también su bloqueo (D-83). Desde D-89 es una fila por cuenta;
@@ -902,21 +981,33 @@ export class IdentityService {
     await ctx.tenant.db.deleteFrom('login_throttle').where('user_id', '=', userId).where('kind', '=', 'mfa').execute();
     await ctx.tenant.db.deleteFrom('recovery_code').where('user_id', '=', userId).execute();
     await this.revokeAllSessions(ctx.tenant, userId);
-    await this.record(ctx.tenant, 'user.mfa.reset', { actor: { userId: ctx.user.id }, subjectUserId: userId, meta });
+    await this.record(ctx.tenant, 'user.mfa.reset', { actor: { userId: ctx.user.id }, subjectUserId: userId, data: { mustChangePassword: mustChange }, meta });
   }
 
   /**
    * Desbloquea una cuenta: borra los contadores de contraseña y MFA de TODOS sus orígenes
    * (QA 2B-11, R-34). Lo usan un administrador por la API (alto riesgo) o el operador por la
    * CLI. La marca de alerta de ataque se conserva: evita repetir la alerta en la ventana.
+   *
+   * R-38 [DECISIÓN técnica 2C-2]: si la cuenta llegó al bloqueo de MFA, quien falló los
+   * códigos conocía la contraseña. Desbloquear sin más le devolvería 5 intentos; por eso se
+   * marca `must_change_password`: tras su próxima verificación MFA la persona solo puede
+   * cambiar la contraseña, y el tercero, que no tiene el segundo factor, no llega a esa etapa.
+   * @returns si quedó obligado a cambiar la contraseña.
    */
-  async unlockUser(tenant: TenantHandle, actor: Actor, userId: string, meta: RequestMeta | null): Promise<void> {
+  async unlockUser(tenant: TenantHandle, actor: Actor, userId: string, meta: RequestMeta | null): Promise<{ mustChangePassword: boolean }> {
     await this.findUser(tenant, userId);
+    const mustChange = await this.mfaLockReachedFor(tenant, userId);
     // Levanta los bloqueos de contraseña de todos los orígenes y el de MFA de la cuenta (D-83, D-89).
     await tenant.db.deleteFrom('login_throttle').where('user_id', '=', userId).where('kind', 'in', ['password', 'mfa']).execute();
     // Columnas de bloqueo por cuenta de 2B (sin uso desde 2C-1): se dejan en cero por coherencia.
-    await tenant.db.updateTable('app_user').set({ failed_attempts: 0, mfa_failed_attempts: 0, locked_until: null, updated_at: iso(this.now()) }).where('id', '=', userId).execute();
-    await this.record(tenant, 'user.unlocked', { actor, subjectUserId: userId, meta });
+    await tenant.db
+      .updateTable('app_user')
+      .set({ failed_attempts: 0, mfa_failed_attempts: 0, locked_until: null, updated_at: iso(this.now()), ...(mustChange ? { must_change_password: 1 } : {}) })
+      .where('id', '=', userId)
+      .execute();
+    await this.record(tenant, 'user.unlocked', { actor, subjectUserId: userId, data: { mustChangePassword: mustChange }, meta });
+    return { mustChangePassword: mustChange };
   }
 
   /** Busca un usuario por correo (para la CLI). */
