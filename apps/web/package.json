@@ -1,24 +1,37 @@
 {
   "name": "@auditor-21719/web",
   "version": "0.1.0",
-  "description": "Interfaz web (Fase 1: página mínima de versión y código fuente)",
+  "description": "Interfaz web: pantallas de usuarios y acceso (2C-2)",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p e2e/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "e2e": "playwright test"
   },
   "dependencies": {
+    "@tanstack/react-query": "5.105.0",
+    "qrcode": "1.5.4",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-aria-components": "1.22.1",
+    "react-dom": "19.3.1",
+    "react-router": "8.5.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@auditor-21719/audit-log": "workspace:*",
+    "@auditor-21719/identity": "workspace:*",
+    "@auditor-21719/persistence": "workspace:*",
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.63.0",
+    "@types/qrcode": "1.5.6",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
+    "kysely": "0.29.7",
     "vite": "8.3.5"
   }
 }

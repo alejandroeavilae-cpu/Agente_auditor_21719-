@@ -2,10 +2,11 @@
 
 Generado automáticamente por `scripts/check-licenses.mjs` a partir de las dependencias instaladas (incluye dependencias de desarrollo y transitivas). No editar a mano.
 
-Total de paquetes: 314
+Total de paquetes: 361
 
 | Paquete | Versión(es) | Licencia (SPDX) |
 |---|---|---|
+| @axe-core/playwright | 4.14.0 | MPL-2.0 |
 | @azure-rest/core-client | 2.9.0 | MIT |
 | @azure/abort-controller | 2.2.0 | MIT |
 | @azure/core-auth | 1.11.0 | MIT |
@@ -39,6 +40,9 @@ Total de paquetes: 314
 | @humanfs/types | 0.15.0 | Apache-2.0 |
 | @humanwhocodes/module-importer | 1.0.1 | Apache-2.0 |
 | @humanwhocodes/retry | 0.4.3 | Apache-2.0 |
+| @internationalized/date | 3.12.4 | Apache-2.0 |
+| @internationalized/number | 3.6.9 | Apache-2.0 |
+| @internationalized/string | 3.2.10 | Apache-2.0 |
 | @jridgewell/resolve-uri | 3.1.2 | MIT |
 | @jridgewell/sourcemap-codec | 1.6.0 | MIT |
 | @jridgewell/trace-mapping | 0.3.31 | MIT |
@@ -51,10 +55,16 @@ Total de paquetes: 314
 | @nestjs/platform-express | 12.2.0 | MIT |
 | @nestjs/testing | 12.2.0 | MIT |
 | @oxc-project/types | 0.155.0 | MIT |
+| @playwright/test | 1.63.0 | Apache-2.0 |
+| @react-types/shared | 3.37.0 | Apache-2.0 |
+| @remix-run/route-pattern | 0.22.1 | MIT |
 | @rolldown/binding-linux-x64-gnu | 1.2.15 | MIT |
 | @rolldown/binding-linux-x64-musl | 1.2.15 | MIT |
 | @rolldown/pluginutils | 1.0.1 | MIT |
 | @standard-schema/spec | 1.1.0 | MIT |
+| @swc/helpers | 0.5.23 | Apache-2.0 |
+| @tanstack/query-core | 5.105.0 | MIT |
+| @tanstack/react-query | 5.105.0 | MIT |
 | @tokenizer/inflate | 0.4.1 | MIT |
 | @tokenizer/token | 0.3.0 | MIT |
 | @types/body-parser | 1.19.6 | MIT |
@@ -69,6 +79,7 @@ Total de paquetes: 314
 | @types/json-schema | 7.0.15 | MIT |
 | @types/node | 24.19.2 | MIT |
 | @types/pg | 8.23.1 | MIT |
+| @types/qrcode | 1.5.6 | MIT |
 | @types/qs | 6.15.1 | MIT |
 | @types/range-parser | 1.2.7 | MIT |
 | @types/react | 19.3.0 | MIT |
@@ -98,8 +109,12 @@ Total de paquetes: 314
 | acorn-jsx | 5.3.2 | MIT |
 | agent-base | 7.1.4 | MIT |
 | ajv | 6.15.0 | MIT |
+| ansi-regex | 5.0.1 | MIT |
+| ansi-styles | 4.3.0 | MIT |
 | append-field | 1.0.0 | MIT |
+| aria-hidden | 1.2.6 | MIT |
 | assertion-error | 2.0.1 | MIT |
+| axe-core | 4.14.0 | MPL-2.0 |
 | balanced-match | 4.0.4 | MIT |
 | base64-js | 1.5.1 | MIT |
 | bl | 6.1.6 | MIT |
@@ -113,24 +128,34 @@ Total de paquetes: 314
 | cacheable | 2.5.0 | MIT |
 | call-bind-apply-helpers | 1.0.2 | MIT |
 | call-bound | 1.0.4 | MIT |
+| camelcase | 5.3.1 | MIT |
 | chai | 6.3.0 | MIT |
+| client-only | 0.0.1 | MIT |
+| cliui | 6.0.0 | ISC |
+| clsx | 2.1.1 | MIT |
+| color-convert | 2.0.1 | MIT |
+| color-name | 1.1.4 | MIT |
 | content-disposition | 2.0.1 | MIT |
 | content-type | 2.1.0 | MIT |
 | cookie | 0.7.2 | MIT |
+| cookie-es | 3.1.1 | MIT |
 | cookie-signature | 1.2.2 | MIT |
 | cors | 2.8.6 | MIT |
 | cross-spawn | 7.0.6 | MIT |
 | csstype | 3.2.3 | MIT |
 | debug | 4.4.3 | MIT |
+| decamelize | 1.2.0 | MIT |
 | deep-is | 0.1.4 | MIT |
 | default-browser | 5.5.1 | MIT |
 | default-browser-id | 5.0.1 | MIT |
 | define-lazy-prop | 3.0.0 | MIT |
 | depd | 2.0.0 | MIT |
 | detect-libc | 2.1.2 | Apache-2.0 |
+| dijkstrajs | 1.0.3 | MIT |
 | dunder-proto | 1.0.1 | MIT |
 | ecdsa-sig-formatter | 1.0.11 | Apache-2.0 |
 | ee-first | 1.1.1 | MIT |
+| emoji-regex | 8.0.0 | MIT |
 | encodeurl | 2.0.0 | MIT |
 | es-define-property | 1.0.1 | MIT |
 | es-errors | 1.3.0 | MIT |
@@ -160,12 +185,13 @@ Total de paquetes: 314
 | file-entry-cache | 11.1.5 | MIT |
 | file-type | 22.1.1 | MIT |
 | finalhandler | 2.1.1 | MIT |
-| find-up | 5.0.0 | MIT |
+| find-up | 4.1.0, 5.0.0 | MIT |
 | flat-cache | 6.1.23 | MIT |
 | flatted | 3.4.4 | ISC |
 | forwarded | 0.2.0 | MIT |
 | fresh | 2.0.0 | MIT |
 | function-bind | 1.1.2 | MIT |
+| get-caller-file | 2.0.5 | ISC |
 | get-intrinsic | 1.3.0 | MIT |
 | get-proto | 1.0.1 | MIT |
 | glob-parent | 6.0.2 | ISC |
@@ -185,6 +211,7 @@ Total de paquetes: 314
 | ipaddr.js | 1.9.1 | MIT |
 | is-docker | 3.0.0 | MIT |
 | is-extglob | 2.1.1 | MIT |
+| is-fullwidth-code-point | 3.0.0 | MIT |
 | is-glob | 4.0.3 | MIT |
 | is-in-ssh | 1.0.0 | MIT |
 | is-inside-container | 1.0.0 | MIT |
@@ -205,7 +232,7 @@ Total de paquetes: 314
 | lightningcss-linux-x64-gnu | 1.33.0 | MPL-2.0 |
 | lightningcss-linux-x64-musl | 1.33.0 | MPL-2.0 |
 | load-esm | 1.0.3 | MIT |
-| locate-path | 6.0.0 | MIT |
+| locate-path | 5.0.0, 6.0.0 | MIT |
 | lodash.includes | 4.3.0 | MIT |
 | lodash.isboolean | 3.0.3 | MIT |
 | lodash.isinteger | 4.0.4 | MIT |
@@ -233,8 +260,9 @@ Total de paquetes: 314
 | once | 1.4.0 | ISC |
 | open | 11.0.4 | MIT |
 | optionator | 0.9.4 | MIT |
-| p-limit | 3.1.0 | MIT |
-| p-locate | 5.0.0 | MIT |
+| p-limit | 2.3.0, 3.1.0 | MIT |
+| p-locate | 4.1.0, 5.0.0 | MIT |
+| p-try | 2.2.0 | MIT |
 | parseurl | 1.3.3 | MIT |
 | path-exists | 4.0.0 | MIT |
 | path-key | 3.1.1 | MIT |
@@ -249,6 +277,9 @@ Total de paquetes: 314
 | pgpass | 1.0.5 | MIT |
 | picocolors | 1.1.1 | ISC |
 | picomatch | 4.0.7 | MIT |
+| playwright | 1.63.0 | Apache-2.0 |
+| playwright-core | 1.63.0 | Apache-2.0 |
+| pngjs | 5.0.0 | MIT |
 | postcss | 8.5.31 | MIT |
 | postgres-array | 2.0.0 | MIT |
 | postgres-bytea | 1.0.1 | MIT |
@@ -260,13 +291,20 @@ Total de paquetes: 314
 | proxy-addr | 2.0.8 | MIT |
 | punycode | 2.3.1 | MIT |
 | qified | 0.10.1 | MIT |
+| qrcode | 1.5.4 | MIT |
 | qs | 6.16.1 | BSD-3-Clause |
 | range-parser | 1.3.0 | MIT |
 | raw-body | 3.0.2 | MIT |
 | react | 19.3.1 | MIT |
+| react-aria | 3.53.1 | Apache-2.0 |
+| react-aria-components | 1.22.1 | Apache-2.0 |
 | react-dom | 19.3.1 | MIT |
+| react-router | 8.5.1 | MIT |
+| react-stately | 3.51.0 | Apache-2.0 |
 | readable-stream | 4.8.0 | MIT |
 | reflect-metadata | 0.2.2 | Apache-2.0 |
+| require-directory | 2.1.1 | MIT |
+| require-main-filename | 2.0.0 | ISC |
 | rolldown | 1.2.15 | MIT |
 | router | 2.2.0 | MIT |
 | run-applescript | 7.1.0 | MIT |
@@ -277,6 +315,7 @@ Total de paquetes: 314
 | semver | 7.8.5 | ISC |
 | send | 1.2.1 | MIT |
 | serve-static | 2.2.1 | MIT |
+| set-blocking | 2.0.0 | ISC |
 | setprototypeof | 1.2.0 | ISC |
 | shebang-command | 2.0.0 | MIT |
 | shebang-regex | 3.0.0 | MIT |
@@ -290,6 +329,8 @@ Total de paquetes: 314
 | std-env | 4.3.0 | MIT |
 | streamsearch | 1.1.0 | MIT |
 | string_decoder | 1.3.0 | MIT |
+| string-width | 4.2.3 | MIT |
+| strip-ansi | 6.0.1 | MIT |
 | strtok3 | 10.6.2 | MIT |
 | tarn | 3.1.2 | MIT |
 | tedious | 20.3.8 | MIT |
@@ -309,14 +350,20 @@ Total de paquetes: 314
 | undici-types | 7.24.6 | MIT |
 | unpipe | 1.0.0 | MIT |
 | uri-js | 4.4.1 | BSD-2-Clause |
+| use-sync-external-store | 1.7.0 | MIT |
 | vary | 1.1.2 | MIT |
 | vite | 8.3.5 | MIT |
 | vitest | 5.0.5 | MIT |
 | which | 2.0.2 | ISC |
+| which-module | 2.0.1 | ISC |
 | why-is-node-running | 3.2.1 | MIT |
 | word-wrap | 1.2.5 | MIT |
+| wrap-ansi | 6.2.0 | MIT |
 | wrappy | 1.0.2 | ISC |
 | wsl-utils | 1.0.1 | MIT |
 | xtend | 4.0.2 | MIT |
+| y18n | 4.0.3 | ISC |
+| yargs | 15.4.1 | MIT |
+| yargs-parser | 18.1.3 | ISC |
 | yocto-queue | 0.1.0 | MIT |
 | zod | 4.6.7 | MIT |
