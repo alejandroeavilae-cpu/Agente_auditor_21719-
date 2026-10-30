@@ -30,7 +30,12 @@ REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
 GRANT CONNECT ON DATABASE postgres TO auditor_provisioner;
 
--- 4. Las bases nuevas se copian de template1. Se quitan los objetos grandes ("large
+-- 4. Cuenta de la API (entrega 2B, D-80): solo inicia sesión. `auditor-admin init` (con
+--    DB_API_READER_USER=auditor_api) le concede leer el registro de organizaciones.
+CREATE ROLE auditor_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+  PASSWORD '<OTRA CONTRASEÑA>';
+
+-- 5. Las bases nuevas se copian de template1. Se quitan los objetos grandes ("large
 --    objects"), que serían un canal de escritura fuera de la bitácora.
 \connect template1
 REVOKE EXECUTE ON FUNCTION lo_creat(integer), lo_create(oid), lo_from_bytea(oid, bytea),
@@ -59,6 +64,10 @@ ALTER SERVER ROLE dbcreator ADD MEMBER auditor_provisioner;
 ALTER SERVER ROLE securityadmin ADD MEMBER auditor_provisioner;
 -- Cerrar sesiones de una organización suspendida (KILL).
 ALTER SERVER ROLE processadmin ADD MEMBER auditor_provisioner;
+-- Cuenta de la API (entrega 2B, D-80): solo login; `auditor-admin init` crea su usuario en la
+-- base de control con SELECT sobre dbo.tenants.
+CREATE LOGIN auditor_api WITH PASSWORD = '<OTRA CONTRASEÑA>', CHECK_POLICY = ON;
+DENY VIEW ANY DATABASE TO auditor_api;
 ```
 
 **Advertencia: en SQL Server esta cuenta sigue siendo muy poderosa.** La documentación de Microsoft dice textualmente "Treat the securityadmin role as equivalent to the sysadmin role", y que `dbcreator` "can create, alter, drop, and restore any database" (cualquier base, no solo las de la plataforma). [VERIFICADO: [Server-level roles, Microsoft Learn](https://learn.microsoft.com/en-us/sql/relational-databases/security/authentication-access/server-level-roles), consultado el 28-10-2026]

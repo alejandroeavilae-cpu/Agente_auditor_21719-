@@ -1,5 +1,12 @@
 # 16. Plan de desarrollo por fases
 
+> **Ajuste por D-74 (28-10-2026):** la v1 se concentra en la **Modalidad A**: una institución, con instalación local. Las Modalidades B (multiempresa) y C (híbrida) se postergan.
+> - **Fase 2:** se mantiene el aislamiento por organización ya construido. El "operador de plataforma" corresponde al administrador técnico de la propia institución.
+> - **Fase 3:** el egress-gateway se mantiene, porque protege la red de la institución.
+> - **Fase 11:** el paquete offline se mantiene.
+> - **Fuera de la v1:** el panel central y el agente remoto de la Modalidad C; sin fase asignada.
+> - **Corrección automática:** fuera de la v1 (D-72).
+
 Estado: **Diseñado**. Se mantienen las 15 fases de la especificación con los ajustes de la revisión crítica. **Cada fase termina en una puerta de aprobación humana**; ningún agente avanza a la siguiente fase sin ella.
 
 Tamaño relativo: S < M < L < XL. **No se dan duraciones en semanas**: dependen del número de personas disponibles, aún desconocido. [ESTIMACIÓN relativa]
@@ -53,7 +60,7 @@ Los 12 criterios de la sección 24, más: WCAG 2.2 AA en pantallas nuevas (desde
 |---|---|
 | 0 | Aprobada (25-10-2026) |
 | 1 | Aprobada y cerrada (26-10-2026, PR #1) |
-| 2 | Aprobada 26-10-2026, en 3 entregas: 2A (en curso), 2B, 2C |
+| 2 | Aprobada 26-10-2026, en 3 entregas: 2A aprobada y cerrada (29-10-2026, PR #3); 2B en curso (aprobada 29-10-2026); 2C no iniciada |
 
 ## Primer paso de la Fase 1 (ejecutado)
 

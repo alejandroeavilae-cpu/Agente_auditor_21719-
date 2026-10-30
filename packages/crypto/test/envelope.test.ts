@@ -118,7 +118,10 @@ describe('loadMasterKey', () => {
     const sub = mkdtempSync(join(dir, 'dir-'));
     chmodSync(sub, 0o700);
     expect(() => loadMasterKey(sub)).toThrow(CryptoError);
-    // Una tubería con nombre (FIFO) se rechaza sin quedar esperando un escritor.
+  });
+
+  // `mkfifo` no existe en Windows (hallazgo QA Y-03).
+  it.skipIf(process.platform === 'win32')('rechaza una tubería con nombre (FIFO) sin quedar esperando un escritor', () => {
     const fifo = join(dir, 'tuberia.key');
     execFileSync('mkfifo', ['-m', '600', fifo]);
     expect(() => loadMasterKey(fifo)).toThrow(/archivo regular/);

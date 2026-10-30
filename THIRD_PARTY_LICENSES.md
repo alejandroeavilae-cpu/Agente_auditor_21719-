@@ -2,7 +2,7 @@
 
 Generado automáticamente por `scripts/check-licenses.mjs` a partir de las dependencias instaladas (incluye dependencias de desarrollo y transitivas). No editar a mano.
 
-Total de paquetes: 312
+Total de paquetes: 314
 
 | Paquete | Versión(es) | Licencia (SPDX) |
 |---|---|---|
@@ -90,6 +90,8 @@ Total de paquetes: 312
 | @vitejs/plugin-react | 6.1.2 | MIT |
 | @vitest/mocker | 5.0.5 | MIT |
 | @vitest/spy | 5.0.5 | MIT |
+| @zxcvbn-ts/dictionary-compression | 3.0.1 | MIT |
+| @zxcvbn-ts/language-common | 4.1.3 | MIT |
 | abort-controller | 3.0.0 | MIT |
 | accepts | 2.0.0 | MIT |
 | acorn | 8.19.0 | MIT |

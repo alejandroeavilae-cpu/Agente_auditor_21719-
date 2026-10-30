@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { randomUUID } from 'node:crypto';
-import { generateDbPassword, generateKey, open, seal, unwrapKey, wrapKey, type SymmetricKey } from '@auditor-21719/crypto';
-import type { Kysely } from 'kysely';
+import { createHmac, hkdfSync, randomUUID } from 'node:crypto';
+import { CryptoError, generateDbPassword, generateKey, open, seal, unwrapKey, wrapKey, type SymmetricKey } from '@auditor-21719/crypto';
+import { sql, type Kysely } from 'kysely';
 import { AuditLogRepository } from './audit-log-repository.js';
 import type { DbServerConfig, PlatformDbConfig } from './config.js';
 import { connect, serverAdminDatabase } from './connection.js';
@@ -21,11 +21,41 @@ export interface TenantInfo {
   createdAt: string;
 }
 
+/**
+ * Cifrado con la DEK de una organización, sin exponer la clave (2B). Los contextos se
+ * prefijan con el identificador de la organización: un dato cifrado para una organización
+ * no se descifra en otra.
+ */
+export interface TenantCrypto {
+  seal(purpose: string, data: Buffer): string;
+  open(purpose: string, sealed: string): Buffer;
+  /** HMAC-SHA256 (hex) con una clave derivada de la DEK para `purpose` (p. ej. IP, D-78). */
+  hmac(purpose: string, data: string): string;
+}
+
 /** Acceso a la base de una organización con SUS credenciales de aplicación. */
 export interface TenantHandle {
   info: TenantInfo;
   db: Kysely<TenantDatabase>;
   audit: AuditLogRepository;
+  crypto: TenantCrypto;
+}
+
+function tenantCrypto(tenantId: string, dek: SymmetricKey): TenantCrypto {
+  const ctx = (purpose: string): string => `tenant:${tenantId}:app:${purpose}`;
+  const hmacKeys = new Map<string, Buffer>();
+  return {
+    seal: (purpose, data) => seal(dek, data, ctx(purpose)),
+    open: (purpose, sealed) => open([dek], sealed, ctx(purpose)),
+    hmac: (purpose, data) => {
+      let key = hmacKeys.get(purpose);
+      if (key === undefined) {
+        key = Buffer.from(hkdfSync('sha256', dek.material, Buffer.alloc(0), `hmac|${ctx(purpose)}`, 32));
+        hmacKeys.set(purpose, key);
+      }
+      return createHmac('sha256', key).update(data, 'utf8').digest('hex');
+    },
+  };
 }
 
 /** Resultado de una operación que puede completarse con advertencias. */
@@ -45,6 +75,38 @@ export interface TenantManagerOptions {
 }
 
 const nowIso = (): string => new Date().toISOString();
+
+/**
+ * Tablas que crean las migraciones de una base de organización y sus columnas exactas.
+ * Una tabla con el mismo nombre pero otras columnas se trata como ajena (QA Z-04, Z-05).
+ */
+const TENANT_TABLE_COLUMNS: Record<string, readonly string[]> = {
+  organization: ['created_at', 'id', 'name', 'slug'],
+  audit_log: ['action', 'actor', 'chain_id', 'data', 'hash', 'object', 'prev_hash', 'seq', 'ts'],
+  app_user: [
+    'created_at', 'display_name', 'email', 'failed_attempts', 'id', 'locked_until', 'mfa_failed_attempts', 'mfa_last_step', 'mfa_pending_secret_sealed',
+    'mfa_secret_sealed', 'password_changed_at', 'password_hash', 'status', 'updated_at',
+  ],
+  user_role: ['role', 'user_id'],
+  recovery_code: ['code_hash', 'used_at', 'user_id'],
+  user_session: ['created_at', 'csrf_hash', 'expires_at', 'id_hash', 'last_seen_at', 'mfa_verified_at', 'stage', 'user_id'],
+  activation_token: ['created_at', 'expires_at', 'token_hash', 'used_at', 'user_id'],
+  access_log: ['event', 'id', 'ip', 'ts', 'ua_family', 'user_id'],
+  kysely_migration: ['name', 'timestamp'],
+  kysely_migration_lock: ['id', 'is_locked'],
+};
+const TENANT_TABLES = new Set(Object.keys(TENANT_TABLE_COLUMNS));
+
+/**
+ * El motor informó que el objeto YA existía: resultado seguro, el CREATE no lo creó
+ * (hallazgo QA X-01). PostgreSQL: 42P04 (base) y 42710 (rol). SQL Server: 1801 (base)
+ * y 15025 (login).
+ */
+function isAlreadyExists(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const e = error as { code?: unknown; number?: unknown };
+  return e.code === '42P04' || e.code === '42710' || e.number === 1801 || e.number === 15025;
+}
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
@@ -61,6 +123,8 @@ export class TenantManager {
   private serverDb: Kysely<unknown> | undefined;
   private controlDb: Kysely<ControlDatabase> | undefined;
   private readonly openHandles = new Map<string, TenantHandle>();
+  /** Credencial cifrada con la que se abrió cada conexión: si cambia (rotación), se reabre. */
+  private readonly openedWith = new Map<string, string>();
 
   constructor(
     protected readonly config: PlatformDbConfig,
@@ -89,13 +153,18 @@ export class TenantManager {
    * Crea la base de control si no existe, aplica sus migraciones y la protege.
    * Es idempotente. Devuelve migraciones aplicadas y avisos de endurecimiento del servidor.
    */
-  async initControl(): Promise<{ applied: string[]; warnings: string[] }> {
+  async initControl(options: { apiReader?: string } = {}): Promise<{ applied: string[]; warnings: string[] }> {
     const name = this.config.controlDatabase;
     if (!(await this.provisioner.databaseExists(this.server(), name))) {
       await this.provisioner.createDatabase(this.server(), name);
     }
     await this.provisioner.protectControlDatabase(this.server(), this.control() as Kysely<unknown>, name);
     const { applied } = await migrateToLatest(this.control() as Kysely<unknown>, controlMigrations(this.admin.engine));
+    // Cuenta de la API: solo lectura del registro de organizaciones (D-80). La crea quien
+    // administra el motor (docs/fase-2/servidor-de-base-de-datos.md).
+    if (options.apiReader !== undefined) {
+      await this.provisioner.grantControlRead(this.server(), this.control() as Kysely<unknown>, name, options.apiReader);
+    }
     const warnings = await this.provisioner.hardeningWarnings(this.server());
     const rows = await this.control().selectFrom('tenants').select(['slug', 'status', 'db_name']).execute();
     for (const row of rows.filter((r) => r.status === 'provisioning')) {
@@ -167,7 +236,7 @@ export class TenantManager {
       try {
         await this.provisioner.createDatabase(this.server(), dbName);
       } catch (error) {
-        if (await this.provisioner.databaseExists(this.server(), dbName).catch(() => true)) ambiguous.push(`base ${dbName}`);
+        if (!isAlreadyExists(error) && (await this.provisioner.databaseExists(this.server(), dbName).catch(() => true))) ambiguous.push(`base ${dbName}`);
         throw error;
       }
       dbCreated = true;
@@ -175,7 +244,7 @@ export class TenantManager {
       try {
         await this.provisioner.createLogin(this.server(), login, password, dbName);
       } catch (error) {
-        if (await this.provisioner.loginExists(this.server(), login).catch(() => true)) ambiguous.push(`usuario ${login}`);
+        if (!isAlreadyExists(error) && (await this.provisioner.loginExists(this.server(), login).catch(() => true))) ambiguous.push(`usuario ${login}`);
         throw error;
       }
       loginCreated = true;
@@ -194,7 +263,7 @@ export class TenantManager {
       }
 
       // Comprobación con el usuario propio y primera entrada de bitácora.
-      const handle = await this.openWithCredentials({ id, slug, name: cleanName, status: 'provisioning', dbName, createdAt }, login, password);
+      const handle = await this.openWithCredentials({ id, slug, name: cleanName, status: 'provisioning', dbName, createdAt }, login, password, dek);
       try {
         await handle.audit.append({ actor, action: 'tenant.created', object: `organization/${slug}`, data: { name: cleanName, engine: this.admin.engine } });
       } finally {
@@ -240,9 +309,69 @@ export class TenantManager {
     const row = await this.control().selectFrom('tenants').selectAll().where('slug', '=', slug).executeTakeFirst();
     if (row === undefined) throw new Error(`No existe la organización "${slug}".`);
     if (row.status !== 'provisioning') throw new Error(`La organización "${slug}" no está en alta incompleta (estado: ${row.status}); no se modifica.`);
-    await this.provisioner.dropDatabase(this.server(), row.db_name);
+    if (await this.provisioner.databaseExists(this.server(), row.db_name)) {
+      await this.assertDatabaseBelongsTo(row);
+      await this.provisioner.dropDatabase(this.server(), row.db_name);
+    }
     await this.provisioner.dropLogin(this.server(), row.db_user);
     await this.control().deleteFrom('tenants').where('id', '=', row.id).execute();
+  }
+
+  /**
+   * Antes de eliminar una base, comprueba que sea de esta organización: no declara otra
+   * organización y no contiene NINGÚN objeto ajeno a la plataforma (tablas en cualquier
+   * esquema, vistas, secuencias, funciones, tipos, objetos grandes). Si no, se rechaza: la
+   * base puede ser ajena (hallazgos QA X-01 y Z-01).
+   */
+  private async assertDatabaseBelongsTo(row: TenantsTable): Promise<void> {
+    const db = connect<TenantDatabase>(this.admin, row.db_name, 1);
+    try {
+      const foreign = await this.provisioner.foreignObjects(db as Kysely<unknown>, [...TENANT_TABLES]);
+      if (foreign.length > 0) {
+        const shown = foreign.slice(0, 10).join(', ') + (foreign.length > 10 ? ` y ${String(foreign.length - 10)} más` : '');
+        throw new Error(`La base ${row.db_name} contiene objetos ajenos a la plataforma (${shown}); no se elimina. Revísela manualmente.`);
+      }
+      const metadata = await db.introspection.getTables({ withInternalKyselyTables: true });
+      for (const t of metadata) {
+        const expected = TENANT_TABLE_COLUMNS[t.name];
+        const actual = t.columns.map((c) => c.name).sort();
+        if (expected !== undefined && actual.join(',') !== expected.join(',')) {
+          throw new Error(`La tabla ${t.name} de la base ${row.db_name} no tiene las columnas de la plataforma (${actual.join(', ')}); no se elimina. Revísela manualmente.`);
+        }
+      }
+      // Las migraciones registradas deben ser migraciones conocidas de la plataforma.
+      if (metadata.some((t) => t.name === 'kysely_migration')) {
+        const known = new Set(Object.keys(tenantMigrations(this.admin.engine)));
+        const r = await sql<{ name: string }>`SELECT name FROM ${sql.table('kysely_migration')}`.execute(db);
+        const unknown = r.rows.map((x) => x.name).filter((n) => !known.has(n));
+        if (unknown.length > 0) {
+          throw new Error(`La base ${row.db_name} registra migraciones desconocidas (${unknown.slice(0, 5).join(', ')}); no se elimina. Revísela manualmente.`);
+        }
+      }
+      const tables = metadata.map((t) => t.name);
+      let declaresThis = false;
+      if (tables.includes('organization')) {
+        const orgs = await db.selectFrom('organization').select('id').execute();
+        if (orgs.some((o) => o.id !== row.id)) {
+          throw new Error(`La base ${row.db_name} pertenece a otra organización; no se elimina. Revísela manualmente.`);
+        }
+        declaresThis = orgs.length > 0;
+      }
+      // Si la base no declara ser de esta organización, solo puede ser un alta interrumpida
+      // ANTES de escribir la bitácora: entonces `audit_log` está vacía. Con filas, se trata
+      // como ajena aunque la tabla tenga el nombre de la plataforma (hallazgo QA Z-04).
+      if (!declaresThis && tables.includes('audit_log')) {
+        const r = await sql<{ n: number | string }>`SELECT COUNT(*) AS n FROM ${sql.table('audit_log')}`.execute(db);
+        if (Number(r.rows[0]?.n ?? 0) > 0) {
+          throw new Error(`La base ${row.db_name} tiene datos en audit_log pero no declara pertenecer a esta organización; no se elimina. Revísela manualmente.`);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('no se elimina')) throw error;
+      throw new Error(`No se pudo comprobar a quién pertenece la base ${row.db_name}; no se elimina: ${message(error)}`, { cause: error });
+    } finally {
+      await db.destroy();
+    }
   }
 
   /** Lista las organizaciones registradas. */
@@ -317,6 +446,30 @@ export class TenantManager {
     const rows = await this.control().selectFrom('tenants').selectAll().where('status', '=', 'active').orderBy('slug').execute();
     for (const row of rows) {
       const problems: string[] = [];
+      // Primero el descifrado, en dos pasos, porque el remedio es distinto (QA Y-02 y Z-02):
+      // - si no se puede abrir la DEK, la clave maestra no corresponde (o la DEK guardada fue
+      //   alterada) y rotar NO lo resuelve;
+      // - si la DEK abre pero la contraseña guardada no, el registro fue alterado y rotar SÍ
+      //   lo resuelve (genera una contraseña nueva y la vuelve a cifrar).
+      let dek: SymmetricKey;
+      try {
+        dek = unwrapKey(this.masterKeys, row.dek_wrapped, dekContext(row.id));
+      } catch (error) {
+        if (!(error instanceof CryptoError)) throw error;
+        result[row.slug] = [
+          `No se pudo abrir la clave de cifrado de la organización: la clave maestra (MASTER_KEY_FILE) no corresponde a esta instalación o el registro de control fue alterado. "rotate-password" no lo resuelve; revise la clave maestra y su respaldo. (${error.message})`,
+        ];
+        continue;
+      }
+      try {
+        open([dek], row.db_password_sealed, passwordContext(row.id));
+      } catch (error) {
+        if (!(error instanceof CryptoError)) throw error;
+        result[row.slug] = [
+          `La contraseña cifrada guardada en la base de control no se puede descifrar (registro alterado o dañado). Ejecute: auditor-admin tenant rotate-password --slug ${row.slug} (${error.message})`,
+        ];
+        continue;
+      }
       try {
         const handle = await this.openRow(row);
         await handle.db.destroy();
@@ -349,12 +502,22 @@ export class TenantManager {
    */
   async openTenant(slug: string): Promise<TenantHandle> {
     assertTenantSlug(slug);
-    const cached = this.openHandles.get(slug);
-    if (cached !== undefined) return cached;
+    // El estado se consulta SIEMPRE (una lectura de la base de control): un proceso de larga
+    // duración como la API no debe seguir usando una organización suspendida por otro
+    // proceso (CLI) solo porque tenía su conexión abierta.
     const row = await this.findRow(slug);
-    if (row.status !== 'active') throw new Error(`La organización "${slug}" no está activa (estado: ${row.status}).`);
+    if (row.status !== 'active') {
+      await this.closeTenant(slug);
+      throw new Error(`La organización "${slug}" no está activa (estado: ${row.status}).`);
+    }
+    const cached = this.openHandles.get(slug);
+    // Si otro proceso rotó la contraseña (`tenant rotate-password`), la conexión guardada
+    // quedaría con la credencial vieja y fallaría: se cierra y se abre de nuevo (QA 2B-02).
+    if (cached !== undefined && this.openedWith.get(slug) === row.db_password_sealed) return cached;
+    if (cached !== undefined) await this.closeTenant(slug);
     const handle = await this.openRow(row);
     this.openHandles.set(slug, handle);
+    this.openedWith.set(slug, row.db_password_sealed);
     return handle;
   }
 
@@ -402,6 +565,7 @@ export class TenantManager {
   /** Cierra la conexión abierta de una organización en este proceso. */
   async closeTenant(slug: string): Promise<void> {
     const handle = this.openHandles.get(slug);
+    this.openedWith.delete(slug);
     if (handle !== undefined) {
       this.openHandles.delete(slug);
       await handle.db.destroy();
@@ -457,10 +621,12 @@ export class TenantManager {
   }
 
   private async openRow(row: TenantsTable): Promise<TenantHandle> {
-    return this.openWithCredentials(toInfo(row), row.db_user, this.decryptPassword(row));
+    const dek = unwrapKey(this.masterKeys, row.dek_wrapped, dekContext(row.id));
+    const password = open([dek], row.db_password_sealed, passwordContext(row.id)).toString('utf8');
+    return this.openWithCredentials(toInfo(row), row.db_user, password, dek);
   }
 
-  private async openWithCredentials(info: TenantInfo, user: string, password: string): Promise<TenantHandle> {
+  private async openWithCredentials(info: TenantInfo, user: string, password: string, dek: SymmetricKey): Promise<TenantHandle> {
     const db = connect<TenantDatabase>({ ...this.admin, user, password }, info.dbName);
     try {
       // Defensa contra enrutamiento erróneo: la base debe declararse como esta organización.
@@ -472,7 +638,7 @@ export class TenantManager {
       await db.destroy();
       throw error;
     }
-    return { info, db, audit: new AuditLogRepository(db, this.admin.engine, info.slug) };
+    return { info, db, audit: new AuditLogRepository(db, this.admin.engine, info.slug), crypto: tenantCrypto(info.id, dek) };
   }
 }
 

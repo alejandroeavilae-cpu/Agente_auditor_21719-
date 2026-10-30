@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Controller, Get } from '@nestjs/common';
+import { Public } from '../identity/http.js';
 
 /** Respuesta de la sonda de vida. */
 export interface HealthResponse {
@@ -14,6 +15,7 @@ export interface HealthResponse {
 @Controller('health')
 export class HealthController {
   @Get()
+  @Public()
   check(): HealthResponse {
     return { status: 'ok' };
   }

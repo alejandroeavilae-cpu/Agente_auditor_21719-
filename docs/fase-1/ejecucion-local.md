@@ -115,6 +115,20 @@ Con los servicios levantados (paso 3), en la misma terminal:
    | `tenant check` | Comprueba cada organización activa: que abre con sus credenciales, que su usuario no se fijó parámetros de sesión propios y que no puede crear objetos grandes. Sale con código 1 si encuentra algo |
    | `tenant rotate-password --slug <id>` | Fija una contraseña nueva para el usuario de la organización (p. ej. si `tenant check` falla porque alguien la cambió) |
    | `tenant cleanup-provisioning --slug <id>` | Limpia un alta que quedó a medias (p. ej. si se cortó la luz durante `tenant create`). `init` avisa cuando hay una |
+   | `user invite-admin --tenant <id> --email <correo> --name <nombre>` | Invita al **primer administrador** de una organización (entrega 2B). Imprime un token de activación de un solo uso, válido 24 h |
+   | `user unlock --tenant <id> --email <correo>` | Desbloquea una cuenta bloqueada por intentos fallidos (por ejemplo, si alguien la bloquea a propósito) |
+
+9. Active al primer administrador (entrega 2B; las pantallas llegan en 2C, por ahora se usa la API):
+   - Invítelo y copie el token que se imprime (se muestra **una sola vez**):
+     ```sh
+     docker compose -f deploy/compose/compose.yaml run --rm admin user invite-admin --tenant muni-demo --email admin@muni-demo.example --name "Administración Demo"
+     ```
+   - Fije la contraseña (mínimo 12 caracteres, que no sea común ni contenga su correo). Reemplace `<TOKEN>`:
+     ```sh
+     curl -c cookies.txt -H "content-type: application/json" -d '{"organization":"muni-demo","token":"<TOKEN>","password":"una frase larga y propia"}' http://127.0.0.1:8080/api/v1/auth/activate
+     ```
+     Debe responder `"stage":"mfa_enroll"`: un administrador **debe** configurar la verificación en dos pasos (app autenticadora) antes de usar la plataforma. Ese paso se hará con la pantalla de 2C.
+   - Borre `cookies.txt` al terminar: contiene su sesión.
 
 **Notas**
 - Solo el puerto 8080 queda abierto y únicamente en su propio equipo (127.0.0.1); nadie más en la red puede acceder.

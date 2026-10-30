@@ -58,12 +58,14 @@ echo "8. El proceso principal de PostgreSQL no se ejecuta como root"
 PG_UID="$($COMPOSE exec -T postgres awk '/^Uid:/{print $2}' /proc/1/status)"
 [ -n "$PG_UID" ] && [ "$PG_UID" != "0" ] || fail "el proceso principal de postgres se ejecuta como root"
 
-echo "9. La API no recibe credenciales de administración ni la clave maestra (hallazgo QA A-02)"
-API_SECRETS="$($COMPOSE exec -T api sh -c 'ls -A /run/secrets 2>/dev/null | wc -l')"
-[ "$(echo "$API_SECRETS" | tr -d ' \r')" = "0" ] || fail "el contenedor api monta secretos"
-$COMPOSE exec -T api sh -c 'env | grep -q -E "^(DB_ADMIN|MASTER_KEY)"' && fail "el contenedor api recibe variables de administración"
-PROV_SUPER="$($COMPOSE exec -T postgres psql -U auditor -d postgres -tAc "select rolsuper from pg_roles where rolname = 'auditor_provisioner'" | tr -d ' \r')"
-[ "$PROV_SUPER" = "f" ] || fail "auditor_provisioner debe existir y no ser superusuario (obtenido: '$PROV_SUPER')"
+echo "9. La API no recibe credenciales de aprovisionamiento; su cuenta de BD solo lee (A-02, D-80)"
+API_SECRETS="$($COMPOSE exec -T api sh -c 'ls -A /run/secrets 2>/dev/null | sort | tr "\n" " "')"
+echo "secretos de api: $API_SECRETS"
+[ "$(echo "$API_SECRETS" | tr -d '\r' | sed 's/ *$//')" = "api_db_password master.key" ] || fail "el contenedor api debe montar solo api_db_password y master.key"
+$COMPOSE exec -T api sh -c 'env | grep -q -E "^DB_ADMIN"' && fail "el contenedor api recibe variables de aprovisionamiento"
+ROLES="$($COMPOSE exec -T postgres psql -U auditor -d postgres -tAc "select rolname || ':' || rolsuper::int || rolcreatedb::int || rolcreaterole::int from pg_roles where rolname in ('auditor_provisioner','auditor_api') order by 1" | tr -d '\r' | tr '\n' ' ')"
+echo "$ROLES"
+[ "$ROLES" = "auditor_api:000 auditor_provisioner:011 " ] || fail "cuentas inesperadas (esperado auditor_api sin privilegios y auditor_provisioner sin superusuario): $ROLES"
 
 echo "10. Organizaciones (entrega 2A): alta de dos organizaciones con base propia y nombre opaco"
 ADMIN="$COMPOSE run --rm -T admin"
@@ -85,6 +87,32 @@ for t in muni-ficticia empresa-ficticia; do
     || fail "la bitácora de $t no verificó"
 done
 $ADMIN tenant reactivate --slug empresa-ficticia
+
+echo "12. Identidad (2B): invitación por CLI, activación por HTTP y MFA obligatoria para el administrador"
+INVITE="$($ADMIN user invite-admin --tenant muni-ficticia --email admin@muni-ficticia.example --name "Administración Ficticia")"
+TOKEN="$(echo "$INVITE" | tr -d '\r' | grep -E '^[A-Za-z0-9_-]{43}$' | head -1)"
+[ -n "$TOKEN" ] || fail "invite-admin no imprimió un token de activación"
+ME="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/v1/auth/me")"
+[ "$ME" = "401" ] || fail "/api/v1/auth/me sin sesión debe responder 401 (obtenido $ME)"
+BAD="$(curl -s -H 'content-type: application/json' -d '{"organization":"muni-ficticia","email":"admin@muni-ficticia.example","password":"incorrecta-sintetica"}' "$BASE/api/v1/auth/login")"
+echo "$BAD" | grep -q '"error":"invalid_credentials"' || fail "inicio de sesión inválido: respuesta inesperada ($BAD)"
+JAR="$(mktemp)"
+ACT="$(curl -s -c "$JAR" -H 'content-type: application/json' -d "{\"organization\":\"muni-ficticia\",\"token\":\"$TOKEN\",\"password\":\"frase-sintetica-de-prueba-2026\"}" "$BASE/api/v1/auth/activate")"
+echo "$ACT" | grep -q '"stage":"mfa_enroll"' || fail "la activación debe exigir configurar MFA ($ACT)"
+grep -q 'auditor_session' "$JAR" || fail "la activación no entregó la cookie de sesión"
+grep -i 'auditor_session' "$JAR" | grep -q '#HttpOnly_' || fail "la cookie de sesión debe ser HttpOnly"
+USERS="$(curl -s -b "$JAR" "$BASE/api/v1/users")"
+echo "$USERS" | grep -q '"error":"mfa_enrollment_required"' || fail "sin MFA no debe poder listar usuarios ($USERS)"
+rm -f "$JAR"
+
+echo "13. Una X-Forwarded-For enviada por el cliente no falsifica la IP registrada (QA 2B-05)"
+curl -s -o /dev/null -H 'X-Forwarded-For: 203.0.113.77' -H 'content-type: application/json' \
+  -d '{"organization":"muni-ficticia","email":"nadie@muni-ficticia.example","password":"incorrecta-sintetica"}' "$BASE/api/v1/auth/login"
+TDB="$($COMPOSE exec -T postgres psql -U auditor -d auditor_control -tAc "select db_name from tenants where slug = 'muni-ficticia'" | tr -d '\r ')"
+LASTIP="$($COMPOSE exec -T postgres psql -U auditor -d "$TDB" -tAc "select coalesce(ip, '') from access_log order by ts desc limit 1" | tr -d '\r ')"
+echo "última IP registrada: $LASTIP"
+[ -n "$LASTIP" ] || fail "el registro de accesos no guardó la IP"
+[ "$LASTIP" != "203.0.113.77" ] || fail "la IP registrada es la que envió el cliente en X-Forwarded-For"
 
 # El aislamiento entre organizaciones (credenciales de A contra la base de B y la de control)
 # se prueba con las contraseñas reales en packages/persistence/test (job de integración de CI).

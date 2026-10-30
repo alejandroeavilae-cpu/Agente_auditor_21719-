@@ -2,6 +2,7 @@
 
 import { sql, type Kysely } from 'kysely';
 import type { DbEngine } from './config.js';
+import { IDENTITY_TABLES } from './schema.js';
 
 /**
  * Operaciones de aprovisionamiento que difieren entre motores.
@@ -27,6 +28,11 @@ export interface Provisioner {
   restrictLogin(serverDb: Kysely<unknown>, login: string): Promise<void>;
   /** Bases cuyo nombre sigue el patrón de la plataforma (para detectar huérfanas). */
   listPlatformDatabases(serverDb: Kysely<unknown>): Promise<string[]>;
+  /**
+   * Objetos de la base que NO son de la plataforma (vacío si solo hay objetos propios).
+   * Revisa todo el catálogo, no solo tablas de `public` (hallazgo QA Z-01).
+   */
+  foreignObjects(adminTenantDb: Kysely<unknown>, allowedTables: readonly string[]): Promise<string[]>;
   /** Configuraciones de sesión que el usuario tiene fijadas en el motor (vacío si ninguna). */
   loginSettings(serverDb: Kysely<unknown>, login: string): Promise<string[]>;
   /** Cantidad de sesiones abiertas del usuario. */
@@ -37,6 +43,11 @@ export interface Provisioner {
   prepareTenantDatabase(adminTenantDb: Kysely<unknown>, login: string): Promise<void>;
   /** Privilegios mínimos del usuario de aplicación, tras las migraciones. */
   grantAppPrivileges(adminTenantDb: Kysely<unknown>, login: string): Promise<void>;
+  /**
+   * Permite a la cuenta de la API leer el registro de organizaciones (solo SELECT sobre
+   * `tenants`), para abrir la base de cada organización con sus credenciales (D-80).
+   */
+  grantControlRead(serverDb: Kysely<unknown>, controlDb: Kysely<unknown>, controlDbName: string, login: string): Promise<void>;
   dropDatabase(serverDb: Kysely<unknown>, dbName: string): Promise<void>;
   dropLogin(serverDb: Kysely<unknown>, login: string): Promise<void>;
   /** Habilita o deshabilita el inicio de sesión del usuario (suspensión aplicada por el motor). */
@@ -85,6 +96,36 @@ const postgres: Provisioner = {
     const r = await sql<{ n: string }>`SELECT datname AS n FROM pg_database WHERE datname ~ '^auditor_t_[0-9a-f]{12}$' ORDER BY 1`.execute(serverDb);
     return r.rows.map((x) => x.n);
   },
+  async foreignObjects(db, allowedTables) {
+    const allowed = sql`ARRAY[${sql.join(allowedTables.map((t) => sql`${t}`))}]::text[]`;
+    const r = await sql<{ o: string }>`
+      SELECT n.nspname || '.' || c.relname || ' (relkind ' || c.relkind::text || ')' AS o
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+         AND n.nspname NOT LIKE 'pg_temp%' AND n.nspname NOT LIKE 'pg_toast_temp%'
+         AND NOT (n.nspname = 'public' AND (
+               (c.relkind IN ('r', 'p') AND c.relname = ANY(${allowed}))
+            OR (c.relkind = 'i' AND EXISTS (
+                  SELECT 1 FROM pg_index i JOIN pg_class t ON t.oid = i.indrelid
+                   WHERE i.indexrelid = c.oid AND t.relnamespace = n.oid AND t.relname = ANY(${allowed})))))
+      UNION ALL
+      SELECT 'esquema ' || nspname FROM pg_namespace
+       WHERE nspname NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')
+         AND nspname NOT LIKE 'pg_temp%' AND nspname NOT LIKE 'pg_toast_temp%'
+      UNION ALL
+      SELECT 'función ' || n.nspname || '.' || p.proname
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      UNION ALL
+      SELECT 'tipo ' || n.nspname || '.' || t.typname
+        FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+         AND n.nspname NOT LIKE 'pg_temp%' AND n.nspname NOT LIKE 'pg_toast_temp%'
+         AND t.typrelid = 0 AND t.typelem = 0
+      UNION ALL
+      SELECT 'objeto grande ' || oid::text FROM pg_largeobject_metadata`.execute(db);
+    return r.rows.map((x) => x.o);
+  },
   async loginSettings(serverDb, login) {
     const r = await sql<{ s: string }>`SELECT unnest(s.setconfig) AS s FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole WHERE r.rolname = ${login}`.execute(serverDb);
     return r.rows.map((x) => x.s);
@@ -103,6 +144,16 @@ const postgres: Provisioner = {
   async grantAppPrivileges(adminTenantDb, login) {
     await sql`GRANT SELECT, INSERT ON audit_log TO ${sql.id(login)}`.execute(adminTenantDb);
     await sql`GRANT SELECT ON organization TO ${sql.id(login)}`.execute(adminTenantDb);
+    // Identidad (2B): el usuario de la organización administra sus propios usuarios y
+    // sesiones. La bitácora sigue siendo solo SELECT e INSERT.
+    for (const table of IDENTITY_TABLES) {
+      await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON ${sql.id(table)} TO ${sql.id(login)}`.execute(adminTenantDb);
+    }
+  },
+  async grantControlRead(serverDb, controlDb, controlDbName, login) {
+    await sql`GRANT CONNECT ON DATABASE ${sql.id(controlDbName)} TO ${sql.id(login)}`.execute(serverDb);
+    await sql`GRANT USAGE ON SCHEMA public TO ${sql.id(login)}`.execute(controlDb);
+    await sql`GRANT SELECT ON tenants TO ${sql.id(login)}`.execute(controlDb);
   },
   async dropDatabase(serverDb, dbName) {
     await sql`DROP DATABASE IF EXISTS ${sql.id(dbName)} WITH (FORCE)`.execute(serverDb);
@@ -127,7 +178,11 @@ const postgres: Provisioner = {
     // search_path o default_transaction_read_only), globales o solo para su base: se
     // eliminan ambos (hallazgos QA M-02 y N-02).
     await sql`ALTER ROLE ${sql.id(login)} RESET ALL`.execute(serverDb);
-    await sql`ALTER ROLE ${sql.id(login)} IN DATABASE ${sql.id(dbName)} RESET ALL`.execute(serverDb);
+    // Parámetros fijados para CUALQUIER base, no solo la propia (hallazgo QA X-02).
+    const dbs = await sql<{ d: string }>`SELECT d.datname AS d FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole JOIN pg_database d ON d.oid = s.setdatabase WHERE r.rolname = ${login}`.execute(serverDb);
+    for (const name of new Set([dbName, ...dbs.rows.map((x) => x.d)])) {
+      await sql`ALTER ROLE ${sql.id(login)} IN DATABASE ${sql.id(name)} RESET ALL`.execute(serverDb);
+    }
   },
   async protectControlDatabase(serverDb, _controlDb, controlDbName) {
     await sql`REVOKE ALL ON DATABASE ${sql.id(controlDbName)} FROM PUBLIC`.execute(serverDb);
@@ -179,6 +234,25 @@ const sqlserver: Provisioner = {
     const r = await sql<{ n: string }>`SELECT name AS n FROM sys.databases WHERE name LIKE 'auditor[_]t[_]%' ORDER BY name`.execute(serverDb);
     return r.rows.map((x) => x.n).filter((n) => /^auditor_t_[0-9a-f]{12}$/.test(n));
   },
+  async foreignObjects(db, allowedTables) {
+    const allowed = sql.join(allowedTables.map((t) => sql`${t}`));
+    // Las columnas de catálogo tienen intercalaciones distintas según la vista; se fuerzan a
+    // la de la base para poder unirlas, y el texto se arma en JavaScript.
+    const c = (expr: ReturnType<typeof sql.raw>) => sql`CAST(${expr} AS nvarchar(256)) COLLATE DATABASE_DEFAULT`;
+    const r = await sql<{ k: string; s: string; n: string }>`
+      SELECT ${c(sql.raw('o.type_desc'))} AS k, ${c(sql.raw('s.name'))} AS s, ${c(sql.raw('o.name'))} AS n
+        FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id
+       WHERE o.is_ms_shipped = 0
+         AND NOT (s.name = 'dbo' AND (
+               (o.type = 'U' AND o.name IN (${allowed}))
+            OR (o.type IN ('PK', 'UQ', 'D', 'F', 'C') AND OBJECT_SCHEMA_NAME(o.parent_object_id) = 'dbo'
+                AND OBJECT_NAME(o.parent_object_id) IN (${allowed}))))
+      UNION ALL
+      SELECT ${c(sql.raw("'TYPE'"))}, ${c(sql.raw('SCHEMA_NAME(schema_id)'))}, ${c(sql.raw('name'))} FROM sys.types WHERE is_user_defined = 1
+      UNION ALL
+      SELECT ${c(sql.raw("'SCHEMA'"))}, ${c(sql.raw("''"))}, ${c(sql.raw('name'))} FROM sys.schemas WHERE schema_id BETWEEN 5 AND 16383`.execute(db);
+    return r.rows.map((x) => `${x.s === '' ? '' : `${x.s}.`}${x.n} (${x.k})`);
+  },
   loginSettings() {
     // SQL Server no tiene parámetros de sesión por login equivalentes a los de PostgreSQL;
     // la base de destino se indica explícitamente en cada conexión.
@@ -198,6 +272,14 @@ const sqlserver: Provisioner = {
   async grantAppPrivileges(adminTenantDb, login) {
     await sql`GRANT SELECT, INSERT ON dbo.audit_log TO ${sql.id(login)}`.execute(adminTenantDb);
     await sql`GRANT SELECT ON dbo.organization TO ${sql.id(login)}`.execute(adminTenantDb);
+    for (const table of IDENTITY_TABLES) {
+      await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON ${sql.id('dbo', table)} TO ${sql.id(login)}`.execute(adminTenantDb);
+    }
+  },
+  async grantControlRead(_serverDb, controlDb, _controlDbName, login) {
+    // EXEC no admite expresiones: el texto se arma primero en una variable.
+    await sql`IF DATABASE_PRINCIPAL_ID(${login}) IS NULL BEGIN DECLARE @s nvarchar(max) = N'CREATE USER ' + QUOTENAME(${login}) + N' FOR LOGIN ' + QUOTENAME(${login}); EXEC(@s); END`.execute(controlDb);
+    await sql`GRANT SELECT ON dbo.tenants TO ${sql.id(login)}`.execute(controlDb);
   },
   async dropDatabase(serverDb, dbName) {
     await sql`IF DB_ID(${dbName}) IS NOT NULL BEGIN ALTER DATABASE ${sql.id(dbName)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE ${sql.id(dbName)}; END`.execute(serverDb);

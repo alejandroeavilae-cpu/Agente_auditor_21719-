@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Falsos positivos de Gitleaks revisados a mano. Formato: <commit>:<archivo>:<regla>:<línea>.
+# Cada entrada debe justificarse. Nunca se ignora un secreto real: si lo fuera, se rota y se
+# documenta como incidente.
+#
+# Commit 0de6ac2 (entrega 2B): contraseñas SINTÉTICAS literales de una prueba de integración
+# (identity.int.test.ts). No son credenciales de ningún sistema. En el commit siguiente se
+# reemplazaron por valores aleatorios generados en cada ejecución.
+0de6ac2fa22985295e3e77ff6b91b076e2414e79:apps/api/test/identity.int.test.ts:generic-api-key:26
+0de6ac2fa22985295e3e77ff6b91b076e2414e79:apps/api/test/identity.int.test.ts:generic-api-key:113
+0de6ac2fa22985295e3e77ff6b91b076e2414e79:apps/api/test/identity.int.test.ts:generic-api-key:136

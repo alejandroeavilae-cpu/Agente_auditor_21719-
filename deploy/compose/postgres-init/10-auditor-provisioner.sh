@@ -20,8 +20,12 @@ GRANT pg_signal_backend TO auditor_provisioner;
 REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
 GRANT CONNECT ON DATABASE postgres TO auditor_provisioner;
+-- Cuenta de la API (D-80): solo inicia sesión; `auditor-admin init` le concede leer el
+-- registro de organizaciones. Sin CREATEDB, CREATEROLE ni superusuario.
+\set api_pw `cat /run/secrets/api_db_password`
+CREATE ROLE auditor_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'api_pw';
 -- Las bases nuevas se copian de template1: sin objetos grandes para usuarios comunes.
 \connect template1
 REVOKE EXECUTE ON FUNCTION lo_creat(integer), lo_create(oid), lo_from_bytea(oid, bytea), lo_import(text), lo_import(text, oid) FROM PUBLIC;
 SQL
-echo "auditor-21719: cuenta auditor_provisioner creada y servidor endurecido."
+echo "auditor-21719: cuentas auditor_provisioner y auditor_api creadas y servidor endurecido."

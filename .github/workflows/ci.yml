@@ -83,7 +83,7 @@ jobs:
       - name: Instalar dependencias (lockfile congelado)
         run: pnpm install --frozen-lockfile
       - name: Compilar paquetes
-        run: pnpm --filter "@auditor-21719/persistence..." run build
+        run: pnpm --filter "@auditor-21719/api..." run build
       - name: Esperar a SQL Server (hasta 3 minutos)
         run: |
           for i in $(seq 1 60); do
@@ -121,10 +121,29 @@ jobs:
           TEST_MSSQL_TLS: trust-server-certificate
           # Mínimo de pruebas aprobadas POR MOTOR (hallazgo QA B-13): si el archivo de
           # integración no se ejecutara, o un motor se omitiera, el job falla.
-          MIN_TESTS_PER_ENGINE: "21"
+          MIN_TESTS_PER_ENGINE: "24"
         run: |
           pnpm exec vitest run --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-integracion.json
           node ../../scripts/check-integration-report.mjs vitest-integracion.json
+      - name: Pruebas de integración de identidad (2B) por HTTP, ambos motores
+        working-directory: apps/api
+        env:
+          REQUIRE_DB_ENGINES: postgresql,sqlserver
+          TEST_PG_HOST: 127.0.0.1
+          TEST_PG_PORT: "5432"
+          TEST_PG_USER: auditor
+          TEST_PG_PASSWORD: ${{ env.PG_TEST_PASSWORD }}
+          TEST_PG_TLS: disable
+          TEST_MSSQL_HOST: 127.0.0.1
+          TEST_MSSQL_PORT: "1433"
+          TEST_MSSQL_USER: sa
+          TEST_MSSQL_PASSWORD: ${{ env.MSSQL_TEST_PASSWORD }}
+          TEST_MSSQL_TLS: trust-server-certificate
+          SUITE_PREFIX: identidad en
+          MIN_TESTS_PER_ENGINE: "21"
+        run: |
+          pnpm exec vitest run test/identity.int.test.ts --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-identidad.json
+          node ../../scripts/check-integration-report.mjs vitest-identidad.json
 
   compose-smoke:
     name: Prueba de humo de Docker Compose (perfil local)

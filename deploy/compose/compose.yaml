@@ -42,8 +42,24 @@ services:
         BUILD_COMMIT: ${BUILD_COMMIT:-desarrollo}
         BUILD_VERSION: ${BUILD_VERSION:-0.1.0}
     image: auditor-21719-api:local
-    # La API que atiende HTTP NO recibe credenciales de administración ni la clave maestra
-    # (hallazgo QA A-02): esas solo las monta el servicio "admin".
+    # La API que atiende HTTP NO recibe credenciales de aprovisionamiento (hallazgo QA A-02):
+    # usa la cuenta auditor_api, que solo puede LEER el registro de organizaciones, y la
+    # clave maestra para abrir las credenciales de cada organización (D-80).
+    environment:
+      DB_ENGINE: postgresql
+      DB_HOST: postgres
+      DB_API_USER: auditor_api
+      DB_API_PASSWORD_FILE: /run/secrets/api_db_password
+      DB_CONTROL_DATABASE: auditor_control
+      DB_TLS: disable
+      MASTER_KEY_FILE: /run/secrets/master.key
+      MASTER_KEY_CHECK_PERMISSIONS: "false"
+      # Perfil local sin HTTPS (solo 127.0.0.1): la cookie no puede ser "Secure". El perfil
+      # institucional con TLS (2C/11) usa el valor por defecto, true.
+      COOKIE_SECURE: "false"
+      # Caddy es el único salto delante de la API.
+      TRUST_PROXY: "true"
+    secrets: [api_db_password, master.key]
     read_only: true
     tmpfs:
       - /tmp
@@ -73,6 +89,8 @@ services:
       DB_ADMIN_USER: auditor_provisioner
       DB_ADMIN_PASSWORD_FILE: /run/secrets/provisioner_password
       DB_CONTROL_DATABASE: auditor_control
+      # `init` concede a esta cuenta la lectura del registro de organizaciones (D-80).
+      DB_API_READER_USER: auditor_api
       # Red interna aislada (sin salida a Internet): TLS se habilita en el perfil institucional (Fase 2C/11).
       DB_TLS: disable
       MASTER_KEY_FILE: /run/secrets/master.key
@@ -99,7 +117,7 @@ services:
       # `auditor-admin init` con la cuenta de aprovisionamiento.
       POSTGRES_DB: postgres
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-    secrets: [postgres_password, provisioner_password]
+    secrets: [postgres_password, provisioner_password, api_db_password]
     # El entrypoint oficial arranca como root para preparar el directorio de datos y luego
     # cambia al usuario "postgres": se eliminan todas las capacidades salvo las mínimas
     # para ese cambio de usuario y de propietario de archivos (hallazgo QA H-10).
@@ -153,5 +171,7 @@ secrets:
     file: ./secrets/valkey.conf
   provisioner_password:
     file: ./secrets/provisioner_password
+  api_db_password:
+    file: ./secrets/api_db_password
   master.key:
     file: ./secrets/master.key

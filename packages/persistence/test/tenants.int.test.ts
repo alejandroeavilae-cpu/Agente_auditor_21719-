@@ -198,6 +198,8 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
       await sql`ALTER ROLE CURRENT_USER SET statement_timeout = '1ms'`.execute(asA);
       // También solo para su base (QA N-02): dejaría la bitácora en solo lectura.
       await sql`ALTER ROLE CURRENT_USER IN DATABASE ${sql.id(credsA.dbName)} SET default_transaction_read_only = on`.execute(asA);
+      // Y para una base AJENA (QA X-02): rotate-password también debe borrarlo.
+      await sql`ALTER ROLE CURRENT_USER IN DATABASE ${sql.id(controlDatabase)} SET statement_timeout = '1ms'`.execute(asA);
     } else {
       await sql`ALTER LOGIN ${sql.id(credsA.user)} WITH PASSWORD = ${sql.lit(stolen)} OLD_PASSWORD = ${sql.lit(credsA.password)}`.execute(asA);
     }
@@ -266,7 +268,7 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
     expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
   });
 
-  it('M-01: la reversión nunca elimina una base que la plataforma no creó', async () => {
+  it('M-01/X-01: si el CREATE informa "ya existe", la base ajena se conserva y el alta se revierte', async () => {
     const slug = `prueba-${id}-g`;
     let foreign = '';
     // Simula una carrera: otro actor crea la base justo entre la comprobación y el CREATE.
@@ -277,16 +279,121 @@ describe.each(engines)('organizaciones en $engine', ({ engine, server: superServ
         await real.createDatabase(s, dbName); // el segundo CREATE falla: "ya existe"
       },
     });
-    // Sin certeza de quién creó la base, no se borra y el alta queda pendiente de limpieza.
-    await expect(racing.createTenant(slug, 'Carrera', 'operador:pruebas')).rejects.toThrow(/no se pudo determinar.*cleanup-provisioning/s);
+    // "Ya existe" es un resultado seguro: la base no es de esta operación y no se toca.
+    await expect(racing.createTenant(slug, 'Carrera', 'operador:pruebas')).rejects.toThrow(/exist/i);
     await racing.close();
     const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
     expect(await real.databaseExists(serverDb, foreign)).toBe(true);
-    expect((await manager.listTenants()).find((t) => t.slug === slug)?.status).toBe('provisioning');
+    expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
     await real.dropDatabase(serverDb, foreign);
     await serverDb.destroy();
+  });
+
+  it('X-01: cleanupProvisioning no elimina una base con tablas ajenas', async () => {
+    const slug = `prueba-${id}-x`;
+    let created = '';
+    // Corte de conexión simulado: el CREATE se ejecutó pero se informa un error distinto
+    // de "ya existe" → autoría incierta → el alta queda en provisioning.
+    const cut = managerWith({
+      createDatabase: async (s, dbName) => {
+        created = dbName;
+        await real.createDatabase(s, dbName);
+        throw new Error('conexión interrumpida (simulada)');
+      },
+    });
+    await expect(cut.createTenant(slug, 'Corte', 'operador:pruebas')).rejects.toThrow(/cleanup-provisioning/);
+    await cut.close();
+    expect((await manager.listTenants()).find((t) => t.slug === slug)?.status).toBe('provisioning');
+
+    const target = connect<unknown>(server, created, 1);
+    await sql`CREATE TABLE datos_ajenos (n int)`.execute(target);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/objetos ajenos/);
+    const serverDb = connect<unknown>(server, serverAdminDatabase(server), 1);
+    expect(await real.databaseExists(serverDb, created)).toBe(true);
+    await sql`DROP TABLE datos_ajenos`.execute(target);
+    // Z-01: tampoco con objetos ajenos fuera de public ni de otros tipos.
+    const variants: [string, string][] =
+      engine === 'postgresql'
+        ? [
+            ['CREATE SCHEMA otro; CREATE TABLE otro.audit_log (n int)', 'DROP SCHEMA otro CASCADE'],
+            ['CREATE MATERIALIZED VIEW vm AS SELECT 1 AS n', 'DROP MATERIALIZED VIEW vm'],
+            ['CREATE SEQUENCE sec', 'DROP SEQUENCE sec'],
+            ["CREATE FUNCTION f() RETURNS int LANGUAGE sql AS 'SELECT 1'", 'DROP FUNCTION f()'],
+            ["CREATE TYPE estado AS ENUM ('a')", 'DROP TYPE estado'],
+          ]
+        : [
+            ['CREATE TABLE dbo.vista_base (n int)', 'DROP TABLE dbo.vista_base'],
+            ['CREATE SEQUENCE dbo.sec START WITH 1', 'DROP SEQUENCE dbo.sec'],
+          ];
+    for (const [create, drop] of variants) {
+      for (const stmt of create.split('; ')) await sql.raw(stmt).execute(target);
+      await expect(manager.cleanupProvisioning(slug), create).rejects.toThrow(/objetos ajenos/);
+      await sql.raw(drop).execute(target);
+    }
+    // Z-04: tabla con nombre de la plataforma pero con datos ajenos.
+    await sql.raw('CREATE TABLE audit_log (secreto varchar(50))').execute(target);
+    await sql.raw("INSERT INTO audit_log (secreto) VALUES ('dato-sintetico-ajeno')").execute(target);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/columnas de la plataforma|datos en audit_log/);
+    await sql.raw('DROP TABLE audit_log').execute(target);
+    // Z-05: tabla de migraciones con nombre de Kysely pero columnas y datos ajenos.
+    await sql.raw('CREATE TABLE kysely_migration (secreto varchar(50))').execute(target);
+    await sql.raw("INSERT INTO kysely_migration (secreto) VALUES ('dato-sintetico-ajeno')").execute(target);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/columnas de la plataforma/);
+    await sql.raw('DROP TABLE kysely_migration').execute(target);
+    // Z-05: columnas correctas pero una migración desconocida.
+    await sql.raw('CREATE TABLE kysely_migration (name varchar(255), timestamp varchar(255))').execute(target);
+    await sql.raw("INSERT INTO kysely_migration (name, timestamp) VALUES ('datos-ajenos', 'x')").execute(target);
+    await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/migraciones desconocidas/);
+    await sql.raw('DROP TABLE kysely_migration').execute(target);
+    if (engine === 'postgresql') {
+      // Objeto grande: la cuenta de aprovisionamiento no puede crearlo (template1 endurecido),
+      // así que lo crea el superusuario de pruebas.
+      const asSuper = connect<unknown>(superServer, created, 1);
+      await sql`SELECT lo_from_bytea(424242, 'x'::bytea)`.execute(asSuper);
+      await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/objetos ajenos/);
+      await sql`SELECT lo_unlink(424242)`.execute(asSuper);
+      await asSuper.destroy();
+    }
+    if (engine === 'sqlserver') {
+      await sql.raw('CREATE SCHEMA otro').execute(target);
+      await sql.raw('CREATE TABLE otro.audit_log (n int)').execute(target);
+      await expect(manager.cleanupProvisioning(slug)).rejects.toThrow(/objetos ajenos/);
+      await sql.raw('DROP TABLE otro.audit_log').execute(target);
+      await sql.raw('DROP SCHEMA otro').execute(target);
+    }
+    await target.destroy();
+    // Sin tablas ajenas, la limpieza procede.
     await manager.cleanupProvisioning(slug);
+    expect(await real.databaseExists(serverDb, created)).toBe(false);
+    await serverDb.destroy();
     expect((await manager.listTenants()).some((t) => t.slug === slug)).toBe(false);
+  });
+
+  it('Z-02: si se altera la contraseña cifrada guardada, tenant check recomienda rotar y rotar lo resuelve', async () => {
+    const control = connect<ControlDatabase>(server, controlDatabase, 1);
+    const rowB = await control.selectFrom('tenants').selectAll().where('slug', '=', slugB).executeTakeFirstOrThrow();
+    const rowA = await control.selectFrom('tenants').selectAll().where('slug', '=', slugA).executeTakeFirstOrThrow();
+    // Sobre de otra organización: formato válido, pero no se descifra con la DEK de B.
+    await control.updateTable('tenants').set({ db_password_sealed: rowA.db_password_sealed }).where('slug', '=', slugB).execute();
+    await control.destroy();
+    await manager.closeTenant(slugB);
+    const check = await manager.checkTenants();
+    expect(check[slugB]?.join(' ')).toMatch(/rotate-password --slug/);
+    expect(check[slugB]?.join(' ')).not.toMatch(/no lo resuelve/);
+    await manager.rotatePassword(slugB, 'operador:pruebas');
+    expect((await manager.checkTenants())[slugB]).toEqual([]);
+    expect(rowB.id).toBeDefined();
+  });
+
+  it('Y-02: con una clave maestra que no corresponde, tenant check lo dice y no recomienda rotar', async () => {
+    const wrong = new TestTenantManager({ admin: server, controlDatabase }, [generateKey()]);
+    try {
+      const check = await wrong.checkTenants();
+      expect(check[slugA]?.join(' ')).toMatch(/clave maestra/);
+      expect(check[slugA]?.join(' ')).toMatch(/no lo resuelve/);
+    } finally {
+      await wrong.close();
+    }
   });
 
   it('N-01: si falla una restricción posterior al CREATE, la base creada igual se elimina', async () => {

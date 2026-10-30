@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Controller, Get, Inject } from '@nestjs/common';
+import { Public } from '../identity/http.js';
 import { APP_CONFIG, type AppConfig } from '../config/app-config.js';
 
 /** Información pública sobre la versión en ejecución. */
@@ -25,6 +26,7 @@ export class AboutController {
   constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
 
   @Get()
+  @Public()
   about(): AboutResponse {
     const ref = this.config.BUILD_COMMIT === 'desarrollo' ? 'main' : this.config.BUILD_COMMIT;
     return {

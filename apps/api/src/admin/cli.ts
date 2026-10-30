@@ -17,6 +17,7 @@
 import { toJsonl } from '@auditor-21719/audit-log';
 import { loadMasterKey } from '@auditor-21719/crypto';
 import { loadPlatformDbConfig, TenantManager } from '@auditor-21719/persistence';
+import { IdentityService } from '../identity/identity.service.js';
 import { closeSync, constants, openSync, realpathSync, writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -31,6 +32,11 @@ const USAGE = `Uso: auditor-admin <comando>
   tenant check                             Comprueba que cada organización activa puede abrirse
   tenant rotate-password --slug <id>       Cambia la contraseña de base de datos de una organización
   tenant cleanup-provisioning --slug <id>  Limpia un alta que quedó incompleta
+  user invite-admin --tenant <id> --email <correo> --name <nombre>
+                                           Invita al primer administrador de una organización
+                                           (imprime un token de activación de un solo uso, 24 h)
+  user unlock --tenant <id> --email <correo>
+                                           Desbloquea una cuenta bloqueada por intentos fallidos
   audit export --tenant <id> [--out <archivo>]
                                            Exporta la bitácora en JSONL (también de organizaciones suspendidas)
 
@@ -102,6 +108,8 @@ const COMMANDS: Record<string, Record<string, typeof S>> = {
   'tenant check': {},
   'tenant rotate-password': { slug: S },
   'tenant cleanup-provisioning': { slug: S },
+  'user invite-admin': { tenant: S, email: S, name: S },
+  'user unlock': { tenant: S, email: S },
   'audit export': { tenant: S, out: S },
 };
 
@@ -116,7 +124,7 @@ async function run(argv: string[]): Promise<number> {
   const spec = COMMANDS[key];
   if (spec === undefined) throw new UsageError(`Comando desconocido: ${key.trim()}`);
   const v = parse(key === 'init' ? [] : rest, spec);
-  for (const name of ['slug', 'name', 'tenant'] as const) {
+  for (const name of ['slug', 'name', 'tenant', 'email'] as const) {
     if (name in spec) required(v[name], name);
   }
 
@@ -124,7 +132,9 @@ async function run(argv: string[]): Promise<number> {
   try {
     switch (key) {
       case 'init': {
-        const { applied, warnings } = await m.initControl();
+        // Cuenta de la API con lectura del registro de organizaciones (D-80), si se configuró.
+        const apiReader = process.env.DB_API_READER_USER;
+        const { applied, warnings } = await m.initControl(apiReader !== undefined && apiReader !== '' ? { apiReader } : {});
         console.log(`Base de control: ${applied.length === 0 ? 'al día' : `migraciones aplicadas: ${applied.join(', ')}`}`);
         printWarnings(warnings);
         let failed = false;
@@ -179,6 +189,25 @@ async function run(argv: string[]): Promise<number> {
         const slug = required(v.slug, 'slug');
         await m.cleanupProvisioning(slug);
         console.log(`Organización ${slug}: alta incompleta eliminada. Puede volver a crearla.`);
+        return 0;
+      }
+      case 'user invite-admin': {
+        const tenant = required(v.tenant, 'tenant');
+        const handle = await m.openTenant(tenant);
+        const service = new IdentityService(m, { accessLogRetentionDays: 90 });
+        const invited = await service.inviteUser(handle, { label: ACTOR }, { email: required(v.email, 'email'), displayName: required(v.name, 'name'), roles: ['org_admin'] }, null);
+        console.log(`Administrador invitado en ${tenant}. Vence: ${invited.expiresAt}`);
+        console.log('Entregue este token de activación por un canal seguro (se muestra UNA sola vez):');
+        console.log(invited.activationToken);
+        console.log('Con él, la persona fija su contraseña (POST /api/v1/auth/activate) y luego debe configurar la verificación en dos pasos.');
+        return 0;
+      }
+      case 'user unlock': {
+        const tenant = required(v.tenant, 'tenant');
+        const handle = await m.openTenant(tenant);
+        const service = new IdentityService(m, { accessLogRetentionDays: 90 });
+        await service.unlockUser(handle, { label: ACTOR }, await service.userIdByEmail(handle, required(v.email, 'email')), null);
+        console.log(`Cuenta desbloqueada en ${tenant}.`);
         return 0;
       }
       default: {
