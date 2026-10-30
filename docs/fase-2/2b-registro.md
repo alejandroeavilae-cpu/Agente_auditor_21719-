@@ -192,7 +192,8 @@ QA: [PENDIENTE].
 | Decisión | Resultado |
 |---|---|
 | D-84 (nueva) | Una sola organización por instalación |
-| D-75 | [PROPUESTA en D-84] Inicio de sesión solo con correo y contraseña |
+| D-75 | Ajustada (confirmada 23:03): inicio de sesión solo con correo y contraseña |
+| 2C | Confirmado (23:03): sin suite de aislamiento entre organizaciones; se concentra en pantallas y permisos entre roles |
 | D-76 → D-85 (nueva) | Operador con interfaz web propia: servicio separado, acceso solo interno con lista de IP, operadores con nombre, MFA y reautenticación |
 | D-77 → D-86 (nueva) | MFA obligatoria para todos los usuarios |
 | D-78 | Reconfirmada sin cambios |
