@@ -137,8 +137,8 @@ describe('api-secrets write: archivos 0600 y escritura atómica', () => {
   it('escribe los tres archivos con permisos 0600 y la API los lee', () => {
     const dir = mkdtempSync(join(tmpdir(), 'apisec-'));
     const s = secrets();
-    const written = writeApiSecrets(dir, s);
-    expect(written).toHaveLength(3);
+    writeApiSecrets(dir, s);
+    const written = [API_SECRET_FILES.organization, API_SECRET_FILES.dbPassword, API_SECRET_FILES.dek].map((f) => join(dir, f));
     for (const f of written) expect((statSync(f).mode & 0o777).toString(8)).toBe('600');
     const cfg = loadIdentityConfig({ DB_ENGINE: 'sqlserver', DB_HOST: 'db', ORGANIZATION_FILE: written[0], ORGANIZATION_DB_PASSWORD_FILE: written[1], ORGANIZATION_DEK_FILE: written[2] });
     expect(cfg?.organization).toEqual(s.organization);
@@ -159,12 +159,18 @@ describe('api-secrets write: archivos 0600 y escritura atómica', () => {
 
   it('rechaza un destino que no es directorio, un enlace o un directorio modificable por cualquiera', () => {
     const dir = mkdtempSync(join(tmpdir(), 'apisec-'));
-    expect(() => writeApiSecrets(join(dir, 'no-existe'), secrets())).toThrow(/No existe/);
+    expect(() => {
+      writeApiSecrets(join(dir, 'no-existe'), secrets());
+    }).toThrow(/No existe/);
     symlinkSync(dir, join(dir, 'enlace'));
-    expect(() => writeApiSecrets(join(dir, 'enlace'), secrets())).toThrow(/no un enlace/);
+    expect(() => {
+      writeApiSecrets(join(dir, 'enlace'), secrets());
+    }).toThrow(/no un enlace/);
     const open = join(dir, 'abierto');
     mkdirSync(open);
     chmodSync(open, 0o777);
-    expect(() => writeApiSecrets(open, secrets())).toThrow(/cualquier usuario/);
+    expect(() => {
+      writeApiSecrets(open, secrets());
+    }).toThrow(/cualquier usuario/);
   });
 });

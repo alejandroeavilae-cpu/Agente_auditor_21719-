@@ -64,10 +64,11 @@ export function checkSecretsDir(dir: string): void {
 
 /**
  * Escribe los secretos de la API en `dir`: datos de la organización, contraseña de su base
- * y DEK desenvuelta, cada uno con permisos 0600.
- * @returns rutas escritas.
+ * y DEK desenvuelta, cada uno con permisos 0600. No devuelve nada a propósito: quien llama
+ * informa solo los nombres constantes de `API_SECRET_FILES`, y así ningún dato que se
+ * imprima deriva de los secretos (alerta CodeQL js/clear-text-logging).
  */
-export function writeApiSecrets(dir: string, secrets: ApiSecrets): string[] {
+export function writeApiSecrets(dir: string, secrets: ApiSecrets): void {
   checkSecretsDir(dir);
   const files: [string, string][] = [
     [API_SECRET_FILES.organization, `${JSON.stringify(secrets.organization, null, 2)}\n`],
@@ -75,5 +76,4 @@ export function writeApiSecrets(dir: string, secrets: ApiSecrets): string[] {
     [API_SECRET_FILES.dek, encodeKeyForFile(secrets.dek)],
   ];
   for (const [name, content] of files) writeAtomic(dir, name, content);
-  return files.map(([name]) => join(dir, name));
 }

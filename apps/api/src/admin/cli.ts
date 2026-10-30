@@ -22,7 +22,7 @@ import { toJsonl } from '@auditor-21719/audit-log';
 import { loadMasterKey } from '@auditor-21719/crypto';
 import { loadPlatformDbConfig, TenantManager } from '@auditor-21719/persistence';
 import { IdentityService } from '../identity/identity.service.js';
-import { checkSecretsDir, writeApiSecrets } from './api-secrets.js';
+import { API_SECRET_FILES, checkSecretsDir, writeApiSecrets } from './api-secrets.js';
 import { closeSync, constants, openSync, realpathSync, writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -205,7 +205,10 @@ async function run(argv: string[]): Promise<number> {
         try {
           writeApiSecrets(out, secrets);
         } catch (error) {
-          throw new Error(`La contraseña se cambió, pero no se pudieron escribir los secretos de la API (${error instanceof Error ? error.message : String(error)}). Ejecute: auditor-admin api-secrets write --tenant ${slug} --out <dir>`, { cause: error });
+          // El aviso no incluye nada del error ni de los secretos; el error del sistema de
+          // archivos (ruta y código) se propaga tal cual y `main` imprime su mensaje.
+          console.error(`Aviso: la contraseña se cambió, pero no se pudieron escribir los secretos de la API en ${out}. Ejecute: auditor-admin api-secrets write --tenant ${slug} --out <dir>`);
+          throw error;
         }
         console.log(`Secretos de la API reescritos en ${out}. Reinicie la API para que use la contraseña nueva.`);
         return 0;
@@ -214,8 +217,9 @@ async function run(argv: string[]): Promise<number> {
         const tenant = required(v.tenant, 'tenant');
         const out = required(v.out, 'out');
         checkSecretsDir(out);
-        const written = writeApiSecrets(out, await m.apiSecrets(tenant, ACTOR));
-        console.log(`Secretos de la API de ${tenant} escritos (permisos 0600): ${written.join(', ')}`);
+        writeApiSecrets(out, await m.apiSecrets(tenant, ACTOR));
+        // Solo nombres constantes y datos dados por quien ejecuta: nada derivado de los secretos.
+        console.log(`Secretos de la API de ${tenant} escritos en ${out} (permisos 0600): ${Object.values(API_SECRET_FILES).join(', ')}`);
         console.log('Contienen la contraseña de la base y la llave de la organización: no los copie fuera del servidor. Reinicie la API si ya estaba en marcha.');
         return 0;
       }
