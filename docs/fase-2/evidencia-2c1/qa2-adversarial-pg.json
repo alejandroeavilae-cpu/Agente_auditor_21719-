@@ -1,0 +1,213 @@
+{
+ "agente": "QA independiente 2C-1 (segunda revisión)",
+ "commit": "6500602315ca438892b563fb4991d4628fc75800",
+ "fecha": "2026-10-30",
+ "motor": "PostgreSQL 16.15 local, Node 24",
+ "nota": "Prueba adversarial propia del agente QA (archivo temporal, no versionado). Datos sintéticos. Incluye mutación local de throttleOrigin (revertida con git checkout).",
+ "resumen": {
+  "aprobadas": 10,
+  "fallidas": 0,
+  "omitidas": 0
+ },
+ "pruebas": [
+  {
+   "nombre": "R2-01 (QA-05) D-89: 4 orígenes x 5 códigos errados con la contraseña conocida: solo 5 se verifican; código correcto rechazado desde origen nuevo, del dueño y en reauth",
+   "estado": "passed",
+   "ms": 446
+  },
+  {
+   "nombre": "R2-02 D-89+D-82: ráfaga mixta de 40 verify + 10 reauth en paralelo: exactamente 5 se verifican; al vencer, 1",
+   "estado": "passed",
+   "ms": 1484
+  },
+  {
+   "nombre": "R2-03 regresión R-34/D-88: bloqueo de contraseña por cuenta+origen; la víctima entra desde otro origen; el bloqueo de MFA no afecta la contraseña",
+   "estado": "passed",
+   "ms": 1911
+  },
+  {
+   "nombre": "R2-04 2C1-10: un auth.account.locked por cuenta, contador y ventana; contraseña y MFA separados; nueva ventana registra otro; sin IP en bitácora",
+   "estado": "passed",
+   "ms": 6901
+  },
+  {
+   "nombre": "R2-05 residual D-89: quien conoce la contraseña mantiene bloqueada la MFA con 1 código por espera; la dueña no entra durante la espera",
+   "estado": "passed",
+   "ms": 1033
+  },
+  {
+   "nombre": "R2-06 2C1-06: sin filas de rol, login y activación quedan en mfa_enroll",
+   "estado": "passed",
+   "ms": 64
+  },
+  {
+   "nombre": "R2-07 2C1-08: checkSecretsDir rechaza 0770/0777/0720/0702/0760 y acepta 0700/0750; api-secrets write por CLI respeta lo mismo",
+   "estado": "passed",
+   "ms": 36
+  },
+  {
+   "nombre": "R2-08 2C1-05: la API advierte al arrancar con TRUST_PROXY=true y no con false",
+   "estado": "passed",
+   "ms": 9
+  },
+  {
+   "nombre": "R2-09 2C1-07: rotate-password cierra conexiones; API con la contraseña anterior responde 503; CLI sin secretos en la salida",
+   "estado": "passed",
+   "ms": 127
+  },
+  {
+   "nombre": "R2-10 centinela y registros: ni contraseñas, ni códigos de recuperación, ni tokens de sesión en bases ni en la salida de la API",
+   "estado": "passed",
+   "ms": 14
+  }
+ ],
+ "resultados": {
+  "r201": {
+   "statuses": [
+    401
+   ],
+   "verifiedFailures": 5,
+   "blockedEvents": 15,
+   "mfaRows": [
+    {
+     "origin": "ACCOUNT_ORIGIN",
+     "n": 5,
+     "locked": true
+    }
+   ],
+   "correctCodeNewOrigin": [
+    401,
+    "invalid_code"
+   ],
+   "reauthOwner": [
+    401,
+    "invalid_code"
+   ],
+   "recoveryDuringLock": [
+    401,
+    "invalid_code"
+   ],
+   "recoveryConsumed": 0
+  },
+  "r201_afterUnlockRecovery": "full",
+  "r202": {
+   "statuses": [
+    401
+   ],
+   "verifiedFailures": 5,
+   "rowsAfterBurst": [
+    5
+   ],
+   "afterExpiry": [
+    6
+   ],
+   "verifiedAfterExpiry": 6,
+   "remainingMs": 59976
+  },
+  "r203": {
+   "sameOriginCorrectPassword": 401,
+   "victimOtherOrigin": [
+    "mfa_pending",
+    "full"
+   ],
+   "passwordRows": [
+    {
+     "n": 5,
+     "locked": true,
+     "accountOrigin": false
+    }
+   ]
+  },
+  "r204": {
+   "auditLocksWindow1": [
+    {
+     "auditWindowMinutes": 60,
+     "counter": "mfa",
+     "ipHmac": "e5e458a21dfd655eb8cd82af5f67640e7c28e001a543da7090d67cbc35bedc7c",
+     "scope": "account",
+     "ua": "otro"
+    },
+    {
+     "auditWindowMinutes": 60,
+     "counter": "password",
+     "ipHmac": "43b9fe409c5336793e86f4a5644dbe0a9da2330ed0d18ab3bd940613cbbe7379",
+     "scope": "account+origin",
+     "ua": "otro"
+    }
+   ],
+   "accessLocksWindow1": 7,
+   "auditLocksAfterNewWindow": 3,
+   "plainIpInAudit": false
+  },
+  "r205": {
+   "waitsSeconds": [
+    30,
+    60,
+    120,
+    240,
+    480,
+    900
+   ],
+   "ownerDuringLock": [
+    "invalid_code",
+    "invalid_code",
+    "invalid_code",
+    "invalid_code",
+    "invalid_code",
+    "invalid_code"
+   ],
+   "attackerCodeRequests": 11,
+   "finalAttempts": 11,
+   "finalWaitSeconds": 900
+  },
+  "r205_attackerAfterPwChange": 401,
+  "r206": {
+   "activateStage": "mfa_enroll",
+   "loginStage": "mfa_enroll"
+  },
+  "r207": {
+   "modes": {
+    "700": "aceptado",
+    "702": "rechazado",
+    "720": "rechazado",
+    "730": "rechazado",
+    "750": "aceptado",
+    "755": "aceptado",
+    "760": "rechazado",
+    "770": "rechazado",
+    "777": "rechazado"
+   },
+   "cliWrite770": 1,
+   "cliRotate770": 1
+  },
+  "r208": {
+   "warningsAtFirstStart": 1,
+   "warningsWithFalse": 0
+  },
+  "r209": {
+   "cliCode": 0,
+   "cliOut": "Organización qa2-f7b1b3: contraseña de base de datos cambiada; conexiones abiertas con la anterior cerradas.\nSecretos de la API reescritos en <tmp> Reinicie la API para que use la contraseña nueva.",
+   "oldApiMe": [
+    503,
+    "unavailable"
+   ],
+   "oldApiLogin": [
+    503,
+    "unavailable"
+   ],
+   "cliLeaksSecret": false
+  },
+  "r209_resumed": 200,
+  "r210": {
+   "sentinels": 221,
+   "foundInDb": 0,
+   "foundInLogs": 0,
+   "logBytes": 12294
+  }
+ },
+ "mutacion": {
+  "cambio": "throttleOrigin devuelve el origen también para la MFA (comportamiento previo a D-89)",
+  "comando": "vitest run test/identity.int.test.ts -t 'D-89'",
+  "resultado": "Tests 2 ⎯⎯⎯⎯⎯⎯⎯"
+ }
+}

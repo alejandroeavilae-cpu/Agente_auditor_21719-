@@ -1,0 +1,211 @@
+{
+ "commit": "6500602315ca438892b563fb4991d4628fc75800",
+ "fuente": "API REST de GitHub (check-runs y annotations); los registros de los jobs no se pudieron descargar (proxy)",
+ "check_runs": [
+  {
+   "completed_at": "2026-10-30T05:23:21Z",
+   "conclusion": "success",
+   "id": 123907678963,
+   "name": "CodeQL",
+   "started_at": "2026-10-30T05:23:18Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:22:38Z",
+   "conclusion": "success",
+   "id": 123907382479,
+   "name": "Análisis estático (Semgrep CE)",
+   "started_at": "2026-10-30T05:22:22Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:22:28Z",
+   "conclusion": "success",
+   "id": 123907382476,
+   "name": "Secretos (Gitleaks, historial completo)",
+   "started_at": "2026-10-30T05:22:22Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:26:32Z",
+   "conclusion": "success",
+   "id": 123907382431,
+   "name": "Prueba de humo de Docker Compose (perfiles local e institucional)",
+   "started_at": "2026-10-30T05:22:22Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:24:56Z",
+   "conclusion": "success",
+   "id": 123907382416,
+   "name": "Integración con PostgreSQL y SQL Server reales",
+   "started_at": "2026-10-30T05:22:23Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:22:37Z",
+   "conclusion": "success",
+   "id": 123907382388,
+   "name": "Dependencias (OSV-Scanner, informe)",
+   "started_at": "2026-10-30T05:22:23Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:23:27Z",
+   "conclusion": "success",
+   "id": 123907382239,
+   "name": "analyze",
+   "started_at": "2026-10-30T05:22:23Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:23:12Z",
+   "conclusion": "success",
+   "id": 123907382222,
+   "name": "Verificación (SPDX, lint, tipos, pruebas, build, licencias)",
+   "started_at": "2026-10-30T05:22:23Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:22:34Z",
+   "conclusion": "success",
+   "id": 123907382175,
+   "name": "Dependencias y configuración (Trivy, D-24)",
+   "started_at": "2026-10-30T05:22:23Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:22:31Z",
+   "conclusion": "success",
+   "id": 123907367477,
+   "name": "Dependencias y configuración (Trivy, D-24)",
+   "started_at": "2026-10-30T05:22:20Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:22:41Z",
+   "conclusion": "success",
+   "id": 123907367438,
+   "name": "Análisis estático (Semgrep CE)",
+   "started_at": "2026-10-30T05:22:21Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:22:30Z",
+   "conclusion": "success",
+   "id": 123907367414,
+   "name": "Dependencias (OSV-Scanner, informe)",
+   "started_at": "2026-10-30T05:22:20Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:26:09Z",
+   "conclusion": "success",
+   "id": 123907367248,
+   "name": "Prueba de humo de Docker Compose (perfiles local e institucional)",
+   "started_at": "2026-10-30T05:22:20Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:22:26Z",
+   "conclusion": "success",
+   "id": 123907367235,
+   "name": "Secretos (Gitleaks, historial completo)",
+   "started_at": "2026-10-30T05:22:20Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:23:09Z",
+   "conclusion": "success",
+   "id": 123907367232,
+   "name": "Verificación (SPDX, lint, tipos, pruebas, build, licencias)",
+   "started_at": "2026-10-30T05:22:19Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-10-30T05:24:42Z",
+   "conclusion": "success",
+   "id": 123907367074,
+   "name": "Integración con PostgreSQL y SQL Server reales",
+   "started_at": "2026-10-30T05:22:19Z",
+   "status": "completed"
+  }
+ ],
+ "anotaciones_integracion": [
+  "58 aprobadas, 0 fallidas, 0 omitidas · por motor: postgresql=29, sqlserver=29",
+  "71 aprobadas, 0 fallidas, 0 omitidas · por motor: postgresql=24, sqlserver=24",
+  "postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5 -> sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5",
+  "mcr.microsoft.com/mssql/server:2025-CU10-ubuntu-24.04@sha256:245f6b1c8903edae52cb20fa31419cefcde1a49938bb8c3447099011fc871ca3 -> sha256:245f6b1c8903edae52cb20fa31419cefcde1a49938bb8c3447099011fc871ca3"
+ ],
+ "pasos_humo": [
+  {
+   "conclusion": "success",
+   "name": "Set up job"
+  },
+  {
+   "conclusion": "success",
+   "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+  },
+  {
+   "conclusion": "success",
+   "name": "Generar secretos locales"
+  },
+  {
+   "conclusion": "success",
+   "name": "Construir imágenes"
+  },
+  {
+   "conclusion": "success",
+   "name": "Levantar base de datos y caché"
+  },
+  {
+   "conclusion": "success",
+   "name": "Instalación y comprobaciones de comportamiento y aislamiento"
+  },
+  {
+   "conclusion": "success",
+   "name": "Perfil institucional con HTTPS y CA interna (2C-1)"
+  },
+  {
+   "conclusion": "success",
+   "name": "Escanear imagen API"
+  },
+  {
+   "conclusion": "success",
+   "name": "Escanear imagen web"
+  },
+  {
+   "conclusion": "success",
+   "name": "Regla de bloqueo D-24 sobre imágenes (vulnerabilidades altas/críticas con corrección)"
+  },
+  {
+   "conclusion": "success",
+   "name": "Registrar digests de imágenes base (para fijarlas por digest)"
+  },
+  {
+   "conclusion": "skipped",
+   "name": "Registros de los servicios (como anotaciones si algo falló)"
+  },
+  {
+   "conclusion": "success",
+   "name": "Bajar servicios y borrar volúmenes (incluido el de la CA interna)"
+  },
+  {
+   "conclusion": "success",
+   "name": "Post Escanear imagen web"
+  },
+  {
+   "conclusion": "success",
+   "name": "Post Escanear imagen API"
+  },
+  {
+   "conclusion": "success",
+   "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+  },
+  {
+   "conclusion": "success",
+   "name": "Complete job"
+  }
+ ],
+ "alertas_code_scanning": "[PENDIENTE] HTTP 403 Resource not accessible by integration"
+}
