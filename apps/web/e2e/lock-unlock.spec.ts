@@ -12,6 +12,11 @@ import { nextTotp, wrongTotp } from './support/totp.js';
 test('bloqueo de MFA, aviso R-38, desbloqueo y cambio obligatorio de contraseña', async ({ openPage, state }) => {
   const user = await createActiveUser(state, ['reader'], 'bloqueada');
 
+  // El administrador entra primero: esperar un código TOTP nuevo puede tomar hasta 30 s.
+  const admin = await openPage();
+  await loginUi(admin, state.admin);
+  await expect(admin.getByRole('heading', { level: 1, name: /Bienvenida o bienvenido/ })).toBeVisible();
+
   // Quien conoce la contraseña intenta adivinar el código hasta bloquear.
   const attacker = await openPage();
   await attacker.goto('/iniciar-sesion');
@@ -25,9 +30,8 @@ test('bloqueo de MFA, aviso R-38, desbloqueo y cambio obligatorio de contraseña
   }
   await expectAccessible(attacker, 'Verificación en dos pasos (error)');
 
-  // El administrador ve el bloqueo y el aviso destacado de R-38.
-  const admin = await openPage();
-  await loginUi(admin, state.admin);
+  // El administrador ve el bloqueo y el aviso destacado de R-38 (la espera del primer bloqueo
+  // es corta, D-82: por eso el administrador ya entró antes del ataque).
   await admin.goto('/usuarios');
   const panel = admin.getByRole('region', { name: 'Atención: posible contraseña comprometida' });
   await expect(panel).toBeVisible();
@@ -46,7 +50,9 @@ test('bloqueo de MFA, aviso R-38, desbloqueo y cambio obligatorio de contraseña
   await dialog.getByRole('button', { name: 'Desbloquear', exact: true }).click();
   await expect(admin.getByText(`Se desbloqueó la cuenta de ${user.name}. En su próximo ingreso deberá cambiar su contraseña.`)).toBeVisible();
   await expect(row.getByText('Debe cambiar su contraseña')).toBeVisible();
-  await expect(admin.getByRole('region', { name: 'Atención: posible contraseña comprometida' })).toBeHidden();
+  // El panel puede seguir mostrando a otras personas de pruebas anteriores, pero ya no a esta.
+  await expect(admin.getByText(user.email)).toHaveCount(1);
+  await expect(row.getByText('Atención: contraseña posiblemente comprometida')).toHaveCount(0);
 
   // La persona entra: tras el código, solo puede cambiar la contraseña (distinta de la actual).
   const owner = await openPage();

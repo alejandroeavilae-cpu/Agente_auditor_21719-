@@ -5,8 +5,7 @@
 #
 # Uso: sh scripts/zap-baseline.sh <url-objetivo> [directorio-de-salida]
 #
-# - Se usa la imagen oficial de ZAP. ZAP_IMAGE la fija por digest (P-13); ver la nota en
-#   docs/fase-2/2c2-registro.md (parte frontend) sobre cómo se obtuvo.
+# - Se usa la imagen oficial de ZAP fijada por digest (P-13).
 # - El escaneo "baseline" es pasivo: recorre el sitio (araña clásica y araña AJAX, porque la
 #   interfaz es una SPA) y revisa respuestas; no ataca.
 # - Bloquea SOLO ante alertas de riesgo ALTO (regla de 09-seguridad.md): las demás se
@@ -15,7 +14,9 @@
 set -eu
 TARGET="${1:?Uso: sh scripts/zap-baseline.sh <url-objetivo> [directorio-de-salida]}"
 OUT="${2:-zap-out}"
-ZAP_IMAGE="${ZAP_IMAGE:-ghcr.io/zaproxy/zaproxy:stable}"
+# Digest de ghcr.io/zaproxy/zaproxy:stable registrado por el CI el 30-10-2026 (job compose-smoke
+# de d4e7291). Para actualizarlo, use el que informa la anotación "zap-imagen".
+ZAP_IMAGE="${ZAP_IMAGE:-ghcr.io/zaproxy/zaproxy@sha256:030d3df57735dacbb83464854758e674dd9ad01d79d12a129a8e58b1fd384238}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 mkdir -p "$OUT"
