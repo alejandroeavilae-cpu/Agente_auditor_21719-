@@ -16,7 +16,7 @@ random() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 # modifican (hallazgo QA B-09).
 created() { chmod 644 "$1"; echo "Creado: $(basename "$1")${2:-}"; }
 
-for name in postgres_password provisioner_password api_db_password; do
+for name in postgres_password provisioner_password; do
   if [ ! -f "$DIR/$name" ]; then
     random > "$DIR/$name"
     created "$DIR/$name"
@@ -40,4 +40,24 @@ if [ ! -f "$DIR/master.key" ]; then
 else
   echo "Ya existe: master.key (no se modifica)"
 fi
+# Secretos de la API (D-87) y certificado propio del perfil institucional: se crean VACÍOS
+# para que Docker Compose encuentre los archivos. La API se niega a arrancar con ellos
+# vacíos; los llena `sh scripts/write-api-secrets.sh <organización>` después de crear la
+# organización (ver docs/fase-1/ejecucion-local.md).
+for sub in api tls; do
+  mkdir -p "$DIR/$sub"
+  chmod 700 "$DIR/$sub"
+done
+for name in api/organization.json api/organization_db_password api/organization_dek tls/sin-certificado.pem tls/sin-llave.pem; do
+  if [ ! -f "$DIR/$name" ]; then
+    : > "$DIR/$name"
+    chmod 644 "$DIR/$name"
+    echo "Creado vacío: $name"
+  fi
+done
+if [ -f "$DIR/api_db_password" ]; then
+  echo "Aviso: api_db_password ya no se usa desde 2C-1 (la API no tiene cuenta propia, D-87). Puede borrarlo."
+fi
 echo "Secretos listos en $DIR (excluidos de git por .gitignore)."
+echo "Siguiente paso: cree la organización y ejecute sh scripts/write-api-secrets.sh <organización> antes de levantar la API."
+
