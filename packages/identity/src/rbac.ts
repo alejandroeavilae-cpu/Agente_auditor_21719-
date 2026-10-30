@@ -51,8 +51,13 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   reader: ['reports.read'],
 };
 
-/** Roles con MFA obligatorio (D-77; `09-seguridad.md` §10.3). */
-export const MFA_REQUIRED_ROLES: ReadonlySet<Role> = new Set<Role>(['org_admin', 'audit_lead', 'legal_reviewer']);
+/**
+ * Roles con MFA obligatoria: TODOS (D-86, que modifica D-77). Lo que se ve en la plataforma
+ * (brechas, sistemas con datos personales, riesgos) es sensible para cualquier rol, y con la
+ * MFA obligatoria adivinar una contraseña ya no basta para entrar (defensa principal contra
+ * el ataque distribuido de R-34).
+ */
+export const MFA_REQUIRED_ROLES: ReadonlySet<Role> = new Set<Role>(ROLES);
 
 /**
  * Combinaciones prohibidas por separación de funciones (D-79). Derivadas de §7.5: el

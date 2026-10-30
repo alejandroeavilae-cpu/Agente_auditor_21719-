@@ -5,6 +5,7 @@ import {
   checkPasswordPolicy,
   hashPassword,
   hashToken,
+  MFA_REQUIRED_ROLES,
   newRecoveryCodes,
   newToken,
   normalizeRecoveryCode,
@@ -150,11 +151,12 @@ describe('roles y permisos', () => {
     // El administrador no audita (separación de funciones).
     expect(permissionsOf(['org_admin']).has('audits.run')).toBe(false);
   });
-  it('MFA obligatorio solo en roles privilegiados (D-77)', () => {
-    expect(requiresMfa(['org_admin'])).toBe(true);
-    expect(requiresMfa(['audit_lead'])).toBe(true);
-    expect(requiresMfa(['legal_reviewer'])).toBe(true);
-    expect(requiresMfa(['auditor', 'reader', 'remediation_owner'])).toBe(false);
+  it('MFA obligatoria para los 6 roles (D-86)', () => {
+    expect(MFA_REQUIRED_ROLES.size).toBe(ROLES.length);
+    for (const role of ROLES) expect(requiresMfa([role]), role).toBe(true);
+    expect(requiresMfa(['auditor', 'reader', 'remediation_owner'])).toBe(true);
+    // Sin roles no hay nada que proteger (no ocurre: validateRoleSet exige al menos uno).
+    expect(requiresMfa([])).toBe(false);
   });
   it('combinaciones prohibidas y roles inválidos', () => {
     expect(validateRoleSet(['org_admin', 'legal_reviewer']).join(' ')).toMatch(/Separación de funciones/);
