@@ -22,7 +22,7 @@ import {
   type PasswordIssue,
   type Role,
 } from '@auditor-21719/identity';
-import { ATTACK_ALERT_ORIGIN, type AppUserTable, type SessionStage, type TenantDatabase, type TenantHandle, type UserSessionTable } from '@auditor-21719/persistence';
+import { ACCOUNT_ORIGIN, type AppUserTable, type SessionStage, type TenantDatabase, type TenantHandle, type UserSessionTable } from '@auditor-21719/persistence';
 import { Logger } from '@nestjs/common';
 import type { ExpressionBuilder, Transaction } from 'kysely';
 import { ApiError, INVALID_CREDENTIALS, UNAUTHENTICATED, UNAVAILABLE } from './errors.js';
@@ -64,7 +64,10 @@ const LOCK_MAX_MS = 15 * 60_000;
  */
 export const MIN_FAILURE_MS = 300;
 
-/** Contador del par cuenta + origen. */
+/**
+ * Contador de intentos: `password` se lleva por cuenta + origen (D-88) y `mfa` por cuenta
+ * (D-89, QA 2C1-04). Ver `throttleOrigin`.
+ */
 type Counter = 'password' | 'mfa';
 
 /** Propósito del HMAC del origen en `login_throttle` (distinto del de la bitácora). */
@@ -359,12 +362,27 @@ export class IdentityService {
   }
 
   /**
-   * Reserva un intento ANTES de verificar (QA 2B-01) en el par cuenta + origen. Devuelve si
-   * se permite verificar y si este intento acaba de activar un bloqueo.
+   * Clave de origen con que se cuenta un contador:
+   * - contraseña: por cuenta + origen (D-88). Quien no conoce la contraseña solo bloquea su
+   *   propio origen y no puede impedir que la persona entre desde el suyo (R-34);
+   * - MFA: por CUENTA, con el origen fijo `ACCOUNT_ORIGIN` (D-89, QA 2C1-04). Con el conteo
+   *   por origen, quien ya conocía la contraseña tenía 5 códigos por cada IP. Al 5.º código
+   *   errado se bloquea la MFA de la cuenta desde cualquier origen. No recrea R-34: llegar a
+   *   la verificación MFA exige la contraseña correcta.
+   * La reautenticación usa el mismo contador de MFA, por lo que también es por cuenta.
+   */
+  private throttleOrigin(tenant: TenantHandle, counter: Counter, meta: RequestMeta | null): string {
+    return counter === 'mfa' ? ACCOUNT_ORIGIN : this.originOf(tenant, meta);
+  }
+
+  /**
+   * Reserva un intento ANTES de verificar (QA 2B-01) en la fila del contador: cuenta + origen
+   * para la contraseña, cuenta para la MFA (`throttleOrigin`, D-89). Devuelve si se permite
+   * verificar y si este intento acaba de activar un bloqueo.
    *
    * El incremento y el bloqueo se aplican en UNA actualización condicional sobre el valor
    * leído (comparar y reemplazar): de varias peticiones simultáneas, cada una cuenta solo si
-   * el par no estaba bloqueado en ese instante. Así:
+   * la fila no estaba bloqueada en ese instante. Así:
    * - en paralelo no se pierde ningún fallo antes del umbral (los perdedores reintentan);
    * - la que llega al umbral fija el bloqueo y es la única que se verifica;
    * - al vencer la espera entra UN intento; los demás encuentran el bloqueo nuevo y NO
@@ -374,7 +392,7 @@ export class IdentityService {
   private async beginAttempt(tenant: TenantHandle, userId: string, counter: Counter, meta: RequestMeta | null): Promise<{ allowed: boolean; lockedNow: boolean }> {
     const now = this.now();
     const nowIso = iso(now);
-    const origin = this.originOf(tenant, meta);
+    const origin = this.throttleOrigin(tenant, counter, meta);
     const key = (eb: ExpressionBuilder<TenantDatabase, 'login_throttle'>) => eb.and([eb('user_id', '=', userId), eb('origin_hmac', '=', origin), eb('kind', '=', counter)]);
     for (let round = 0; round < CAS_ATTEMPTS; round++) {
       const row = await tenant.db.selectFrom('login_throttle').select(['failed_attempts', 'locked_until']).where(key).executeTakeFirst();
@@ -406,25 +424,31 @@ export class IdentityService {
     return { allowed: false, lockedNow: false };
   }
 
-  /** Intento exitoso: borra los contadores indicados del par cuenta + origen (no los de otros orígenes). */
+  /**
+   * Intento exitoso: borra los contadores indicados. El de contraseña solo del origen de la
+   * petición (no los de otros orígenes); el de MFA, el de la cuenta (D-89). El éxito exige
+   * haber pasado `beginAttempt`, así que nunca levanta un bloqueo vigente.
+   */
   private async attemptSucceeded(tenant: TenantHandle, userId: string, counters: readonly Counter[], meta: RequestMeta | null): Promise<void> {
-    await tenant.db
-      .deleteFrom('login_throttle')
-      .where('user_id', '=', userId)
-      .where('origin_hmac', '=', this.originOf(tenant, meta))
-      .where('kind', 'in', [...counters])
-      .execute();
+    for (const counter of counters) {
+      await tenant.db
+        .deleteFrom('login_throttle')
+        .where('user_id', '=', userId)
+        .where('origin_hmac', '=', this.throttleOrigin(tenant, counter, meta))
+        .where('kind', '=', counter)
+        .execute();
+    }
   }
 
   /**
    * Reclama la marca "ya registrado en esta ventana" de una cuenta (fila con el origen fijo
-   * `ATTACK_ALERT_ORIGIN`). Solo una petición la obtiene por ventana, aunque lleguen muchas a
+   * `ACCOUNT_ORIGIN`). Solo una petición la obtiene por ventana, aunque lleguen muchas a
    * la vez: inserción (clave primaria) o actualización condicional al vencer la anterior.
    */
   private async claimOncePerWindow(tenant: TenantHandle, userId: string, kind: 'attack_alert' | 'lock_logged_pw' | 'lock_logged_mfa', now: Date): Promise<boolean> {
     const until = iso(new Date(now.getTime() + ATTACK_WINDOW_MS));
     try {
-      await tenant.db.insertInto('login_throttle').values({ user_id: userId, origin_hmac: ATTACK_ALERT_ORIGIN, kind, failed_attempts: 0, locked_until: until, updated_at: iso(now) }).execute();
+      await tenant.db.insertInto('login_throttle').values({ user_id: userId, origin_hmac: ACCOUNT_ORIGIN, kind, failed_attempts: 0, locked_until: until, updated_at: iso(now) }).execute();
       return true;
     } catch (error) {
       if (!isUniqueViolation(error)) throw error;
@@ -433,7 +457,7 @@ export class IdentityService {
       .updateTable('login_throttle')
       .set({ locked_until: until, updated_at: iso(now) })
       .where('user_id', '=', userId)
-      .where('origin_hmac', '=', ATTACK_ALERT_ORIGIN)
+      .where('origin_hmac', '=', ACCOUNT_ORIGIN)
       .where('kind', '=', kind)
       .where((eb) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', iso(now))]))
       .executeTakeFirst();
@@ -441,8 +465,9 @@ export class IdentityService {
   }
 
   /**
-   * Registra un bloqueo del par cuenta + origen. El registro de accesos anota CADA bloqueo
-   * (con su IP); la bitácora inmutable, solo UNO por cuenta, contador y ventana de 1 hora:
+   * Registra un bloqueo (de contraseña por cuenta + origen, o de MFA por cuenta, D-89). El
+   * registro de accesos anota CADA bloqueo (con su IP); la bitácora inmutable, solo UNO por
+   * cuenta, contador y ventana de 1 hora:
    * un atacante que bloquea muchos orígenes no puede hacer crecer sin límite la bitácora
    * (QA 2C1-10, misma razón que QA 2B-08).
    */
@@ -451,7 +476,7 @@ export class IdentityService {
     await this.record(tenant, 'auth.account.locked', {
       actor,
       subjectUserId: userId,
-      data: { counter, scope: 'account+origin', ...(toAudit ? { auditWindowMinutes: ATTACK_WINDOW_MS / 60_000 } : {}) },
+      data: { counter, scope: counter === 'mfa' ? 'account' : 'account+origin', ...(toAudit ? { auditWindowMinutes: ATTACK_WINDOW_MS / 60_000 } : {}) },
       meta,
       audit: toAudit,
     });
@@ -872,7 +897,8 @@ export class IdentityService {
       .set({ mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, updated_at: iso(this.now()) })
       .where('id', '=', userId)
       .execute();
-    // Restablecer la MFA levanta también sus bloqueos, en todos los orígenes (D-83).
+    // Restablecer la MFA levanta también su bloqueo (D-83). Desde D-89 es una fila por cuenta;
+    // se borran todas las de tipo `mfa` por si quedan filas por origen anteriores a D-89.
     await ctx.tenant.db.deleteFrom('login_throttle').where('user_id', '=', userId).where('kind', '=', 'mfa').execute();
     await ctx.tenant.db.deleteFrom('recovery_code').where('user_id', '=', userId).execute();
     await this.revokeAllSessions(ctx.tenant, userId);
@@ -886,6 +912,7 @@ export class IdentityService {
    */
   async unlockUser(tenant: TenantHandle, actor: Actor, userId: string, meta: RequestMeta | null): Promise<void> {
     await this.findUser(tenant, userId);
+    // Levanta los bloqueos de contraseña de todos los orígenes y el de MFA de la cuenta (D-83, D-89).
     await tenant.db.deleteFrom('login_throttle').where('user_id', '=', userId).where('kind', 'in', ['password', 'mfa']).execute();
     // Columnas de bloqueo por cuenta de 2B (sin uso desde 2C-1): se dejan en cero por coherencia.
     await tenant.db.updateTable('app_user').set({ failed_attempts: 0, mfa_failed_attempts: 0, locked_until: null, updated_at: iso(this.now()) }).where('id', '=', userId).execute();

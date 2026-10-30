@@ -138,7 +138,10 @@ export interface AccessLogTable {
 
 /**
  * Tipo de contador de `login_throttle`:
- * - `password` y `mfa`: bloqueo progresivo por cuenta + origen, separados (D-82, R-34);
+ * - `password`: bloqueo progresivo por cuenta + origen (D-82, D-88, R-34);
+ * - `mfa`: bloqueo progresivo por CUENTA (D-89, QA 2C1-04): una sola fila por cuenta con el
+ *   origen fijo `ACCOUNT_ORIGIN`. Quien ya conoce la contraseña no obtiene 5 códigos más por
+ *   cada IP. Contar por cuenta no recrea R-34, porque llegar a la MFA exige la contraseña;
  * - `attack_alert`: fila única por cuenta (origen `ATTACK_ALERT_ORIGIN`) que marca hasta
  *   cuándo ya se registró `account.attack_suspected`, para registrarlo UNA vez por ventana;
  * - `lock_logged_pw` y `lock_logged_mfa`: fila única por cuenta (mismo origen fijo) que marca
@@ -148,9 +151,10 @@ export interface AccessLogTable {
 export type ThrottleKind = 'password' | 'mfa' | 'attack_alert' | 'lock_logged_pw' | 'lock_logged_mfa';
 
 /**
- * Bloqueo progresivo por cuenta + origen (2C-1, mitigación de R-34). El origen es el HMAC
- * de la IP con la DEK (propósito `login-origin`): la IP en claro no se guarda aquí. Las
- * filas se borran con la retención del registro de accesos (D-78).
+ * Bloqueo progresivo (2C-1, mitigación de R-34): de contraseña por cuenta + origen y de MFA
+ * por cuenta (D-89). El origen es el HMAC de la IP con la DEK (propósito `login-origin`) o
+ * `ACCOUNT_ORIGIN` en las filas por cuenta: la IP en claro no se guarda aquí. Las filas se
+ * borran con la retención del registro de accesos (D-78), salvo un bloqueo vigente.
  */
 export interface LoginThrottleTable {
   user_id: string;
@@ -161,8 +165,15 @@ export interface LoginThrottleTable {
   updated_at: string;
 }
 
-/** Origen fijo de las filas por cuenta (`attack_alert`, `lock_logged_*`): 64 ceros, mismo largo que un HMAC, sin relleno. */
-export const ATTACK_ALERT_ORIGIN = '0'.repeat(64);
+/**
+ * Origen fijo de las filas por cuenta (`mfa` desde D-89, `attack_alert`, `lock_logged_*`): 64
+ * ceros, mismo largo que un HMAC, sin relleno. Un HMAC-SHA256 real no da 64 ceros en la
+ * práctica, así que no choca con el origen de ninguna IP.
+ */
+export const ACCOUNT_ORIGIN = '0'.repeat(64);
+
+/** Nombre anterior de `ACCOUNT_ORIGIN` (2C-1, antes de D-89). Mismo valor. */
+export const ATTACK_ALERT_ORIGIN = ACCOUNT_ORIGIN;
 
 export interface TenantDatabase {
   organization: OrganizationTable;
