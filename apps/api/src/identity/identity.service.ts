@@ -183,8 +183,23 @@ export interface UserListItem {
   mfaLock: { locked: boolean; lockedUntil: string | null; failedAttempts: number };
   /** R-38: alguien que conocía la contraseña llegó al bloqueo de MFA y no hubo éxito después. */
   passwordCompromiseSuspected: boolean;
-  /** Debe cambiar la contraseña en su próximo ingreso (se fija al levantar un bloqueo de MFA). */
+  /** Debe cambiar la contraseña en su próximo ingreso (se fija al desbloquear un bloqueo de MFA). */
   mustChangePassword: boolean;
+  /** Reinicio de MFA emitido y aún no usado: la cuenta solo entra con su enlace de activación (D-92). */
+  mfaResetPending: boolean;
+}
+
+/**
+ * Prefijo con que el reinicio de MFA (D-92) invalida la contraseña: se conserva el hash
+ * anterior detrás del prefijo solo para rechazar, al activar, que la persona vuelva a fijar
+ * la misma contraseña. Con el prefijo el valor ya no es un hash PHC, así que
+ * `verifyPassword` lo rechaza siempre (falla cerrada aunque algún camino olvidara revisarlo).
+ */
+const RESET_PASSWORD_PREFIX = 'mfa-reset:';
+
+/** La contraseña de la cuenta fue invalidada por un reinicio de MFA pendiente de activar (D-92). */
+export function passwordInvalidated(hash: string | null): boolean {
+  return hash?.startsWith(RESET_PASSWORD_PREFIX) === true;
 }
 
 /** El contador de MFA alcanzó el umbral de bloqueo (R-38). */
@@ -583,6 +598,13 @@ export class IdentityService {
       await this.record(tenant, 'auth.login.failed', { actor: null, data: { reason: 'unknown_or_inactive', emailHmac: tenant.crypto.hmac('email', email) }, meta, audit: false });
       return fail();
     }
+    // D-92: tras un reinicio de MFA la contraseña anterior no sirve (ni da `mfa_pending`) hasta
+    // que la persona use su enlace de activación. Misma respuesta y duración que cualquier fallo.
+    if (passwordInvalidated(user.password_hash)) {
+      await verifyAgainstDummy(input.password);
+      await this.record(tenant, 'auth.login.failed', { actor: null, subjectUserId: user.id, data: { reason: 'mfa_reset_pending' }, meta, audit: false });
+      return fail();
+    }
     const attempt = await this.beginAttempt(tenant, user.id, 'password', meta);
     if (attempt.lockedNow) {
       await this.recordLock(tenant, user.id, 'password', null, meta);
@@ -775,9 +797,16 @@ export class IdentityService {
     const row = await tenant.db.selectFrom('activation_token').selectAll().where('token_hash', '=', hashToken(input.token)).executeTakeFirst();
     if (row === undefined || row.used_at !== null || new Date(row.expires_at).getTime() <= this.now().getTime()) return invalid();
     const user = await tenant.db.selectFrom('app_user').selectAll().where('id', '=', row.user_id).executeTakeFirst();
-    if (user?.status !== 'invited') return invalid();
+    // Sirve para invitados y para cuentas activas con un reinicio de MFA pendiente (D-92).
+    const resetting = user?.status === 'active' && passwordInvalidated(user.password_hash);
+    if (user === undefined || (user.status !== 'invited' && !resetting)) return invalid();
     const issues = checkPasswordPolicy(input.password, { email: user.email });
     if (issues.length > 0) throw weakPassword(issues);
+    // D-92: tras un reinicio no se acepta la contraseña anterior (la conocía quien provocó el
+    // bloqueo de MFA, R-38). Se comprueba ANTES de consumir el token.
+    if (resetting && user.password_hash !== null && (await verifyPassword(input.password, user.password_hash.slice(RESET_PASSWORD_PREFIX.length))).ok) {
+      throw new ApiError(400, 'password_reused', 'La nueva contraseña debe ser distinta de la anterior.');
+    }
     const now = iso(this.now());
     const hash = await hashPassword(input.password);
     // El token se marca usado con una condición: dos activaciones simultáneas no prosperan.
@@ -788,10 +817,11 @@ export class IdentityService {
       .where('used_at', 'is', null)
       .executeTakeFirst();
     if (Number(consumed.numUpdatedRows) !== 1) return invalid();
-    await tenant.db.updateTable('app_user').set({ status: 'active', password_hash: hash, password_changed_at: now, updated_at: now }).where('id', '=', user.id).execute();
+    // La activación fija una contraseña nueva: también levanta `must_change_password` (D-92).
+    await tenant.db.updateTable('app_user').set({ status: 'active', password_hash: hash, password_changed_at: now, updated_at: now, must_change_password: 0 }).where('id', '=', user.id).execute();
     const stage: SessionStage = requiresMfa() ? 'mfa_enroll' : 'full';
     const session = await this.issueSession(tenant, user.id, stage, null);
-    await this.record(tenant, 'user.activated', { actor: { userId: user.id }, subjectUserId: user.id, meta });
+    await this.record(tenant, 'user.activated', { actor: { userId: user.id }, subjectUserId: user.id, data: { via: resetting ? 'mfa_reset' : 'invitation' }, meta });
     return session;
   }
 
@@ -802,7 +832,7 @@ export class IdentityService {
    * de usuarios avise al administrador. Ver el contrato en `docs/fase-2/2c2-api.md`.
    */
   async listUsers(tenant: TenantHandle): Promise<UserListItem[]> {
-    const users = await tenant.db.selectFrom('app_user').select(['id', 'email', 'display_name', 'status', 'mfa_secret_sealed', 'must_change_password']).orderBy('email').execute();
+    const users = await tenant.db.selectFrom('app_user').select(['id', 'email', 'display_name', 'status', 'mfa_secret_sealed', 'must_change_password', 'password_hash']).orderBy('email').execute();
     const roles = await tenant.db.selectFrom('user_role').selectAll().execute();
     const counters = await tenant.db.selectFrom('login_throttle').select(['user_id', 'kind', 'failed_attempts', 'locked_until']).where('kind', 'in', ['password', 'mfa']).execute();
     const nowIso = iso(this.now());
@@ -830,6 +860,7 @@ export class IdentityService {
         // que un tercero conoce la contraseña, aunque la espera ya haya vencido.
         passwordCompromiseSuspected: mfaLockReached(mfa?.failed_attempts),
         mustChangePassword: u.must_change_password === 1,
+        mfaResetPending: passwordInvalidated(u.password_hash),
       };
     });
   }
@@ -965,23 +996,55 @@ export class IdentityService {
     await this.record(ctx.tenant, 'user.deactivated', { actor: { userId: ctx.user.id }, subjectUserId: userId, meta });
   }
 
-  /** Restablece la MFA de otro usuario (p. ej. perdió su teléfono). Alto riesgo. */
-  async resetMfa(ctx: SessionContext, userId: string, meta: RequestMeta): Promise<void> {
+  /**
+   * Reinicia la MFA de otro usuario con un enlace de un solo uso (D-92; p. ej. perdió su
+   * teléfono). Alto riesgo. En UNA transacción:
+   * - invalida la contraseña (prefijo `mfa-reset:`; deja de servir para iniciar sesión);
+   * - borra el secreto MFA y los códigos de recuperación;
+   * - revoca todas sus sesiones y los contadores de bloqueo (contraseña y MFA, D-83);
+   * - reemplaza cualquier enlace anterior por uno nuevo (un solo uso, 24 h).
+   * Así, aunque un tercero conozca la contraseña (R-38), no puede configurar su propia MFA:
+   * solo quien recibe el enlace por el canal del administrador fija contraseña y MFA nuevas.
+   *
+   * Regla del último administrador (D-79): la transacción es la misma SERIALIZABLE de
+   * `withAdminGuard`. Nadie puede reiniciarse a sí mismo, así que quien actúa conserva su MFA;
+   * la guardia cubre además dos reinicios cruzados simultáneos entre administradores, que
+   * juntos dejarían la organización sin administrador con MFA. Si aun así se perdiera, la
+   * recuperación es `auditor-admin user invite-admin`.
+   * @returns el token de activación, que se entrega UNA vez y no se guarda en claro.
+   */
+  async resetMfa(ctx: SessionContext, userId: string, meta: RequestMeta): Promise<{ activationToken: string; expiresAt: string }> {
     if (userId === ctx.user.id) throw new ApiError(409, 'self_mfa_reset', 'Otro administrador debe restablecer su verificación en dos pasos.');
-    await this.findUser(ctx.tenant, userId);
-    // R-38: si se levanta un bloqueo de MFA, la contraseña se considera comprometida.
-    const mustChange = await this.mfaLockReachedFor(ctx.tenant, userId);
-    await ctx.tenant.db
-      .updateTable('app_user')
-      .set({ mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, updated_at: iso(this.now()), ...(mustChange ? { must_change_password: 1 } : {}) })
-      .where('id', '=', userId)
-      .execute();
-    // Restablecer la MFA levanta también su bloqueo (D-83). Desde D-89 es una fila por cuenta;
-    // se borran todas las de tipo `mfa` por si quedan filas por origen anteriores a D-89.
-    await ctx.tenant.db.deleteFrom('login_throttle').where('user_id', '=', userId).where('kind', '=', 'mfa').execute();
-    await ctx.tenant.db.deleteFrom('recovery_code').where('user_id', '=', userId).execute();
-    await this.revokeAllSessions(ctx.tenant, userId);
-    await this.record(ctx.tenant, 'user.mfa.reset', { actor: { userId: ctx.user.id }, subjectUserId: userId, data: { mustChangePassword: mustChange }, meta });
+    const target = await this.findUser(ctx.tenant, userId);
+    if (target.status !== 'active') throw new ApiError(409, 'user_not_active', 'Solo se puede restablecer la verificación en dos pasos de una cuenta activa.');
+    const token = newToken();
+    const now = this.now();
+    const expiresAt = iso(new Date(now.getTime() + ACTIVATION_MS));
+    await this.withAdminGuard(
+      ctx.tenant,
+      userId,
+      async (trx) => {
+        const current = await trx.selectFrom('app_user').select('password_hash').where('id', '=', userId).executeTakeFirstOrThrow();
+        // Un segundo reinicio antes de activar conserva el marcador (no se encadenan prefijos).
+        const invalidated = current.password_hash === null || passwordInvalidated(current.password_hash) ? current.password_hash : `${RESET_PASSWORD_PREFIX}${current.password_hash}`;
+        await trx
+          .updateTable('app_user')
+          .set({ password_hash: invalidated, mfa_secret_sealed: null, mfa_pending_secret_sealed: null, mfa_last_step: null, failed_attempts: 0, mfa_failed_attempts: 0, locked_until: null, updated_at: iso(now) })
+          .where('id', '=', userId)
+          .execute();
+        await trx.deleteFrom('recovery_code').where('user_id', '=', userId).execute();
+        await trx.deleteFrom('user_session').where('user_id', '=', userId).execute();
+        await trx.deleteFrom('login_throttle').where('user_id', '=', userId).where('kind', 'in', ['password', 'mfa']).execute();
+        await trx.deleteFrom('activation_token').where('user_id', '=', userId).execute();
+        await trx.insertInto('activation_token').values({ token_hash: hashToken(token), user_id: userId, expires_at: expiresAt, used_at: null, created_at: iso(now) }).execute();
+      },
+      // Quita un administrador "activo con MFA" si el usuario es administrador y tiene MFA.
+      async (trx) =>
+        (await trx.selectFrom('app_user').innerJoin('user_role', 'user_role.user_id', 'app_user.id').select('app_user.id').where('app_user.id', '=', userId).where('user_role.role', '=', 'org_admin').where('app_user.mfa_secret_sealed', 'is not', null).execute()).length > 0,
+    );
+    // Sin el token en la bitácora: solo su vencimiento.
+    await this.record(ctx.tenant, 'user.mfa.reset', { actor: { userId: ctx.user.id }, subjectUserId: userId, data: { passwordInvalidated: true, activationExpiresAt: expiresAt }, meta });
+    return { activationToken: token, expiresAt };
   }
 
   /**

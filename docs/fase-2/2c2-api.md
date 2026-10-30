@@ -5,7 +5,7 @@
 - **Por qué este archivo:** el proyecto no genera OpenAPI todavía `[VERIFICADO: no hay dependencias ni código OpenAPI/Swagger en el repositorio, 30-10-2026]`. Este documento es el contrato; si se agrega OpenAPI en una fase posterior, debe coincidir con él.
 - **Detalle de implementación y pruebas:** `2c2-registro.md`.
 
-Se documentan **solo** los endpoints nuevos o cambiados en 2C-2. Los de 2B y 2C-1 (inicio de sesión, MFA, activación, invitación, roles, desactivación, desbloqueo, restablecimiento de MFA) no cambian su forma salvo lo indicado en §2 y §3.
+Se documentan **solo** los endpoints nuevos o cambiados en 2C-2. Los de 2B y 2C-1 (inicio de sesión, MFA, activación, invitación, roles, desactivación, desbloqueo) no cambian su forma salvo lo indicado en §2 y §3. **El reinicio de MFA sí cambia (D-92, §3.1).**
 
 ## 0. Reglas comunes
 
@@ -81,7 +81,8 @@ Estado de la sesión al cargar o recargar la SPA. **Renueva la inactividad**: no
       "passwordLock": { "lockedOrigins": 2, "lockedUntil": "2026-10-30T12:01:00.000Z" },
       "mfaLock": { "locked": true, "lockedUntil": "2026-10-30T12:00:30.000Z", "failedAttempts": 5 },
       "passwordCompromiseSuspected": true,
-      "mustChangePassword": false
+      "mustChangePassword": false,
+      "mfaResetPending": false
     }
   ]
 }
@@ -97,6 +98,7 @@ Estado de la sesión al cargar o recargar la SPA. **Renueva la inactividad**: no
 | `mfaLock.failedAttempts` | Códigos errados desde el último éxito, desbloqueo o restablecimiento | No es necesario mostrarlo |
 | `passwordCompromiseSuspected` | `true` si la cuenta llegó a 5 códigos MFA errados y no hubo éxito, desbloqueo ni restablecimiento después. **Llegar a la MFA exige la contraseña correcta**: alguien la conoce (R-38). Sigue en `true` aunque la espera haya vencido | **Aviso destacado** (no solo color): "Alguien que conoce la contraseña de esta cuenta intentó adivinar su código. Contacte a la persona por otro medio. Al desbloquear, deberá cambiar su contraseña." |
 | `mustChangePassword` | La persona deberá cambiar su contraseña en su próximo ingreso (§3) | "Debe cambiar su contraseña" |
+| `mfaResetPending` | Se reinició su MFA (D-92) y aún no usa el enlace: su contraseña anterior no sirve y solo puede entrar con el enlace | "Reinicio pendiente: entregue el enlace o reinicie de nuevo si se perdió o venció" |
 
 **"Bloqueado"** en la lista de 2C §2.2 = `passwordLock.lockedOrigins > 0` **o** `mfaLock.locked`. El contrato entrega los datos por separado porque el significado es distinto (contraseña: probable tercero sin la contraseña; MFA: contraseña comprometida). La API no entrega un estado combinado: la interfaz lo deduce con esa regla.
 
@@ -104,14 +106,14 @@ Estado de la sesión al cargar o recargar la SPA. **Renueva la inactividad**: no
 
 ## 3. Cambio de contraseña obligatorio (R-38): etapa `password_change`
 
-**Regla `[DECISIÓN técnica 2C-2, pendiente de registro]`:** si `POST /api/v1/users/:id/unlock` (o `auditor-admin user unlock`) o `POST /api/v1/users/:id/mfa/reset` levantan un **bloqueo de MFA** (contador de MFA en 5 o más), la cuenta queda con `mustChangePassword = true`. Desbloquear un bloqueo **solo de contraseña** no lo hace.
+**Regla `[DECISIÓN técnica 2C-2, D-93]`:** si `POST /api/v1/users/:id/unlock` (o `auditor-admin user unlock`) levanta un **bloqueo de MFA** (contador de MFA en 5 o más), la cuenta queda con `mustChangePassword = true`. Desbloquear un bloqueo **solo de contraseña** no lo hace. (El reinicio de MFA ya no usa esta marca: desde D-92 invalida la contraseña directamente, §3.1.)
 
-Las respuestas de `unlock` y `mfa/reset` **no cambian** (204 sin cuerpo): tras la acción, la interfaz vuelve a pedir `GET /api/v1/users` y muestra `mustChangePassword`.
+La respuesta de `unlock` **no cambia** (204 sin cuerpo): tras la acción, la interfaz vuelve a pedir `GET /api/v1/users` y muestra `mustChangePassword`.
 
 Flujo de la persona afectada:
 
-1. `POST /api/v1/auth/login` → `{ stage: "mfa_pending" }` (o `mfa_enroll` si se restableció su MFA).
-2. `POST /api/v1/auth/mfa/verify` (o `mfa/confirm`) → `{ stage: "password_change", csrfToken }` en vez de `full`. `mfa/confirm` sigue entregando `recoveryCodes`, que **deben mostrarse** aunque la etapa sea `password_change`.
+1. `POST /api/v1/auth/login` → `{ stage: "mfa_pending" }`.
+2. `POST /api/v1/auth/mfa/verify` → `{ stage: "password_change", csrfToken }` en vez de `full`. (Si en esa etapa se llegara por `mfa/confirm`, la respuesta sigue entregando `recoveryCodes`, que **deben mostrarse**.)
 3. En esta etapa **solo** se admiten: `POST /api/v1/auth/password`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`. Cualquier otra ruta: `403 password_change_required`.
 4. `POST /api/v1/auth/password { currentPassword, newPassword }` → `200 { stage: "full", csrfToken }`. Cierra todas las demás sesiones de la persona.
 
@@ -120,6 +122,32 @@ Una sesión `full` **ya abierta** de la persona pasa a comportarse como `passwor
 **Cambio en `POST /api/v1/auth/password` (para todos, no solo en esta etapa):** la nueva contraseña debe ser distinta de la actual → `400 password_reused` ("La nueva contraseña debe ser distinta de la actual."). Los demás errores no cambian: `401 invalid_credentials` (contraseña actual incorrecta o bloqueo de ese origen), `400 weak_password`.
 
 Pantalla sugerida `[PROPUESTA]`: "Cambiar contraseña" con explicación ("Por seguridad, la administración le pide cambiar su contraseña antes de continuar"), mismos campos e indicador de fortaleza que "Mi cuenta".
+
+## 3.1 `POST /api/v1/users/:id/mfa/reset` (cambiado por D-92): reinicio con enlace de un solo uso
+
+Antes (2B): 204 sin cuerpo, y el siguiente inicio de sesión con la contraseña abría la configuración de MFA a quien la conociera. **Desde D-92** funciona como una invitación.
+
+- **Política:** sesión `full`, permiso `users.manage`, **MFA reciente**, `X-CSRF-Token`. Sin cuerpo.
+- **Efecto, en una sola transacción:** invalida la contraseña actual (deja de servir para iniciar sesión), borra el secreto MFA y los códigos de recuperación, revoca **todas** las sesiones de la persona, levanta sus bloqueos de contraseña y MFA y reemplaza cualquier enlace anterior por uno nuevo (un solo uso, vence en 24 h).
+- **Respuesta 200** (el token se entrega **una sola vez**; no se puede volver a consultar):
+
+```json
+{ "activationToken": "<43 caracteres base64url>", "expiresAt": "2026-10-31T12:00:00.000Z" }
+```
+
+- **Interfaz `[PROPUESTA]`:** igual que "Invitar usuario": mostrar el enlace `https://<servidor>/activar#<activationToken>` una vez, con botón de copiar y el aviso de entregarlo por un canal seguro y verificar la identidad de la persona por otro medio (sobre todo si `passwordCompromiseSuspected` era verdadero). Tras la acción, refrescar `GET /api/v1/users` (`mfaResetPending: true`).
+- **Errores:** `409 self_mfa_reset` (nadie se reinicia a sí mismo), `409 user_not_active` (invitado o desactivado), `409 last_admin` (dejaría la organización sin administrador activo con MFA; p. ej. dos administradores que se reinician mutuamente a la vez), `409 conflict` (cambio simultáneo; reintentar), `404 user_not_found`, `403 reauth_required`, `403 forbidden`.
+- **Bitácora:** `user.mfa.reset` con `passwordInvalidated: true` y el vencimiento del enlace, **sin** el token.
+- **Sin equivalente en la CLI** `[VERIFICADO: auditor-admin no tiene un comando de reinicio de MFA]`. Si no queda ningún administrador con MFA, la recuperación es `auditor-admin user invite-admin`.
+
+### Activación tras el reinicio: `POST /api/v1/auth/activate` (sin cambios de forma)
+
+La persona usa el mismo endpoint y la misma pantalla que un invitado: `{ token, password }` → `200 { stage: "mfa_enroll", csrfToken }`, luego `mfa/enroll` y `mfa/confirm` → `full` (con sus 10 códigos de recuperación nuevos). Diferencias para una cuenta reiniciada:
+
+- **No acepta la contraseña anterior:** `400 password_reused` ("La nueva contraseña debe ser distinta de la anterior."), sin consumir el enlace.
+- Levanta `mustChangePassword` si estaba marcado (ya fija una contraseña nueva).
+- Mientras el reinicio esté pendiente, `POST /auth/login` con la contraseña anterior responde el `401 invalid_credentials` genérico, sin cookie ni `mfa_pending`.
+- Errores como siempre: `400 invalid_token` (enlace usado, reemplazado por un reinicio posterior o vencido), `400 weak_password`.
 
 ## 4. `GET /api/v1/access-log` (nuevo): registro de accesos
 
@@ -215,6 +243,8 @@ Resultado esperado: `RESULTADO: bitácora íntegra.` (código de salida 0). Con 
 | `GET /api/v1/auth/me` | todas | — | no | no (GET) |
 | `POST /api/v1/auth/password` | `password_change`, `full` | — | no | sí |
 | `POST /api/v1/auth/logout` | todas | — | no | sí |
+| `POST /api/v1/auth/activate` | sin sesión | — | no | no (pública) |
+| `POST /api/v1/users/:id/mfa/reset` | `full` | `users.manage` | **sí** | sí |
 | `GET /api/v1/users` | `full` | `users.read` | no | no (GET) |
 | `GET /api/v1/access-log` | `full` | `access_log.read` | **sí** | no (GET) |
 | `GET /api/v1/audit-log/export` | `full` | `audit_log.export` | **sí** | no (GET) |

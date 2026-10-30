@@ -75,10 +75,15 @@ export class UsersController {
     await this.identity.service.unlockUser(ctx.tenant, { userId: ctx.user.id }, userId(id), requestMeta(req));
   }
 
+  /**
+   * Reinicio de MFA con enlace de un solo uso (D-92): invalida la contraseña y las sesiones y
+   * devuelve el token de activación UNA vez, como `invitations`. El administrador lo entrega
+   * por un canal seguro; la persona lo usa en `POST /auth/activate`.
+   */
   @Post(':id/mfa/reset')
-  @HttpCode(204)
+  @HttpCode(200)
   @Authenticated({ permission: 'users.manage', recentMfa: true })
-  async resetMfa(@Param('id') id: string, @Req() req: IdentityRequest): Promise<void> {
-    await this.identity.service.resetMfa(sessionOf(req), userId(id), requestMeta(req));
+  async resetMfa(@Param('id') id: string, @Req() req: IdentityRequest): Promise<object> {
+    return this.identity.service.resetMfa(sessionOf(req), userId(id), requestMeta(req));
   }
 }

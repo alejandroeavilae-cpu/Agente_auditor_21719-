@@ -131,7 +131,7 @@ Las licencias se confirman contra los metadatos del paquete al instalar. Si algu
 | Usuarios | Administrador | Lista con estado: activo, bloqueado, sin MFA, desactivado |
 | Invitar usuario | Administrador | Muestra el **enlace de activación una sola vez**, con botón de copiar |
 | Editar roles | Administrador | Explica por qué una combinación está prohibida (separación de funciones, D-79) |
-| Desactivar, desbloquear y reiniciar MFA | Administrador | Piden confirmación y, si pasaron más de 5 min, el código MFA (reautenticación) |
+| Desactivar, desbloquear y reiniciar MFA | Administrador | Piden confirmación y, si pasaron más de 5 min, el código MFA (reautenticación). **Modificado por D-92 (30-10-2026):** reiniciar la MFA invalida la contraseña y las sesiones de la persona y muestra **una sola vez** un enlace de activación (un solo uso, 24 h), igual que "Invitar usuario"; la persona fija una contraseña nueva y configura su MFA desde ese enlace (`2c2-api.md` §3.1) |
 | Registro de accesos | Administrador | `[PROPUESTA]` Ver pregunta 3 de §6 |
 | Exportar bitácora | Administrador | Ver §2.4 |
 | Inicio | Todos | Página de bienvenida según el rol. Indica que las funciones de auditoría llegan en fases posteriores |
@@ -210,7 +210,7 @@ Red interna de la institución
 | Ver el estado de la instalación: versión, organización, salud de la base y verificación de la bitácora de control | No |
 | Crear la organización, si aún no existe | Sí |
 | Invitar a un administrador de la organización (recuperación si no queda ninguno) | Sí |
-| Desbloquear a un usuario o reiniciar su MFA (recuperación) | Sí |
+| Desbloquear a un usuario o reiniciar su MFA (recuperación). **Modificado por D-92:** el reinicio de MFA entrega un enlace de activación de un solo uso, no reabre la configuración de MFA a quien tenga la contraseña | Sí |
 | Suspender o reactivar la organización | Sí |
 | Cambiar la contraseña de la base de la organización y reescribir los secretos de la API (D-87) | Sí |
 | Ver la bitácora de la plataforma (control) | No |

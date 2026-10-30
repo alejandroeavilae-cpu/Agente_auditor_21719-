@@ -754,12 +754,16 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(remaining).toBeGreaterThan(0);
     expect(remaining).toBeLessThanOrEqual(60_000);
 
-    // Restablecer la MFA levanta el bloqueo (D-83): la persona vuelve a configurarla.
+    // Restablecer la MFA levanta el bloqueo (D-83). Desde D-92 lo hace con un enlace de un solo
+    // uso: la contraseña anterior deja de servir y la persona configura la MFA desde el enlace.
     const admin = await loggedAdmin();
     expect((await admin.request('POST', '/api/v1/auth/reauth', { code: nextCode('admin@ejemplo.cl') })).status).toBe(204);
-    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`)).status).toBe(204);
+    const reset = await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`);
+    expect(reset.status).toBe(200);
+    sentinels.push(reset.body.activationToken as string);
     expect(await mfaRows()).toEqual([]);
-    expect((await client('198.51.107.99').request('POST', '/api/v1/auth/login', { email: 'mfa-rafaga@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
+    expect((await client('198.51.107.99').request('POST', '/api/v1/auth/login', { email: 'mfa-rafaga@ejemplo.cl', password: PASSWORD })).body).toEqual(GENERIC_FAILURE);
+    expect((await client('198.51.107.99').request('POST', '/api/v1/auth/activate', { token: reset.body.activationToken, password: syntheticPassword() })).body.stage).toBe('mfa_enroll');
   });
 
   // ---------- 2C-2 ----------
@@ -857,41 +861,90 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(audit.filter((e) => e.action === 'auth.password.changed').map((e) => (e.data as Record<string, unknown>).forced)).toEqual([true]);
   });
 
-  it('R-38: restablecer la MFA tras un bloqueo de MFA obliga a cambiar la contraseña después de configurarla de nuevo; la CLI también lo aplica', async () => {
+  it('D-92: reiniciar la MFA invalida la contraseña y las sesiones y entrega un enlace de un solo uso; con él la persona fija una contraseña nueva y configura la MFA', async () => {
     const handle = await apiA.directory.open();
     const admin = await loggedAdmin();
-    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'r38-reset@ejemplo.cl', displayName: 'R38 Reinicio', roles: ['reader'] }, null);
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'd92@ejemplo.cl', displayName: 'D92 Sintética', roles: ['reader'] }, null);
     sentinels.push(invited.activationToken);
     const PASSWORD = syntheticPassword();
-    await activateWithMfa(invited.activationToken, 'r38-reset@ejemplo.cl', PASSWORD, client('203.0.113.61'));
+    const owner = await activateWithMfa(invited.activationToken, 'd92@ejemplo.cl', PASSWORD, client('203.0.113.61'));
+    // Un tercero con la contraseña bloquea la MFA (R-38) y el administrador desbloquea: queda
+    // `mustChangePassword`, que la activación posterior debe limpiar.
     offsetMs += 30_000;
-    await lockMfa('r38-reset@ejemplo.cl', PASSWORD, '198.51.110');
-    expect(await userRow(admin, invited.userId)).toMatchObject({ passwordCompromiseSuspected: true });
-    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`)).status).toBe(204);
-    expect(await userRow(admin, invited.userId)).toMatchObject({ mfaEnabled: false, mustChangePassword: true, passwordCompromiseSuspected: false, mfaLock: { failedAttempts: 0 } });
-    // Configura la MFA de nuevo y queda en la etapa de cambio de contraseña (con sus códigos de recuperación).
+    await lockMfa('d92@ejemplo.cl', PASSWORD, '198.51.110');
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mustChangePassword: true });
+    // La persona tiene además otra sesión abierta (etapa de cambio de contraseña).
+    const second = client('203.0.113.62');
+    await second.request('POST', '/api/v1/auth/login', { email: 'd92@ejemplo.cl', password: PASSWORD });
+    expect((await second.request('POST', '/api/v1/auth/mfa/verify', { code: nextCode('d92@ejemplo.cl') })).body.stage).toBe('password_change');
+
+    // Solo una cuenta activa: una invitación pendiente no se reinicia.
+    const pending = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'd92-invitada@ejemplo.cl', displayName: 'D92 Invitada', roles: ['reader'] }, null);
+    sentinels.push(pending.activationToken);
+    expect((await admin.request('POST', `/api/v1/users/${pending.userId}/mfa/reset`)).body.error).toBe('user_not_active');
+
+    const reset = await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`);
+    expect(reset.status).toBe(200);
+    expect(Object.keys(reset.body).sort()).toEqual(['activationToken', 'expiresAt']);
+    const token = reset.body.activationToken as string;
+    sentinels.push(token);
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const ttl = Date.parse(reset.body.expiresAt as string) - now().getTime();
+    expect(ttl).toBeGreaterThan(24 * 60 * 60_000 - 60_000);
+    expect(ttl).toBeLessThanOrEqual(24 * 60 * 60_000);
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mfaEnabled: false, mfaResetPending: true, passwordCompromiseSuspected: false, mfaLock: { failedAttempts: 0 }, passwordLock: { lockedOrigins: 0 } });
+
+    // Sesiones previas revocadas.
+    expect((await owner.request('GET', '/api/v1/auth/me')).status).toBe(401);
+    expect((await second.request('GET', '/api/v1/auth/me')).status).toBe(401);
+    // La contraseña antigua no da acceso: 401 genérico, sin `mfa_pending` ni cookie, desde cualquier origen.
+    for (const origin of ['203.0.113.61', '198.51.110.1']) {
+      const c = client(origin);
+      const r = await c.request('POST', '/api/v1/auth/login', { email: 'd92@ejemplo.cl', password: PASSWORD });
+      expect(r.status).toBe(401);
+      expect(r.body).toEqual(GENERIC_FAILURE);
+      expect(c.cookie).toBeUndefined();
+    }
+    // La bitácora registra el reinicio sin el token.
+    const resets = (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'user.mfa.reset' && e.object === `user/${invited.userId}`);
+    expect(resets).toHaveLength(1);
+    expect(resets[0]?.data).toMatchObject({ passwordInvalidated: true, activationExpiresAt: reset.body.expiresAt });
+    expect(JSON.stringify(resets)).not.toContain(token);
+
+    // Activación con el enlace: no admite la contraseña anterior ni una débil (sin consumir el enlace).
     const c = client('203.0.113.61');
-    expect((await c.request('POST', '/api/v1/auth/login', { email: 'r38-reset@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
-    const previous = secrets.get('r38-reset@ejemplo.cl');
+    expect((await c.request('POST', '/api/v1/auth/activate', { token, password: PASSWORD })).body.error).toBe('password_reused');
+    expect((await c.request('POST', '/api/v1/auth/activate', { token, password: COMMON_PASSWORD })).body.error).toBe('weak_password');
+    const NEW = syntheticPassword();
+    expect((await c.request('POST', '/api/v1/auth/activate', { token, password: NEW })).body.stage).toBe('mfa_enroll');
+    const previous = secrets.get('d92@ejemplo.cl');
     if (previous !== undefined) sentinels.push(previous.toString('hex'));
     const enroll = await c.request('POST', '/api/v1/auth/mfa/enroll', {});
-    secrets.set('r38-reset@ejemplo.cl', base32Decode(enroll.body.secret as string));
-    const confirm = await c.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode('r38-reset@ejemplo.cl') });
-    expect(confirm.body.stage).toBe('password_change');
+    secrets.set('d92@ejemplo.cl', base32Decode(enroll.body.secret as string));
+    const confirm = await c.request('POST', '/api/v1/auth/mfa/confirm', { code: nextCode('d92@ejemplo.cl') });
+    // La activación limpió `must_change_password`: va directo a `full`.
+    expect(confirm.body.stage).toBe('full');
     expect(confirm.body.recoveryCodes).toHaveLength(10);
     keepRecoveryCodes(confirm.body.recoveryCodes);
-    const NEW = syntheticPassword();
-    expect((await c.request('POST', '/api/v1/auth/password', { currentPassword: PASSWORD, newPassword: NEW })).body.stage).toBe('full');
-    const resets = (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'user.mfa.reset' && e.object === `user/${invited.userId}`);
-    expect(resets.map((e) => (e.data as Record<string, unknown>).mustChangePassword)).toEqual([true]);
+    // Un solo uso.
+    expect((await client().request('POST', '/api/v1/auth/activate', { token, password: syntheticPassword() })).body.error).toBe('invalid_token');
+    // Con la contraseña nueva entra normalmente.
+    await fullLogin('d92@ejemplo.cl', NEW, client('203.0.113.61'));
+    expect(await userRow(admin, invited.userId)).toMatchObject({ mfaEnabled: true, mfaResetPending: false, mustChangePassword: false });
+    const activated = (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'user.activated' && e.object === `user/${invited.userId}`);
+    expect(activated.map((e) => (e.data as Record<string, unknown>).via)).toEqual(['invitation', 'mfa_reset']);
 
-    // CLI: `auditor-admin user unlock` sobre un bloqueo de MFA también lo exige y lo avisa.
-    offsetMs += 30_000;
-    await lockMfa('r38-reset@ejemplo.cl', NEW, '198.51.111');
-    const cli = await runCli(['user', 'unlock', '--tenant', slugA, '--email', 'r38-reset@ejemplo.cl']);
-    expect(cli.code).toBe(0);
-    expect(cli.out).toMatch(/deberá cambiarla/);
-    expect(await userRow(admin, invited.userId)).toMatchObject({ mustChangePassword: true });
+    // Un reinicio nuevo reemplaza el enlace anterior, y el enlace vence a las 24 h.
+    expect((await admin.request('POST', '/api/v1/auth/reauth', { code: nextCode('admin@ejemplo.cl') })).status).toBe(204);
+    const r2 = await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`);
+    const r3 = await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`);
+    sentinels.push(r2.body.activationToken as string, r3.body.activationToken as string);
+    expect((await client().request('POST', '/api/v1/auth/activate', { token: r2.body.activationToken, password: syntheticPassword() })).body.error).toBe('invalid_token');
+    offsetMs += 24 * 60 * 60_000 + 60_000;
+    expect((await client().request('POST', '/api/v1/auth/activate', { token: r3.body.activationToken, password: syntheticPassword() })).body.error).toBe('invalid_token');
+    // Sigue sin poder entrar con la contraseña que tenía antes del segundo reinicio.
+    expect((await client().request('POST', '/api/v1/auth/login', { email: 'd92@ejemplo.cl', password: NEW })).body).toEqual(GENERIC_FAILURE);
   });
 
   it('/me con sesión completa: permisos efectivos y vencimientos de la sesión; sin datos antes de completar la MFA', async () => {
@@ -1215,6 +1268,42 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     expect(back.status).toBe(200);
     // Plazo propio: suspender espera hasta 5 s a que se cierren las sesiones (waitForNoSessions).
   }, 90_000);
+
+  it('D-92 + D-79: dos administradores que se reinician la MFA mutuamente a la vez no dejan la organización sin administrador con MFA', async () => {
+    // En B (la API de A se sigue usando en otras pruebas): dos administradores nuevos y, como
+    // preparación sintética, sin el rol de administrador para los demás usuarios de B.
+    const handle = await apiB.directory.open();
+    const ids: string[] = [];
+    const admins: Client[] = [];
+    for (const email of ['admin-b3@ejemplo.cl', 'admin-b4@ejemplo.cl']) {
+      const invited = await apiB.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email, displayName: 'Admin Cruzado', roles: ['org_admin'] }, null);
+      sentinels.push(invited.activationToken);
+      ids.push(invited.userId);
+      admins.push(await activateWithMfa(invited.activationToken, email, syntheticPassword(), clientB()));
+    }
+    await handle.db.deleteFrom('user_role').where('role', '=', 'org_admin').where('user_id', 'not in', ids).execute();
+    const [a3, a4] = admins as [Client, Client];
+    const [id3, id4] = ids as [string, string];
+    const logged: string[] = [];
+    const spy = vi.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => {
+      logged.push(String(m));
+    });
+    const [r3, r4] = await Promise.all([a3.request('POST', `/api/v1/users/${id4}/mfa/reset`), a4.request('POST', `/api/v1/users/${id3}/mfa/reset`)]);
+    spy.mockRestore();
+    expect(logged, `errores internos: ${logged.join(' | ')}`).toEqual([]);
+    for (const r of [r3, r4]) if (typeof r.body.activationToken === 'string') sentinels.push(r.body.activationToken);
+    expect([r3.status, r4.status].filter((x) => x === 200)).toHaveLength(1);
+    expect(['last_admin', 'conflict', 'unauthenticated']).toContain([r3, r4].find((r) => r.status !== 200)?.body.error);
+    const remaining = await handle.db
+      .selectFrom('app_user')
+      .innerJoin('user_role', 'user_role.user_id', 'app_user.id')
+      .select('app_user.id')
+      .where('user_role.role', '=', 'org_admin')
+      .where('app_user.status', '=', 'active')
+      .where('app_user.mfa_secret_sealed', 'is not', null)
+      .execute();
+    expect(remaining).toHaveLength(1);
+  });
 
   // QA 2C1-09: al FINAL de la suite, para revisar todos los tokens emitidos en ella.
   it('valores centinela: ninguna contraseña, código, token de sesión ni secreto de la API aparece en las bases', async () => {
