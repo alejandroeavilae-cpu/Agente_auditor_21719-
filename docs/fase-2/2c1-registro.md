@@ -99,7 +99,7 @@ Pruebas unitarias nuevas: configuración (DEK de otra organización, slug distin
 
 ## 6. Correcciones de la verificación QA de 2C-1 (veredicto "aprobado con observaciones" sobre `bccb96f`)
 
-`2C1-04` (bloqueo de MFA por cuenta + origen) **no se modificó**: está pendiente de decisión del responsable.
+`2C1-04` (bloqueo de MFA por cuenta + origen) **no se modificó** en esta ronda: quedó pendiente de decisión del responsable. Se resolvió con D-89 (§7).
 
 | Hallazgo | Corrección | Prueba |
 |---|---|---|
@@ -121,3 +121,42 @@ Pruebas unitarias nuevas: configuración (DEK de otra organización, slug distin
 | Organizaciones + `check-integration-report` (mínimo 24) | **47 aprobadas · postgresql=24**, incluidas las de rotación (M-02), que ahora cierran sesiones. Informe: `evidencia-2c1/organizaciones-pg-qa1.json` |
 
 Mínimo de CI para identidad: 25 → **27** por motor. Para SQL Server se asume el mismo número `[PENDIENTE: CI]`.
+
+## 7. Bloqueo de MFA por cuenta (D-89, hallazgo QA 2C1-04)
+
+**Estado:** Implementado y probado localmente con PostgreSQL 16.15. `[PENDIENTE: CI con PostgreSQL 18 y SQL Server, verificación QA independiente y aprobación del responsable]`. Quien implementó no aprueba su propio trabajo (regla 5).
+
+### 7.1 Qué cambió
+
+| Punto | Implementación | Archivos |
+|---|---|---|
+| Contador de MFA por cuenta | `throttleOrigin()` decide la fila: contraseña → HMAC del origen (sin cambios, D-88); MFA → origen fijo `ACCOUNT_ORIGIN` (64 ceros, el mismo de las filas `attack_alert` y `lock_logged_*`). `beginAttempt` y `attemptSucceeded` lo usan. Aplica a `POST /auth/mfa/verify` y a `POST /auth/reauth`, que comparten el contador `mfa` | `apps/api/src/identity/identity.service.ts` |
+| D-82 conservada | Misma reserva por comparar y reemplazar **antes** de verificar, ahora sobre la fila de la cuenta: ningún fallo se pierde en paralelo antes del umbral, al vencer cada espera entra **un** intento y la espera crece de forma progresiva hasta 15 min | Ídem |
+| D-83 conservada | Los intentos durante un bloqueo vigente no cuentan ni lo alargan. El desbloqueo (API y CLI) borra las filas `password` y `mfa` de la cuenta, y `resetMfa` las `mfa`. Ambos borran también filas `mfa` por origen que hubieran quedado de antes de D-89 | Ídem |
+| Bitácora (2C1-10) | `auth.account.locked` sigue yendo a la bitácora inmutable **una vez por cuenta, contador y ventana de 1 hora** (marca `lock_logged_mfa`). El dato `scope` es ahora `account` para la MFA y `account+origin` para la contraseña. El registro de accesos sigue anotando cada bloqueo con su IP | Ídem |
+| Esquema | **Sin migración nueva y sin tocar `0003` ni `0002`.** `login_throttle` ya admite filas por cuenta con su clave primaria `(user_id, origin_hmac, kind)`. Solo se agrega el nombre `ACCOUNT_ORIGIN` en el paquete de persistencia; `ATTACK_ALERT_ORIGIN` queda como alias del mismo valor `[DECISIÓN técnica]` | `packages/persistence/src/schema.ts`, `index.ts` |
+| Retención | Sin cambios: la fila por cuenta se borra con la retención del registro de accesos (D-78), salvo un bloqueo vigente | — |
+
+### 7.2 Pruebas de integración nuevas (identidad, por motor)
+
+- **D-89 (QA-05):** con la contraseña conocida, 5 códigos errados desde 5 orígenes distintos dejan **una** fila `mfa` con `ACCOUNT_ORIGIN` y `failed_attempts` = 5, sin contadores de MFA por origen. Desde un origen nuevo, la contraseña da `mfa_pending`, pero el código **correcto** (de un paso no usado) se rechaza; también desde el origen de la dueña y en su reautenticación. Esos intentos no cambian la fila y quedan como `auth.mfa.blocked` (2) y `auth.reauth.blocked` (1) en el registro de accesos. La bitácora tiene un `auth.account.locked` con `{ counter: 'mfa', scope: 'account' }`. Tras `POST /users/:id/unlock`, **el mismo código** entra desde otro origen nuevo. Un segundo bloqueo en la misma ventana deja 1 evento en la bitácora y 2 en el registro de accesos; tras `auditor-admin user unlock` se vuelve a entrar.
+- **D-89 + D-82:** 30 códigos errados **en paralelo** desde 30 orígenes: exactamente 5 se verifican (`auth.mfa.failed` = 5) y la fila queda en 5 y bloqueada. Al vencer la espera (30 s), de 20 códigos en paralelo desde 20 orígenes cuenta **uno**: `failed_attempts` = 6 y la espera restante es de 60 s como máximo (no salta al tope de 15 min). Restablecer la MFA borra la fila y la persona vuelve a `mfa_enroll`.
+- La prueba 2B-01 ya existente sigue pasando sin cambios en sus aserciones (solo el comentario dice "MFA de la cuenta").
+- **Prueba de mutación local:** con `throttleOrigin` devolviendo el origen también para la MFA (comportamiento anterior), las dos pruebas nuevas **fallan** (2 fallidas, 27 omitidas por el filtro `-t 'D-89'`). Se restauró el código y se volvió a ejecutar todo.
+
+Mínimo de CI para identidad: 27 → **29** por motor. Para SQL Server se asume el mismo número `[PENDIENTE: CI]`.
+
+### 7.3 Ejecución local (30-10-2026, Node 24.22.1, PostgreSQL 16.15)
+
+| Comando | Resultado real |
+|---|---|
+| `pnpm run verify` (sin motores) | Código 0. web 4, crypto 15, audit-log 44, identity 19, persistence 23 + 1 omitida, api 28 + 1 omitida. Licencias: 314 paquetes, todos permitidos |
+| `vitest run` en `apps/api` con PostgreSQL | **57 aprobadas**, 0 fallidas |
+| Identidad + `check-integration-report` (mínimo 29) | **29 aprobadas, 0 fallidas, 0 omitidas · postgresql=29**. Informe: `evidencia-2c1/identidad-pg-d89.json` |
+| Organizaciones + `check-integration-report` (mínimo 24) | **47 aprobadas, 0 fallidas, 0 omitidas · postgresql=24**. Informe: `evidencia-2c1/organizaciones-pg-d89.json` |
+
+### 7.4 Riesgos
+
+- **R-34:** el bloqueo por cuenta solo aplica a la MFA, a la que se llega con la contraseña correcta. Quien conoce la contraseña **sí** puede mantener bloqueada la MFA de la cuenta (un intento al vencer cada espera, unas 4 peticiones por hora con el tope de 15 min). Es el costo aceptado por D-89, pero esa situación ya implica una contraseña comprometida: el desbloqueo no basta y corresponde cambiar la contraseña. `[PENDIENTE: reevaluación por QA y el responsable]`.
+- El contador de MFA es común a la verificación del inicio de sesión y a la reautenticación: fallos de una cuentan para la otra (igual que en 2B).
+

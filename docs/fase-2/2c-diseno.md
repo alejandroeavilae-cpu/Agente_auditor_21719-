@@ -81,7 +81,7 @@ El orden importa: 2C-2 se construye sobre la identidad ya ajustada en 2C-1, y 2C
 - **Contra el ataque distribuido** (muchos orígenes adivinando una misma contraseña):
   - la defensa principal es que la **MFA es ahora obligatoria para todos** (D-86): adivinar la contraseña no basta para entrar;
   - además, si una cuenta acumula muchos fallos desde orígenes distintos (umbral inicial: 20 en 1 hora `[ESTIMACIÓN]`, configurable), se registra un evento **`account.attack_suspected`** en la bitácora y se muestra al administrador en el registro de accesos (2C-2). No se bloquea la cuenta, para no recrear R-34.
-- El contador de MFA usa el mismo mecanismo de cuenta + origen.
+- ~~El contador de MFA usa el mismo mecanismo de cuenta + origen.~~ **Modificado por D-89 (30-10-2026, hallazgo QA 2C1-04):** el contador de MFA (verificación del inicio de sesión y reautenticación) es **por cuenta**. Al 5.º código errado se bloquea la MFA de la cuenta desde cualquier origen, con la espera progresiva de D-82 y el desbloqueo de D-83 (API, CLI y restablecer la MFA). El de contraseña sigue por cuenta + origen. Con el conteo por origen, quien ya conocía la contraseña tenía 5 códigos por cada IP. Contar por cuenta no recrea R-34, porque llegar a la MFA exige la contraseña. Implementación: `2c1-registro.md` §7.
 - Se conserva el desbloqueo por el administrador y por la CLI (D-83).
 - **Datos personales:** el par se guarda con la IP en HMAC y se borra con la retención del registro de accesos (D-78).
 - R-34 se reevalúa después de la verificación de QA.
