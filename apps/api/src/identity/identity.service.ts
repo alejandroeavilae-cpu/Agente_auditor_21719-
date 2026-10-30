@@ -367,7 +367,7 @@ export class IdentityService {
    *   propio origen y no puede impedir que la persona entre desde el suyo (R-34);
    * - MFA: por CUENTA, con el origen fijo `ACCOUNT_ORIGIN` (D-89, QA 2C1-04). Con el conteo
    *   por origen, quien ya conocía la contraseña tenía 5 códigos por cada IP. Al 5.º código
-   *   errado se bloquea la MFA de la cuenta desde cualquier origen. No recrea R-34: llegar a
+   *   errado se bloquea la MFA de la cuenta desde cualquier origen. No recrea R-34 para quien no conoce la contraseña (residual R-38): llegar a
    *   la verificación MFA exige la contraseña correcta.
    * La reautenticación usa el mismo contador de MFA, por lo que también es por cuenta.
    */

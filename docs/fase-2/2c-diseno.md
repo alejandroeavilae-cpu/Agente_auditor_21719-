@@ -42,14 +42,14 @@ El orden importa: 2C-2 se construye sobre la identidad ya ajustada en 2C-1, y 2C
 
 - `POST /api/v1/auth/login` recibe `{ email, password }`. El campo `organization` deja de existir. Si se envía, la petición se rechaza, como cualquier campo no declarado.
 - Lo mismo aplica a `POST /api/v1/auth/activate`: recibe `{ token, password }`.
-- La organización queda fija en la configuración de la API (`ORGANIZATION_SLUG`, obligatoria cuando la identidad está activa).
+- La organización queda fija en la configuración de la API. **Precisado por D-90:** los datos de la organización se toman del archivo `organization.json` que escribe la CLI; `ORGANIZATION_SLUG` queda como comprobación opcional.
 - La cookie de sesión deja de llevar el prefijo `<slug>.`: contiene solo el token aleatorio.
 - El mensaje de error pasa a ser "Correo o contraseña incorrectos".
 - Se mantiene la respuesta mínima de 300 ms (D-82). Ahora protege contra adivinar qué correos tienen cuenta.
 
 ### 1.2 MFA obligatoria para todos (D-86)
 
-- `MFA_REQUIRED_ROLES` incluye los 6 roles.
+- Todos los usuarios deben tener MFA. **Precisado por QA 2C1-06:** `requiresMfa()` devuelve verdadero sin consultar los roles, incluso para un usuario sin roles.
 - Quien no tiene MFA configurada entra en la etapa `mfa_enroll` y no puede hacer nada más hasta configurarla. Este mecanismo ya existe en 2B para los roles privilegiados.
 - La regla "no quedarse sin administrador activo con MFA" no cambia.
 
@@ -81,7 +81,7 @@ El orden importa: 2C-2 se construye sobre la identidad ya ajustada en 2C-1, y 2C
 - **Contra el ataque distribuido** (muchos orígenes adivinando una misma contraseña):
   - la defensa principal es que la **MFA es ahora obligatoria para todos** (D-86): adivinar la contraseña no basta para entrar;
   - además, si una cuenta acumula muchos fallos desde orígenes distintos (umbral inicial: 20 en 1 hora `[ESTIMACIÓN]`, configurable), se registra un evento **`account.attack_suspected`** en la bitácora y se muestra al administrador en el registro de accesos (2C-2). No se bloquea la cuenta, para no recrear R-34.
-- ~~El contador de MFA usa el mismo mecanismo de cuenta + origen.~~ **Modificado por D-89 (30-10-2026, hallazgo QA 2C1-04):** el contador de MFA (verificación del inicio de sesión y reautenticación) es **por cuenta**. Al 5.º código errado se bloquea la MFA de la cuenta desde cualquier origen, con la espera progresiva de D-82 y el desbloqueo de D-83 (API, CLI y restablecer la MFA). El de contraseña sigue por cuenta + origen. Con el conteo por origen, quien ya conocía la contraseña tenía 5 códigos por cada IP. Contar por cuenta no recrea R-34, porque llegar a la MFA exige la contraseña. Implementación: `2c1-registro.md` §7.
+- ~~El contador de MFA usa el mismo mecanismo de cuenta + origen.~~ **Modificado por D-89 (30-10-2026, hallazgo QA 2C1-04):** el contador de MFA (verificación del inicio de sesión y reautenticación) es **por cuenta**. Al 5.º código errado se bloquea la MFA de la cuenta desde cualquier origen, con la espera progresiva de D-82 y el desbloqueo de D-83 (API, CLI y restablecer la MFA). El de contraseña sigue por cuenta + origen. Con el conteo por origen, quien ya conocía la contraseña tenía 5 códigos por cada IP. Contar por cuenta no recrea R-34 para quien no conoce la contraseña (queda el residual R-38), porque llegar a la MFA exige la contraseña. Implementación: `2c1-registro.md` §7.
 - Se conserva el desbloqueo por el administrador y por la CLI (D-83).
 - **Datos personales:** el par se guarda con la IP en HMAC y se borra con la retención del registro de accesos (D-78).
 - R-34 se reevalúa después de la verificación de QA.

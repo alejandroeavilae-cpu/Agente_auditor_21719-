@@ -2,7 +2,7 @@
 
 - **Base:** diseño aprobado por el responsable el 29-10-2026 23:31 (D-88, `2c-diseno.md` §1).
 - **Rama:** `fase-2c`.
-- **Estado:** **Implementado.** Probado localmente con PostgreSQL 16.15. `[PENDIENTE: CI con PostgreSQL 18 y SQL Server, prueba de humo de Compose, perfil institucional, verificación QA independiente y aprobación del responsable]`. Quien implementó **no** aprueba su propio trabajo (regla 5).
+- **Estado:** **Implementado.** Probado localmente con PostgreSQL 16.15. **Verificado en CI** (`6500602`: identidad 29 y persistencia 24 por motor en PostgreSQL 18 y SQL Server; prueba de humo local e institucional; escaneos en verde) y por **QA independiente en dos revisiones** (aprobado con observaciones; evidencia `qa-*` y `qa2-*`). `[PENDIENTE: aprobación del responsable]`. Quien implementó **no** aprueba su propio trabajo (regla 5).
 
 ## 1. Qué se implementó
 
@@ -120,11 +120,11 @@ Pruebas unitarias nuevas: configuración (DEK de otra organización, slug distin
 | Identidad + `check-integration-report` (mínimo 27) | **27 aprobadas · postgresql=27**. Informe: `evidencia-2c1/identidad-pg-qa1.json` |
 | Organizaciones + `check-integration-report` (mínimo 24) | **47 aprobadas · postgresql=24**, incluidas las de rotación (M-02), que ahora cierran sesiones. Informe: `evidencia-2c1/organizaciones-pg-qa1.json` |
 
-Mínimo de CI para identidad: 25 → **27** por motor. Para SQL Server se asume el mismo número `[PENDIENTE: CI]`.
+Mínimo de CI para identidad: 25 → **27** por motor. En CI, SQL Server alcanzó el mismo número `[VERIFICADO: CI de 6500602]`.
 
 ## 7. Bloqueo de MFA por cuenta (D-89, hallazgo QA 2C1-04)
 
-**Estado:** Implementado y probado localmente con PostgreSQL 16.15. `[PENDIENTE: CI con PostgreSQL 18 y SQL Server, verificación QA independiente y aprobación del responsable]`. Quien implementó no aprueba su propio trabajo (regla 5).
+**Estado:** Implementado y probado localmente con PostgreSQL 16.15. Verificado en CI y por QA (segunda revisión, `qa2-*`). `[PENDIENTE: aprobación del responsable]`. Quien implementó no aprueba su propio trabajo (regla 5).
 
 ### 7.1 Qué cambió
 
@@ -144,7 +144,7 @@ Mínimo de CI para identidad: 25 → **27** por motor. Para SQL Server se asume 
 - La prueba 2B-01 ya existente sigue pasando sin cambios en sus aserciones (solo el comentario dice "MFA de la cuenta").
 - **Prueba de mutación local:** con `throttleOrigin` devolviendo el origen también para la MFA (comportamiento anterior), las dos pruebas nuevas **fallan** (2 fallidas, 27 omitidas por el filtro `-t 'D-89'`). Se restauró el código y se volvió a ejecutar todo.
 
-Mínimo de CI para identidad: 27 → **29** por motor. Para SQL Server se asume el mismo número `[PENDIENTE: CI]`.
+Mínimo de CI para identidad: 27 → **29** por motor. En CI, SQL Server alcanzó el mismo número `[VERIFICADO: CI de 6500602]`.
 
 ### 7.3 Ejecución local (30-10-2026, Node 24.22.1, PostgreSQL 16.15)
 
@@ -160,3 +160,21 @@ Mínimo de CI para identidad: 27 → **29** por motor. Para SQL Server se asume 
 - **R-34:** el bloqueo por cuenta solo aplica a la MFA, a la que se llega con la contraseña correcta. Quien conoce la contraseña **sí** puede mantener bloqueada la MFA de la cuenta (un intento al vencer cada espera, unas 4 peticiones por hora con el tope de 15 min). Es el costo aceptado por D-89, pero esa situación ya implica una contraseña comprometida: el desbloqueo no basta y corresponde cambiar la contraseña. `[PENDIENTE: reevaluación por QA y el responsable]`.
 - El contador de MFA es común a la verificación del inicio de sesión y a la reautenticación: fallos de una cuentan para la otra (igual que en 2B).
 
+
+
+## 8. Cierre de la segunda revisión QA (30-10-2026, sobre `6500602`)
+
+Veredicto QA: **APROBADO CON OBSERVACIONES**. Todos los hallazgos funcionales 2C1-04 a 2C1-12 están resueltos; las observaciones nuevas no bloquean.
+
+| ID | Tratamiento |
+|---|---|
+| 2C1-13 | Corregido: `2c-diseno.md` §1.1 y §1.2 reflejan D-90 y 2C1-06 |
+| 2C1-14 | Corregido: se precisa "no recrea R-34 para quien no conoce la contraseña" y se nombra el residual **R-38** |
+| 2C1-15 | `[PENDIENTE]` para 2C-2: agregar a la prueba centinela las contraseñas y los códigos de recuperación de los usuarios de las pruebas D-89 y 2C1-06 (la prueba adversarial de QA R2-10 sí los cubrió, 0 apariciones) |
+| 2C1-16 | Corregido: estados de esta página actualizados con lo verificado en CI |
+| 2C1-17 | D-89 y D-90 se respondieron en un cuestionario de la sesión sin hora registrada; se deja constancia. La aprobación del cierre de 2C-1 por el responsable las ratifica |
+| 2C1-12 | `[PENDIENTE]`: el certificado propio de la institución no se prueba en CI; con Docker sin privilegios o con reasignación de usuarios el UID 65532 del anfitrión no coincide con el del contenedor |
+
+Matriz de riesgos: R-33, R-34 y el nuevo R-38 se actualizan con la propuesta QA (`[ESTIMACIÓN]`), sujeta a la aprobación del responsable.
+
+Nota: la sección 1 describe la implementación inicial; las filas 2 (MFA) y 4 (bloqueo) fueron modificadas después por 2C1-06 y D-89 (secciones 6 y 7).

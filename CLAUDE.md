@@ -9,7 +9,7 @@ Este archivo rige a cualquier agente de IA (orquestador o especializado) que con
 - **2A — Base de datos y organizaciones: APROBADA Y CERRADA** (29-10-2026 13:32, fusión del PR #3 por el responsable). Alcance: BD de control, una BD por organización con usuario propio, cifrado de sobre de credenciales, bitácora persistida en BD, CLI de administración, CI con PostgreSQL y SQL Server.
 - **2B — Identidad y permisos: APROBADA Y CERRADA** (29-10-2026 23:17, fusión del PR #4 por el responsable; R-34 aceptado, D-83). Diseño aprobado por el responsable (D-79). Alcance: usuarios de la plataforma, contraseñas argon2id, MFA TOTP, sesiones, roles y permisos (RBAC), operador de plataforma. Sin pantallas de gestión (2C).
 - **2C — Pantallas, permisos entre roles y consola del operador: DISEÑO APROBADO** (29-10-2026 23:31, D-88; `docs/fase-2/2c-diseno.md`). Tres partes con PR, QA y aprobación humana separados:
-  - **2C-1 Ajustes de identidad y despliegue: EN CURSO** (rama `fase-2c`). D-75 ajustada, D-86, D-87/D-88, mitigación de R-34, pruebas de la cookie, perfil institucional HTTPS.
+  - **2C-1 Ajustes de identidad y despliegue: APROBADA POR QA (30-10-2026, segunda revisión), PENDIENTE DE APROBACIÓN HUMANA** (rama `fase-2c`, PR #5). D-75 ajustada, D-86, D-87/D-88, mitigación de R-34, pruebas de la cookie, perfil institucional HTTPS.
   - 2C-2 Pantallas de usuarios: NO iniciada (requiere aprobación de 2C-1).
   - 2C-3 Consola del operador: NO iniciada (requiere aprobación de 2C-2).
   Sin suite de aislamiento entre organizaciones (D-84).

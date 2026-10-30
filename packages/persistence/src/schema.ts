@@ -141,7 +141,7 @@ export interface AccessLogTable {
  * - `password`: bloqueo progresivo por cuenta + origen (D-82, D-88, R-34);
  * - `mfa`: bloqueo progresivo por CUENTA (D-89, QA 2C1-04): una sola fila por cuenta con el
  *   origen fijo `ACCOUNT_ORIGIN`. Quien ya conoce la contraseña no obtiene 5 códigos más por
- *   cada IP. Contar por cuenta no recrea R-34, porque llegar a la MFA exige la contraseña;
+ *   cada IP. Contar por cuenta no recrea R-34 para quien no conoce la contraseña (residual R-38), porque llegar a la MFA exige la contraseña;
  * - `attack_alert`: fila única por cuenta (origen `ATTACK_ALERT_ORIGIN`) que marca hasta
  *   cuándo ya se registró `account.attack_suspected`, para registrarlo UNA vez por ventana;
  * - `lock_logged_pw` y `lock_logged_mfa`: fila única por cuenta (mismo origen fijo) que marca
