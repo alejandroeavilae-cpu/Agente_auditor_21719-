@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { parseJsonlLines, toJsonl, verifyChainItems } from '@auditor-21719/audit-log';
 import { encodeKeyForFile, generateKey } from '@auditor-21719/crypto';
 import { totpAt } from '@auditor-21719/identity';
-import { connect, OrganizationDirectory, provisionerFor, serverAdminDatabase, TenantManager, type DbServerConfig, type TenantDatabase } from '@auditor-21719/persistence';
+import { ACCOUNT_ORIGIN, connect, OrganizationDirectory, provisionerFor, serverAdminDatabase, TenantManager, type DbServerConfig, type TenantDatabase } from '@auditor-21719/persistence';
 import { Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { sql } from 'kysely';
@@ -469,7 +469,7 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
       for (let i = 0; i < 4; i++) await s2.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' });
     }
     expect(await counter('mfa')).toBe(LOCK_AT);
-    // Con la MFA bloqueada en este origen, ni el código correcto se acepta.
+    // Con la MFA de la cuenta bloqueada (D-89), ni el código correcto se acepta.
     const blocked = client();
     expect((await blocked.request('POST', '/api/v1/auth/login', { email: 'jefa@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
     // Código del paso actual (no usado): `nextCode` avanzaría el reloj justo los 30 s del bloqueo.
@@ -606,6 +606,127 @@ describe.each(engines)('identidad en $engine', ({ engine, server: superServer })
     await lockFrom('192.0.2.51');
     expect(await accessLocks()).toBe(8);
     expect(await auditLocks()).toBe(2);
+  });
+
+  it('D-89 (QA 2C1-04, QA-05): 5 códigos MFA errados desde orígenes distintos bloquean la MFA de la cuenta; desbloqueo por API y CLI', async () => {
+    const handle = await apiA.directory.open();
+    // Administrador con MFA reciente ANTES de provocar el bloqueo: `nextCode` adelanta el reloj
+    // 30 s, lo mismo que dura el primer bloqueo, y lo haría vencer.
+    const admin = await loggedAdmin();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'mfa-cuenta@ejemplo.cl', displayName: 'MFA por Cuenta', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    const owner = await activateWithMfa(invited.activationToken, 'mfa-cuenta@ejemplo.cl', PASSWORD, client('203.0.113.40'));
+    const mfaRows = async (): Promise<Awaited<ReturnType<typeof throttleRows>>> => (await throttleRows(invited.userId)).filter((r) => r.kind === 'mfa');
+    /** Código del paso vigente, sin adelantar el reloj (no vence el bloqueo). */
+    const currentCode = (): string => totpAt(secrets.get('mfa-cuenta@ejemplo.cl') ?? Buffer.alloc(0), sec());
+    /** Sesión `mfa_pending` desde un origen: el atacante conoce la contraseña. */
+    const pendingFrom = async (origin: string): Promise<Client> => {
+      const c = client(origin);
+      expect((await c.request('POST', '/api/v1/auth/login', { email: 'mfa-cuenta@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+      return c;
+    };
+    const lockFromOrigins = async (prefix: string): Promise<void> => {
+      for (let i = 0; i < LOCK_AT; i++) {
+        const c = await pendingFrom(`${prefix}.${String(i + 1)}`);
+        expect((await c.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })).body.error).toBe('invalid_code');
+      }
+    };
+    const mfaLocks = async (): Promise<{ audit: Record<string, unknown>[]; access: number }> => ({
+      audit: (await provisioner.exportAuditLog(slugA)).filter((e) => e.action === 'auth.account.locked' && e.object === `user/${invited.userId}`),
+      access: (await handle.db.selectFrom('access_log').select('id').where('user_id', '=', invited.userId).where('event', '=', 'auth.account.locked').execute()).length,
+    });
+
+    // Paso nuevo (no usado) para la dueña: así el rechazo del código correcto se debe solo al
+    // bloqueo y no al reuso del paso, y el mismo código sirve tras desbloquear.
+    offsetMs += 30_000;
+    // Ronda 1: 5 orígenes distintos, un código errado cada uno (QA-05).
+    await lockFromOrigins('198.51.104');
+    const rows = await mfaRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ origin_hmac: ACCOUNT_ORIGIN, failed_attempts: LOCK_AT });
+    expect(new Date(rows[0]?.locked_until ?? 0).getTime()).toBeGreaterThan(now().getTime());
+    // Ningún origen del atacante quedó con un contador propio de MFA.
+    const origins = ['198.51.104.1', '198.51.104.5', '198.51.104.99'].map((ip) => handle.crypto.hmac('login-origin', ip));
+    expect((await throttleRows(invited.userId)).some((r) => r.kind === 'mfa' && origins.includes(r.origin_hmac))).toBe(false);
+    // Desde un origen nuevo, la contraseña sigue dando `mfa_pending` (bloqueo de contraseña
+    // por origen, sin cambios), pero el código CORRECTO se rechaza mientras dure el bloqueo.
+    const fresh = await pendingFrom('198.51.104.99');
+    expect((await fresh.request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.error).toBe('invalid_code');
+    // Lo mismo desde el origen de la dueña, y en su reautenticación (mismo contador de MFA).
+    const ownerPending = await pendingFrom('203.0.113.40');
+    expect((await ownerPending.request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.error).toBe('invalid_code');
+    expect((await owner.request('POST', '/api/v1/auth/reauth', { code: currentCode() })).body.error).toBe('invalid_code');
+    // Los intentos durante el bloqueo no cuentan ni lo alargan (D-83).
+    expect(await mfaRows()).toEqual(rows);
+    const blockedEvents = await handle.db.selectFrom('access_log').select('event').where('user_id', '=', invited.userId).where('event', 'in', ['auth.mfa.blocked', 'auth.reauth.blocked']).execute();
+    expect(blockedEvents.map((r) => r.event).sort()).toEqual(['auth.mfa.blocked', 'auth.mfa.blocked', 'auth.reauth.blocked']);
+    // Bitácora: un bloqueo de MFA con alcance por cuenta (QA 2C1-10: uno por cuenta y ventana).
+    const first = await mfaLocks();
+    expect(first.audit).toHaveLength(1);
+    expect(first.audit[0]?.data).toMatchObject({ counter: 'mfa', scope: 'account' });
+    expect(first.access).toBe(1);
+
+    // Desbloqueo por la API: el MISMO código, antes rechazado, ahora entra desde un origen nuevo.
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/unlock`)).status).toBe(204);
+    expect(await mfaRows()).toEqual([]);
+    const afterApi = await pendingFrom('198.51.104.100');
+    expect((await afterApi.request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.stage).toBe('full');
+
+    // Ronda 2, en la misma ventana de 1 hora: se vuelve a bloquear; desbloqueo por la CLI.
+    offsetMs += 30_000;
+    await lockFromOrigins('198.51.105');
+    expect((await mfaRows())[0]).toMatchObject({ origin_hmac: ACCOUNT_ORIGIN, failed_attempts: LOCK_AT });
+    expect((await (await pendingFrom('198.51.105.99')).request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.error).toBe('invalid_code');
+    const second = await mfaLocks();
+    expect(second.audit).toHaveLength(1);
+    expect(second.access).toBe(2);
+    expect((await runCli(['user', 'unlock', '--tenant', slugA, '--email', 'mfa-cuenta@ejemplo.cl'])).code).toBe(0);
+    expect(await mfaRows()).toEqual([]);
+    expect((await (await pendingFrom('198.51.105.100')).request('POST', '/api/v1/auth/mfa/verify', { code: currentCode() })).body.stage).toBe('full');
+  });
+
+  it('D-89 + D-82: una ráfaga de códigos desde muchos orígenes no elude el bloqueo de MFA por cuenta ni lleva la espera al tope; reiniciar la MFA lo levanta', async () => {
+    const handle = await apiA.directory.open();
+    const invited = await apiA.service.inviteUser(handle, { label: 'operador-plataforma:cli' }, { email: 'mfa-rafaga@ejemplo.cl', displayName: 'MFA Ráfaga', roles: ['reader'] }, null);
+    const PASSWORD = `sintetica-${randomBytes(9).toString('hex')}`;
+    await activateWithMfa(invited.activationToken, 'mfa-rafaga@ejemplo.cl', PASSWORD, client('203.0.113.41'));
+    const mfaRows = async (): Promise<Awaited<ReturnType<typeof throttleRows>>> => (await throttleRows(invited.userId)).filter((r) => r.kind === 'mfa');
+    const pendingFrom = async (origin: string): Promise<Client> => {
+      const c = client(origin);
+      expect((await c.request('POST', '/api/v1/auth/login', { email: 'mfa-rafaga@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_pending');
+      return c;
+    };
+    /** Una sesión `mfa_pending` por origen (el inicio de sesión con contraseña no se bloquea). */
+    const sessions = async (prefix: string, n: number): Promise<Client[]> => Promise.all(Array.from({ length: n }, (_, i) => pendingFrom(`${prefix}.${String(i + 1)}`)));
+
+    // 30 códigos errados EN PARALELO desde 30 orígenes: ninguno se pierde antes del umbral, se
+    // evalúan exactamente 5 y la MFA de la cuenta queda bloqueada.
+    const burst = await sessions('198.51.106', 30);
+    const results = await Promise.all(burst.map((c) => c.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })));
+    expect(results.every((r) => r.body.error === 'invalid_code')).toBe(true);
+    const locked = await mfaRows();
+    expect(locked).toHaveLength(1);
+    expect(locked[0]).toMatchObject({ origin_hmac: ACCOUNT_ORIGIN, failed_attempts: LOCK_AT });
+    const verified = await handle.db.selectFrom('access_log').select('id').where('user_id', '=', invited.userId).where('event', '=', 'auth.mfa.failed').execute();
+    expect(verified).toHaveLength(LOCK_AT);
+
+    // Al vencer la espera (30 s), de una ráfaga de 20 códigos desde 20 orígenes cuenta UNO:
+    // el contador pasa a 6 y la espera se duplica (60 s), no salta al tope de 15 min.
+    const later = await sessions('198.51.107', 20);
+    offsetMs += 31_000;
+    await Promise.all(later.map((c) => c.request('POST', '/api/v1/auth/mfa/verify', { code: '000000' })));
+    const relocked = await mfaRows();
+    expect(relocked[0]?.failed_attempts).toBe(LOCK_AT + 1);
+    const remaining = new Date(relocked[0]?.locked_until ?? 0).getTime() - now().getTime();
+    expect(remaining).toBeGreaterThan(0);
+    expect(remaining).toBeLessThanOrEqual(60_000);
+
+    // Restablecer la MFA levanta el bloqueo (D-83): la persona vuelve a configurarla.
+    const admin = await loggedAdmin();
+    expect((await admin.request('POST', '/api/v1/auth/reauth', { code: nextCode('admin@ejemplo.cl') })).status).toBe(204);
+    expect((await admin.request('POST', `/api/v1/users/${invited.userId}/mfa/reset`)).status).toBe(204);
+    expect(await mfaRows()).toEqual([]);
+    expect((await client('198.51.107.99').request('POST', '/api/v1/auth/login', { email: 'mfa-rafaga@ejemplo.cl', password: PASSWORD })).body.stage).toBe('mfa_enroll');
   });
 
   it('bitácora: eventos verificables, con IP solo como HMAC; el registro de accesos guarda la IP', async () => {
