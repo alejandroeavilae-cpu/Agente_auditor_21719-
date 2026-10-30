@@ -88,3 +88,11 @@ Pruebas unitarias nuevas: configuración (DEK de otra organización, slug distin
 - `[PENDIENTE]` Versión mínima de Docker Compose para `!override` (la guía la marca como fuente secundaria).
 - `[PENDIENTE]` Vigencia del certificado raíz de la CA interna según la versión de Caddy usada.
 - Instalaciones con la base de 2B: quitar `auditor_api` a mano (`servidor-de-base-de-datos.md`, "Actualizar desde 2B").
+
+## 5. Correcciones tras la primera ejecución de CI (PR #5, commit `8d247e5`)
+
+| Fallo en CI | Causa | Corrección |
+|---|---|---|
+| **SQL Server:** `D-87: al suspender…` excedió 30 s (sqlserver=24 de 25) | Con el login deshabilitado, el pool `tarn` de tedious **reintenta** crear la conexión cada 200 ms hasta su espera por defecto de 30 s (`acquireTimeoutMillis`), en vez de fallar. `pg.Pool` falla al primer error de autenticación | `connect()`: `propagateCreateError: true`, `acquireTimeoutMillis` y `createTimeoutMillis` de 20 s, y `requestTimeout` de 30 s explícito en tedious. La prueba registra los tiempos (PostgreSQL local: 503 en 3 ms y 6 ms; 200 al reactivar en 7 ms), exige fallar en menos de 10 s y tiene su propio plazo de 90 s. `[PENDIENTE: resultado en SQL Server en CI]` |
+| **CodeQL** `js/clear-text-logging` en `cli.ts` | El mensaje de `api-secrets write` imprimía rutas devueltas por `writeApiSecrets`, que recibe los secretos | `writeApiSecrets` ya no devuelve nada. La CLI imprime solo los nombres constantes de `API_SECRET_FILES` y el directorio indicado por quien ejecuta. Si la escritura falla en `rotate-password`, se imprime un aviso sin datos del error y el error de archivos se propaga |
+| **Gitleaks** `generic-api-key` en `smoke-compose.sh:16` (`5e31731`) y `smoke-institucional.sh:18` (`4d307cf`) | Frase de acceso sintética literal del administrador de una instalación efímera de prueba | Falso positivo: no es credencial de ningún sistema. Huellas agregadas a `.gitleaksignore` con su justificación. Los scripts ahora generan una frase aleatoria por ejecución (`deploy/compose/secrets/smoke_admin_phrase`, excluido de git) |
