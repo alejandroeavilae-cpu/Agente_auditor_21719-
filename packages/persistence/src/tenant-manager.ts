@@ -386,13 +386,23 @@ export class TenantManager {
    * sesión que su usuario se haya fijado. Recupera el acceso si el usuario cambió su propia
    * contraseña (hallazgo QA M-02).
    */
-  async rotatePassword(slug: string, actor: string): Promise<ApiSecrets> {
+  async rotatePassword(slug: string, actor: string): Promise<{ secrets: ApiSecrets } & OperationResult> {
     const row = await this.findRow(slug);
     if (row.status === 'provisioning') throw new Error('La organización aún se está creando.');
     const password = generateDbPassword();
     const dek = unwrapKey(this.masterKeys, row.dek_wrapped, dekContext(row.id));
     await this.closeTenant(slug);
     await this.provisioner.resetPassword(this.server(), row.db_user, password, row.db_name);
+    // Cambiar la contraseña no corta las conexiones ya autenticadas (QA 2C1-07): se cierran
+    // con el mismo mecanismo de la suspensión, para que nadie siga operando con la
+    // contraseña anterior (p. ej. una API que no se reinició o quien la haya obtenido).
+    const warnings: string[] = [];
+    const w = await this.provisioner.terminateSessions(this.server(), row.db_user);
+    if (w !== null) warnings.push(w);
+    const open = await this.waitForNoSessions(row.db_user);
+    if (open !== 0) {
+      warnings.push(open < 0 ? 'No se pudo comprobar si quedan sesiones abiertas con la contraseña anterior.' : `Siguen abiertas ${String(open)} sesión(es) con la contraseña anterior: pueden seguir operando hasta que se cierren.`);
+    }
     await this.control()
       .updateTable('tenants')
       .set({ db_password_sealed: seal(dek, Buffer.from(password, 'utf8'), passwordContext(row.id)), updated_at: nowIso() })
@@ -401,7 +411,8 @@ export class TenantManager {
     await this.appendAsAdmin(row, { actor, action: 'tenant.password_rotated', object: `organization/${slug}`, data: {} });
     // La API tiene su propia copia de la contraseña (D-87): quien llama debe reescribir sus
     // secretos (`--api-secrets-out`) y reiniciarla.
-    return { organization: descriptorOf(row, dek), dbPassword: password, dek };
+    // Los avisos van aparte de los secretos: quien los imprime no toca el objeto de secretos.
+    return { secrets: { organization: descriptorOf(row, dek), dbPassword: password, dek }, warnings };
   }
 
   /**

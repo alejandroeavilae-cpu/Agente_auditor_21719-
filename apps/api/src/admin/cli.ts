@@ -196,11 +196,13 @@ async function run(argv: string[]): Promise<number> {
         const out = v['api-secrets-out'];
         // El destino se revisa ANTES de cambiar la contraseña: si no sirve, no se cambia nada.
         if (out !== undefined) checkSecretsDir(out);
-        const secrets = await m.rotatePassword(slug, ACTOR);
-        console.log(`Organización ${slug}: contraseña de base de datos cambiada.`);
+        const { secrets, warnings } = await m.rotatePassword(slug, ACTOR);
+        console.log(`Organización ${slug}: contraseña de base de datos cambiada; conexiones abiertas con la anterior cerradas.`);
+        // Avisos de cierre de sesiones (solo textos del motor y conteos, sin secretos).
+        const warned = printWarnings(warnings);
         if (out === undefined) {
           console.error(`Aviso: la API de ${slug} conserva la contraseña anterior y dejará de conectarse. Ejecute: auditor-admin api-secrets write --tenant ${slug} --out <dir> y reinicie la API.`);
-          return 0;
+          return warned ? 1 : 0;
         }
         try {
           writeApiSecrets(out, secrets);
@@ -211,7 +213,7 @@ async function run(argv: string[]): Promise<number> {
           throw error;
         }
         console.log(`Secretos de la API reescritos en ${out}. Reinicie la API para que use la contraseña nueva.`);
-        return 0;
+        return warned ? 1 : 0;
       }
       case 'api-secrets write': {
         const tenant = required(v.tenant, 'tenant');
