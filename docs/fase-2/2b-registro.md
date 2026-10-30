@@ -202,3 +202,22 @@ QA: [PENDIENTE].
 | D-81 | Reconfirmada (opción A); riesgo residual registrado como R-35 |
 | D-82 | Reconfirmada sin cambios |
 | D-83 | Reconfirmada; **R-34 aceptado** con mitigación de fondo al inicio de 2C |
+
+## 7. Alerta de CodeQL en el PR #4 (29-10-2026)
+
+**Hallazgo.** El check `CodeQL` del PR #4 marca una alerta nueva de severidad alta, "Clear text storage of sensitive information", en `apps/api/src/identity/http.ts:83` (`setSessionCookie`). Aparece desde que se abrió el PR (`13b574b`). El código señalado no cambió desde `0de6ac2`. La alerta no se detectó al abrir el PR y se revisó recién en `046d61c`.
+
+**Evaluación QA independiente** (agente QA, commit `046d61c`, solo lectura de código): **FALSO POSITIVO.**
+- La cookie contiene `<slug>.<token>`, con un token de 32 bytes aleatorios (`packages/identity/src/tokens.ts:14`).
+- No incluye la contraseña, su hash ni el secreto MFA.
+- `changePassword` solo devuelve la sesión nueva.
+- En la base de datos se guarda únicamente el SHA-256 del token (`id_hash`).
+- La cookie es `HttpOnly` y `SameSite=Strict`. Por defecto lleva `Secure` y el prefijo `__Host-`.
+- El transporte sin TLS corresponde al riesgo R-35, ya aceptado (D-81).
+- No hay una mitigación de código razonable: cifrar un token opaco no cambia nada.
+
+**Acción.** Se descarta la alerta en GitHub como *False positive*. El descarte lo hace el responsable, porque requiere permisos de administración del repositorio.
+
+**Observaciones de cobertura para 2C** (no bloquean el cierre de 2B):
+- agregar el token de sesión a la prueba de valores centinela;
+- comprobar en la prueba de integración que la cabecera `Set-Cookie` lleve `HttpOnly`, `SameSite=Strict` y el prefijo `__Host-`.
