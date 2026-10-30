@@ -35,7 +35,12 @@ const schema = z.object({
   COOKIE_SECURE: z.enum(['true', 'false']).default('true'),
   /** Días de retención del registro de accesos con IP (D-78). */
   ACCESS_LOG_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
-  /** Confiar en `X-Forwarded-For` del proxy inverso (Caddy en Compose). */
+  /**
+   * Confiar en `X-Forwarded-For` de UN salto de proxy inverso (Caddy en Compose). Solo es
+   * válido si la API está detrás de exactamente un proxy y no se publica directamente: si
+   * no, cualquier cliente fija la IP que quiera y elude el límite por IP y el bloqueo por
+   * origen (R-34, QA 2C1-05). La API lo advierte al arrancar.
+   */
   TRUST_PROXY: z.enum(['true', 'false']).default('false'),
   /** Intentos sensibles (inicio de sesión, códigos) por IP cada 5 minutos. */
   SENSITIVE_RATE_LIMIT: z.coerce.number().int().min(1).max(100_000).default(20),

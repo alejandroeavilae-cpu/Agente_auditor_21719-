@@ -47,7 +47,7 @@ function writeAtomic(dir: string, name: string, content: string): void {
 
 /**
  * Comprueba el directorio de destino: debe existir, no ser un enlace simbólico ni poder
- * modificarlo cualquier usuario. Se llama también ANTES de rotar una contraseña, para no
+ * modificarlo el grupo u otros usuarios. Se llama también ANTES de rotar una contraseña, para no
  * dejar la base con una contraseña nueva que no se pudo entregar a la API.
  */
 export function checkSecretsDir(dir: string): void {
@@ -58,8 +58,9 @@ export function checkSecretsDir(dir: string): void {
     throw new Error(`No existe el directorio de secretos: ${dir}`);
   }
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`El destino debe ser un directorio (no un enlace): ${dir}`);
-  // Un directorio que cualquiera puede escribir permitiría reemplazar los archivos después.
-  if ((info.mode & 0o002) !== 0) throw new Error(`El directorio ${dir} puede ser modificado por cualquier usuario; use uno con permisos 700.`);
+  // Un directorio que el grupo u otros usuarios pueden escribir les permitiría reemplazar los
+  // archivos después (p. ej. con una DEK o una contraseña propias) (QA 2C1-08).
+  if ((info.mode & 0o022) !== 0) throw new Error(`El directorio ${dir} puede ser modificado por otros usuarios o por su grupo; use uno con permisos 700.`);
 }
 
 /**

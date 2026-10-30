@@ -60,7 +60,8 @@ services:
       # Perfil local sin HTTPS (solo 127.0.0.1): la cookie no puede ser "Secure" (D-81, R-35).
       # El perfil institucional (compose.institucional.yaml) usa true.
       COOKIE_SECURE: "false"
-      # Caddy es el único salto delante de la API.
+      # Caddy es el ÚNICO salto delante de la API y la API no publica puertos: solo así es
+      # válido confiar en X-Forwarded-For (QA 2C1-05; si no, se eludiría el bloqueo por origen).
       TRUST_PROXY: "true"
     secrets: [organization.json, organization_db_password, organization_dek]
     read_only: true
