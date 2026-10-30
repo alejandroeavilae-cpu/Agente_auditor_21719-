@@ -1,6 +1,6 @@
 # Fase 2 · Entrega 2C: Pantallas, permisos entre roles y consola del operador. Diseño para aprobación
 
-**Estado:** Diseñado. **Pendiente de aprobación del responsable.** Nada de este documento está implementado. Las marcas `[PROPUESTA]` pasan a `[DECISIÓN]` solo cuando el responsable las aprueba.
+**Estado:** Diseñado y **aprobado por el responsable el 29-10-2026 a las 23:31 (D-88)**, con las cinco recomendaciones de §6. Las marcas `[PROPUESTA]` de este documento quedan aprobadas como `[DECISIÓN D-88]`.
 
 **Base:**
 - Especificación §6 (React, Vite, componentes accesibles) y §17.
