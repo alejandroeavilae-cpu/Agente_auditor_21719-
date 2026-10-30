@@ -184,3 +184,20 @@ QA atacó la API como lo haría un adversario.
 QA: [PENDIENTE].
 
 **Riesgo residual que requiere aceptación del responsable:** R-34. Un atacante que conoce la organización y el correo de una persona puede seguir bloqueando su cuenta con unas 4 peticiones por hora. El remedio es el desbloqueo manual. La mitigación de fondo (bloqueo por cuenta e IP, o por dispositivo) se propone para 2C.
+
+## 6. Revisión 1 a 1 de las decisiones de 2B por el responsable (29-10-2026)
+
+[DECISIÓN del responsable] Revisión hecha después de la aprobación de QA y antes del cierre. El código de 2B **no se modificó**; los cambios acordados se implementan al **inicio de 2C**, con verificación QA.
+
+| Decisión | Resultado |
+|---|---|
+| D-84 (nueva) | Una sola organización por instalación |
+| D-75 | [PROPUESTA en D-84] Inicio de sesión solo con correo y contraseña |
+| D-76 → D-85 (nueva) | Operador con interfaz web propia: servicio separado, acceso solo interno con lista de IP, operadores con nombre, MFA y reautenticación |
+| D-77 → D-86 (nueva) | MFA obligatoria para todos los usuarios |
+| D-78 | Reconfirmada sin cambios |
+| D-79 | Reconfirmada sin cambios (se mantiene la separación de funciones) |
+| D-80 → D-87 (nueva) | La API deja de tener la clave maestra; reduce R-33 |
+| D-81 | Reconfirmada (opción A); riesgo residual registrado como R-35 |
+| D-82 | Reconfirmada sin cambios |
+| D-83 | Reconfirmada; **R-34 aceptado** con mitigación de fondo al inicio de 2C |
