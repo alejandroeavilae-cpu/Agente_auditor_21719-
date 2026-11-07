@@ -1,5 +1,7 @@
 # 14. Estrategia de evaluación normativa y matriz normativa preliminar
 
+> **Actualización 07-11-2026 (D-96, D-97):** las fuentes normativas primarias son los textos oficiales de `docs/normativa/fuentes/` (leyes 21.719 y 19.628, con hashes SHA-256). Lo marcado aquí como `[FUENTE SECUNDARIA]` o `[PENDIENTE]` se verifica contra esos textos en la Fase 5. Con la V2.2 **no hay revisión jurídica especializada**: ningún control se marca como revisado y todo informe advierte que no constituye asesoría legal.
+
 Estado: **Diseñado. Ningún control está revisado jurídicamente.** Este documento no es asesoría legal.
 
 ## 14.1 Reglas de la estrategia

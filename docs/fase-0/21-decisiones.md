@@ -64,14 +64,14 @@ Conforme a la sección 28, se presentan primero las que pueden comprometer segur
 
 | ID | Decisión pendiente | Por qué no puede tomarla la IA | Bloquea |
 |---|---|---|---|
-| P-01 | Designar **revisor/a jurídico/a** del catálogo y de la elección de licencia | Requiere criterio y responsabilidad profesional | Marcar controles como revisados (Fase 5) |
+| P-01 | ~~Designar **revisor/a jurídico/a** del catálogo y de la elección de licencia~~ **No aplica desde el 07-11-2026 (D-96):** la V2.2 elimina la revisión jurídica especializada durante el desarrollo | — | — |
 | P-02 | Titularidad del copyright a largo plazo (persona vs. fundación/organización) | Compromiso legal e institucional | Continuidad (no bloquea fases) |
 | P-03 | Incorporar **al menos un segundo mantenedor** | Requiere personas | Publicación (Fase 13) |
-| P-04 | Elegir **institución piloto** | Requiere acuerdo institucional | Fase 14 |
+| P-04 | Elegir **institución piloto** | Requiere acuerdo institucional | Fase 14, que queda fuera del alcance de construcción y se planifica por separado (D-105) |
 | P-05 | ~~Activar el reporte privado de vulnerabilidades~~ **Resuelto 25-10-2026** [VERIFICADO vía API] | — | — |
 | P-06 | Seguimiento del **boletín 18.623-07** hasta su resultado | Hecho externo futuro | Versión del catálogo |
 | P-07 | Nombre definitivo del proyecto | Preferencia del responsable | No bloquea |
-| P-08 | Hardware real del piloto | Depende de la institución | Fase 14 |
+| P-08 | Hardware real del piloto | Depende de la institución | Fase 14, que queda fuera del alcance de construcción y se planifica por separado (D-105) |
 | P-09 | Espejo del repositorio en una forja libre (Codeberg u otra) | Cuenta y compromiso del responsable | No bloquea |
 | P-11 | Usuario de GitHub de mantenedores en `CODEOWNERS` y protección de rama (2 aprobaciones en áreas sensibles) — depende de P-03 y de que el repositorio sea público o el plan lo permita | Configuración de cuenta y personas | Gobernanza efectiva |
 | P-10 | ~~Aprobación de la Fase 0 e inicio de la Fase 1~~ | **Resuelta: aprobada por Alejandro Ávila el 25-10-2026 a las 03:33 (hora de Chile)** | — |
@@ -161,3 +161,31 @@ Respuestas del responsable a las preguntas de `docs/fase-2/2b-diseno.md` §8, da
 | D-90 | **[DECISIÓN del responsable, 30-10-2026, respondida en el mismo cuestionario que D-89; hora exacta no registrada (QA 2C1-17)]** Los datos de la organización de la API se fijan en el archivo `organization.json` que escribe `auditor-admin api-secrets write`; la variable `ORGANIZATION_SLUG` queda como comprobación **opcional**. Precisa `2c-diseno.md` §1.1 | La organización sigue fija por configuración (D-75 ajustada); el archivo además incluye `dekId`, y la API no arranca si no corresponde a la DEK |
 | D-91 | **[DECISIÓN técnica, 2C-1, 30-10-2026]** Se registran las decisiones técnicas de implementación de `docs/fase-2/2c1-registro.md` §3 (puntos 1–4 y 6–11): reserva del intento por comparar y reemplazar; bloqueos de contraseña y MFA independientes; criterios de la detección de ataque distribuido; columnas de bloqueo de `app_user` conservadas sin uso; `dekId` en el archivo de la organización; error de la base de la organización → 503; comprobación de permisos de secretos; reinicio de la API tras rotar; certificado propio como secretos de Compose; invalidez de las cookies de 2B | Revisadas por QA (veredicto 2C-1, hallazgo 2C1-11). El punto 5 queda como D-90 |
 
+## 6. Alineamiento con el Prompt Maestro V2.2 (07-11-2026)
+
+Detalle y justificación de cada diferencia: `docs/alineamiento-v2.2.md`. Las decisiones "del responsable" las tomó Alejandro Ávila en la sesión de trabajo del 07-11-2026, al revisar la especificación junto con Claude. [PENDIENTE: no se registró la hora exacta de cada respuesta]
+
+| ID | Decisión | Fundamento |
+|---|---|---|
+| D-94 | **[DECISIÓN del responsable]** La especificación vigente es el **Prompt Maestro V2.2** (`docs/especificacion/prompt-maestro-v2.2.md`). La V2.0 se conserva como histórico | Reemplaza la referencia de `CLAUDE.md` y de `00-indice.md` |
+| D-95 | **[DECISIÓN del responsable]** El cierre de cada fase **no requiere aprobación humana**: el orquestador decide después de la QA independiente y lo documenta (decisión, alternativas, justificación, riesgos y fecha). **El orquestador fusiona los PR.** Requieren aprobación del responsable solo: cambio de licencia, publicación de una versión etiquetada e instalación en una institución real | V2.2 §22. Modifica la regla 1 de `CLAUDE.md` y la parte de D-88 que pedía aprobación separada para 2C-2 y 2C-3 |
+| D-96 | **[DECISIÓN del responsable]** **Sin revisión jurídica especializada** durante el desarrollo. Cada control cita el artículo y su texto literal, ningún control se marca como revisado jurídicamente y todo informe dice: "Este informe no constituye asesoría legal ni ha sido validado por un abogado" | V2.2 §11. Modifica la parte (a) de D-06 y la regla 4 de `CLAUDE.md`. P-01 deja de aplicar. Riesgo R-39 |
+| D-97 | **[DECISIÓN del responsable]** Fuentes normativas primarias: los PDF de la Biblioteca del Congreso Nacional de las leyes 21.719 y 19.628, generados el 07-11-2026, en `docs/normativa/fuentes/` con sus hashes SHA-256 | V2.2 §11. Reemplaza a la fuente secundaria de `13-evaluacion-normativa.md`, cuyos epígrafes se verifican en la Fase 5 |
+| D-98 | **[DECISIÓN técnica del orquestador]** Los PDF se versionan **en el repositorio público**, junto con su texto extraído (solo apoyo de lectura) | El catálogo citará el texto literal de los artículos, así que ese texto estará en el repositorio de todas formas, y cualquiera puede verificar qué versión se usó. [SUPUESTO: la reproducción de textos legales oficiales está permitida; no se verificaron las condiciones de uso de los documentos de la Biblioteca del Congreso]. Retirarlos después no los borra del historial de Git |
+| D-99 | **[DECISIÓN del responsable]** Las Modalidades B (multiempresa) y C (híbrida) quedan **fuera de alcance**, no solo postergadas | V2.2 §5. Modifica D-74. Se conserva la estructura de 2A (D-84) |
+| D-100 | **[DECISIÓN del responsable]** IA: **Ollama** como motor local por defecto, motor local intercambiable por configuración y **API de DeepSeek opcional** solo con las condiciones de la V2.2 §17.1. La clasificación de datos usa siempre IA local | Modifica D-07 ("sin red") solo para el motor externo opcional. Se implementa en la Fase 10. Riesgo R-40 |
+| D-101 | **[DECISIÓN técnica del orquestador]** Se conservan Semgrep CE, Trivy (D-24) y OSV-Scanner además de las herramientas de la V2.2 §15.5 (Gitleaks, CodeQL, Scorecard y Best Practices Badge) | La V2.2 no las prohíbe y quitarlas reduciría la protección |
+| D-102 | **[DECISIÓN técnica del orquestador]** Mientras `main` no tenga protección de rama (P-16), el orquestador **no fusiona** un PR sin comprobar por la API de GitHub que Gitleaks, Verificación, Trivy y CodeQL terminaron con éxito en el último commit y que no hay alertas abiertas de CodeQL de severidad crítica o alta | V2.2 §15.5, regla 2. Riesgo R-41 |
+| D-103 | **[DECISIÓN técnica del orquestador]** Los mecanismos concretos de "autenticación segura" (V2.2 §16) son los ya implementados y aprobados: argon2id, sesiones, bloqueos, reautenticación en acciones de alto riesgo, cookies seguras y respuesta mínima de 300 ms (D-79, D-82, D-83, D-88, D-89) | La §16 deja que el orquestador los defina y documente |
+| D-104 | **[DECISIÓN técnica del orquestador]** Se conservan las pruebas adversariales, de valores centinela, de integración con motores reales, E2E, de accesibilidad y ZAP | La V2.2 ya no las exige, pero tampoco pide quitarlas; quitarlas reduciría la calidad |
+| D-105 | **[DECISIÓN del responsable]** La **Fase 14 (piloto)** queda fuera del alcance de construcción. Autorizaciones, revisiones de seguridad y coordinaciones con la institución se planifican por separado | V2.2 §22. P-04 y P-08 dejan de bloquear la construcción |
+| D-106 | **[DECISIÓN técnica del orquestador]** Se registra **2C-1 como cerrada**: el responsable fusionó el PR #5 el 30-10-2026 05:42 UTC [VERIFICADO vía API]. `CLAUDE.md` la mostraba como pendiente | Corrige el estado declarado |
+| D-107 | **[DECISIÓN técnica del orquestador]** Se agregará `auditor-admin user reset-mfa` para restablecer la MFA de un administrador desde la consola del servidor, con registro en la bitácora, después de resolver P-15 | V2.2 §16. Hoy la consola solo desbloquea (D-83) o invita a un administrador nuevo |
+
+### 6.1 Pendientes del responsable
+
+| ID | Pendiente | Por qué no la toma el orquestador | Bloquea |
+|---|---|---|---|
+| P-15 | **Roles:** los tres de la V2.2 §16 (administrador, auditor, lector; un rol por usuario) o los seis roles web más el operador ya construidos (D-79). **Recomendación del orquestador: conservar lo construido** y ajustar la §16 de la especificación | Revierte una decisión explícita del responsable, ya implementada y reconfirmada | Fusión del PR #6 (2C-2), 2C-3, D-107 y la regla de aprobación de conclusiones (Fase 5) |
+| P-16 | Activar la protección de la rama `main` con verificaciones obligatorias (Gitleaks, Verificación, Trivy, CodeQL) | Requiere permisos de administración del repositorio | Nada; mientras tanto rige D-102 |
+| P-17 | Registrar el proyecto en bestpractices.dev para obtener la OpenSSF Best Practices Badge | Requiere la cuenta del responsable | Fase 13 |

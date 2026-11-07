@@ -1,5 +1,7 @@
 # 16. Plan de desarrollo por fases
 
+> **Actualización 07-11-2026 (D-95, D-99, D-105):** con el Prompt Maestro V2.2, el cierre de cada fase no requiere aprobación humana (el orquestador decide tras la QA independiente y lo registra); las Modalidades B y C quedan fuera de alcance; y la Fase 14 (piloto) queda fuera del alcance de construcción.
+
 > **Ajuste por D-74 (28-10-2026):** la v1 se concentra en la **Modalidad A**: una institución, con instalación local. Las Modalidades B (multiempresa) y C (híbrida) se postergan.
 > - **Fase 2:** se mantiene el aislamiento por organización ya construido. El "operador de plataforma" corresponde al administrador técnico de la propia institución.
 > - **Fase 3:** el egress-gateway se mantiene, porque protege la red de la institución.

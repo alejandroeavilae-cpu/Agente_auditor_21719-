@@ -1,5 +1,7 @@
 # Fase 0 — Análisis y arquitectura: índice
 
+> **Actualización 07-11-2026 (D-94):** la especificación vigente es el **Prompt Maestro V2.2** (`docs/especificacion/prompt-maestro-v2.2.md`). Esta fase se elaboró con la V2.0; las diferencias y cómo se resolvieron están en `docs/alineamiento-v2.2.md`. Los estados de avance vigentes son los de la V2.2 §23 (sin "Revisado jurídicamente", D-96).
+
 **Proyecto:** Plataforma open source de auditoría de protección de datos personales (Ley 19.628 modificada por Ley 21.719, Chile)
 **Fuente de requisitos:** `docs/especificacion/prompt-maestro-v2.0.md`
 **Fecha de elaboración:** 25-10-2026
