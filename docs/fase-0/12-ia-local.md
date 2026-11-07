@@ -1,5 +1,7 @@
 # 13. Estrategia de IA local
 
+> **Actualización 07-11-2026 (D-100):** con el Prompt Maestro V2.2, Ollama es el motor local por defecto, el motor local es intercambiable por configuración y se agrega la **API de DeepSeek como motor externo opcional**, desactivado por defecto y solo con las condiciones de la V2.2 §17.1. La clasificación de datos usa siempre IA local. Modifica D-07 solo para ese motor opcional. Riesgo R-40.
+
 Estado: **Diseñado**. Decisiones **D-07, D-20, D-21**.
 
 ## 13.1 Rol de la IA

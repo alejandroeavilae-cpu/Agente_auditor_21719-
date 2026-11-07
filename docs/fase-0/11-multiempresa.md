@@ -1,5 +1,7 @@
 # 12. Modelo de aislamiento multiempresa
 
+> **Actualización 07-11-2026 (D-99):** con el Prompt Maestro V2.2, la Modalidad B (multiempresa) queda **fuera de alcance**. Una instalación atiende a una sola organización (D-84). Este documento se conserva como histórico; la estructura de 2A (base de control y base de la organización) sigue en uso.
+
 Estado: **Diseñado**. Decisión **D-04: una base de datos por tenant**.
 
 ## 12.1 Alternativas evaluadas

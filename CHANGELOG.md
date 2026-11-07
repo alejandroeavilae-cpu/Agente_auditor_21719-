@@ -4,6 +4,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [No publicado]
 
+### Alineamiento con el Prompt Maestro V2.2 (07-11-2026)
+- Especificación vigente: Prompt Maestro V2.2 (`docs/especificacion/prompt-maestro-v2.2.md`); la V2.0 queda como histórico.
+- Fuentes normativas oficiales (leyes 21.719 y 19.628, generadas por la BCN el 07-11-2026) en `docs/normativa/fuentes/`, con hashes SHA-256.
+- Revisión de alineamiento (`docs/alineamiento-v2.2.md`) y decisiones D-94 a D-107, pendientes P-15 a P-17 y riesgos R-39 a R-41.
+- `CLAUDE.md` y definiciones de agentes: cierre de fases sin aprobación humana con QA independiente, sin revisión jurídica especializada, reglas antes de fusionar y estado real de las entregas.
+
 ### Fase 1 — Infraestructura base (aprobada 26-10-2026)
 - Monorepo pnpm (Node.js 24, TypeScript 6.0 estricto, ESLint, Vitest).
 - `@auditor-21719/audit-log`: bitácora encadenada, anclaje externo Ed25519 y CLI `auditor-log` de verificación independiente.
